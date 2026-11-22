@@ -3,7 +3,7 @@ use std::str::FromStr;
 
 use mesh_core::geometry::BoxSide;
 use mesh_core::mesh::Mesh;
-use mesh_io::handoff::{HandoffMesh, patches_from_names, write_polymesh};
+use mesh_io::handoff::{HandoffMesh, PatchRole, patches_from_names, write_polymesh};
 use mesh_io::{ExportError, GmshVersion, write_gmsh_domain, write_vtu_domain};
 use mesh_quality::{MeshDomain, validate_domain};
 
@@ -83,7 +83,7 @@ pub fn export_mesh(
             ExportData::Gmsh(msh)
         }
         ExportFormat::FoehnCraft => {
-            let handoff = artifact_handoff(domain, &mesh)?;
+            let handoff = artifact_handoff(domain, &mesh, artifact.patch_roles())?;
             let build = artifact.build();
             ExportData::FoehnCraft(crate::handoff::foehncraft_vtu(
                 &handoff,
@@ -96,7 +96,7 @@ pub fn export_mesh(
             )?)
         }
         ExportFormat::OpenFoam => {
-            let handoff = artifact_handoff(domain, &mesh)?;
+            let handoff = artifact_handoff(domain, &mesh, artifact.patch_roles())?;
             let mut files = write_polymesh(&handoff).map_err(crate::handoff::export_error)?;
             let all: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (*n, b.as_slice())).collect();
             let evidence = crate::handoff::evidence(&handoff, &artifact.build().algorithm, &all)?;
@@ -107,13 +107,25 @@ pub fn export_mesh(
     Ok(data)
 }
 
-fn artifact_handoff(domain: MeshDomain<'_>, mesh: &Mesh) -> Result<HandoffMesh, EngineError> {
+/// The hand-off mesh; patch roles from a patch map replace the roles the
+/// names suggest (BC-04).
+fn artifact_handoff(
+    domain: MeshDomain<'_>,
+    mesh: &Mesh,
+    roles: Option<&[PatchRole]>,
+) -> Result<HandoffMesh, EngineError> {
     validate_domain(domain, mesh).map_err(|e| EngineError::new(ErrorCode::ValidationFailed, e))?;
     let names: Vec<String> = match domain {
         MeshDomain::Box(_) => BoxSide::ALL.iter().map(|s| s.name().to_string()).collect(),
         MeshDomain::Surface(surface) => surface.patch_names().to_vec(),
     };
-    HandoffMesh::from_mesh(mesh, patches_from_names(&names))
+    let mut patches = patches_from_names(&names);
+    if let Some(roles) = roles {
+        for (patch, role) in patches.iter_mut().zip(roles) {
+            patch.role = *role;
+        }
+    }
+    HandoffMesh::from_mesh(mesh, patches)
         .map_err(|e| EngineError::new(ErrorCode::InvalidConnectivity, e))
 }
 

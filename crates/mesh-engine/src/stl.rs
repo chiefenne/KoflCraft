@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::artifact::{
     Point, SURFACE_ALGORITHM, generation_error, pack_artifact, point, require_schema, vector,
 };
+use crate::patches::{PatchMap, PatchSurface, roles_by_name};
 use crate::sizing::{SizeFieldConfig, evidence};
 use crate::{
     BoxBounds, EngineError, ErrorCode, MeshArtifact, MeshConfig, SCHEMA_VERSION,
@@ -47,6 +48,9 @@ pub struct StlDomainReport {
 #[derive(Debug, Serialize)]
 pub struct StlPatchReport {
     pub name: String,
+    /// The role from the patch map (BC-04); without a map, none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<mesh_io::handoff::PatchRole>,
     pub facets: usize,
     pub area: f64,
 }
@@ -56,8 +60,10 @@ pub fn inspect_stl_domain(
     data: &[u8],
     config: &StlMeshConfig,
     facet_limit: Option<usize>,
+    patches: Option<&PatchMap>,
 ) -> Result<StlDomainReport, EngineError> {
-    let surface = import(data, config, facet_limit)?;
+    let surface = import(data, config, facet_limit, patches)?;
+    let roles = patches.map(|map| roles_by_name(map, surface.patch_names()));
     let site_count = match &config.size_field {
         Some(field) => field.count(&surface)?,
         None => {
@@ -70,8 +76,10 @@ pub fn inspect_stl_domain(
     let mut patches: Vec<_> = surface
         .patch_names()
         .iter()
-        .map(|name| StlPatchReport {
+        .enumerate()
+        .map(|(i, name)| StlPatchReport {
             name: name.clone(),
+            role: roles.as_ref().map(|r| r[i]),
             facets: 0,
             area: 0.0,
         })
@@ -96,12 +104,17 @@ pub fn inspect_stl_domain(
 }
 
 /// Build an artifact containing both the certified volume mesh and its validated surface.
+///
+/// With a patch map (BC-01), its patch names replace the STL solid names
+/// and its roles are saved with the surface for the exports (BC-04).
 pub fn build_stl_mesh(
     data: &[u8],
     config: StlMeshConfig,
     facet_limit: Option<usize>,
+    patches: Option<&PatchMap>,
 ) -> Result<MeshArtifact, EngineError> {
-    let surface = import(data, &config, facet_limit)?;
+    let surface = import(data, &config, facet_limit, patches)?;
+    let roles = patches.map(|map| roles_by_name(map, surface.patch_names()));
     let started = Instant::now();
     let (sites, sizing) = match &config.size_field {
         Some(field_config) => {
@@ -129,7 +142,13 @@ pub fn build_stl_mesh(
         fixture_id: config.fixture_id,
         seed: config.seed,
     };
-    pack_artifact(config, &generated, Some(&surface), evidence, started)
+    pack_artifact(
+        config,
+        &generated,
+        Some((&surface, roles)),
+        evidence,
+        started,
+    )
 }
 
 /// The number of cells a build makes: the explicit sites, or the seed count
@@ -140,7 +159,7 @@ pub fn stl_site_count(
     facet_limit: Option<usize>,
 ) -> Result<usize, EngineError> {
     match &config.size_field {
-        Some(field) => field.count(&import(data, config, facet_limit)?),
+        Some(field) => field.count(&import(data, config, facet_limit, None)?),
         None => Ok(config.sites.len()),
     }
 }
@@ -149,8 +168,19 @@ fn import(
     data: &[u8],
     config: &StlMeshConfig,
     facet_limit: Option<usize>,
+    patches: Option<&PatchMap>,
 ) -> Result<ConvexSurface, EngineError> {
     require_schema(config.schema_version)?;
+    let names = match patches {
+        None => None,
+        Some(_) if config.facet_patches.is_some() => {
+            return Err(EngineError::new(
+                ErrorCode::InvalidPatchMap,
+                "give either facet_patches or a patch map, not both",
+            ));
+        }
+        Some(map) => Some(PatchSurface::import(data, facet_limit)?.facet_names(map)?),
+    };
     if config.size_field.is_some() && !config.sites.is_empty() {
         return Err(EngineError::new(
             ErrorCode::InvalidSites,
@@ -160,7 +190,7 @@ fn import(
     import_stl(
         data,
         StlOptions {
-            facet_patches: config.facet_patches.as_deref(),
+            facet_patches: names.as_deref().or(config.facet_patches.as_deref()),
             facet_limit,
         },
     )

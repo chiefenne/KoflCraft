@@ -65,6 +65,24 @@ commands = []
 gaps = "The gradation bounds the field; about 10 % of neighbour pairs exceed it on the cells and are reported. STL datum objects and curvature, gap and feature sizes (GRD-04) open; convex domains only; all-pairs clipping limits fields to 20,000 seeds (ALG-04)"
 
 [[feature]]
+id = "m2-patches"
+title = "M2 boundary patch tools: patch maps, selections and roles through every export (BC-01, BC-02)"
+requirements = ["BC-01", "BC-02", "BC-04", "BC-06"]
+grade = "verified"
+how = "Region growing and the inlet plane recover exactly the port caps recorded by hand on the 90,894-facet SolidCraft surface (area to 1e-12); exact areas, normals, regions and neighbours on the unit box; splitting the skewed box at 10° gives its six sides; maps from another STL, with a bad index, an empty or repeated patch or a bad name are refused; the names reach MSH 4.1, the FoehnCraft VTU and OpenFOAM and the roles the VTU, OpenFOAM types and evidence; a session of patch calls replays from its journal; CI reads a patched box in all three formats with `foehn mesh`"
+tests = [
+  "crates/mesh-geometry/src/patches.rs::closest_point_by_region",
+  "crates/mesh-engine/tests/patches.rs::solid_names_start_the_map_with_exact_evidence",
+  "crates/mesh-engine/tests/patches.rs::region_growing_and_planes_recover_the_solidcraft_ports",
+  "crates/mesh-engine/tests/patches.rs::selections_merge_and_split_on_the_skewed_box",
+  "crates/mesh-engine/tests/patches.rs::invalid_maps_and_empty_operations_are_diagnosed",
+  "crates/mesh-engine/tests/patches.rs::patch_map_names_and_roles_reach_every_export",
+  "crates/mesh-cli/tests/kofl.rs::patch_tools_define_a_boundary_that_meshes_and_replays",
+]
+commands = ["cargo m1 --require-gmsh --require-foehn"]
+gaps = "Volume meshing with a map is convex STL only; the duct path still reads its own port-range map; proposals (BC-03), the boundary-condition skeleton (BC-05) and the shell role are open; the viewing VTU carries no patch names"
+
+[[feature]]
 id = "sweep"
 title = "Swept block and pipe with prism layers"
 requirements = ["BL-01", "BL-03"]
@@ -108,7 +126,7 @@ id = "foehncraft-handoff"
 title = "FoehnCraft hand-off: MSH 4.1, single-file VTU, names, evidence (FC-01, FC-02, FC-04 to FC-06)"
 requirements = ["FC-01", "FC-02", "FC-04", "FC-05", "FC-06"]
 grade = "partial"
-how = "CI reads 26 exports back with `foehn mesh`: counts, volume, closure and patch areas agree to 1e-12"
+how = "CI reads 29 exports back with `foehn mesh`: counts, volume, closure and patch areas agree to 1e-12"
 tests = [
   "crates/mesh-io/src/handoff.rs::foehncraft_vtu_holds_cells_faces_and_names",
   "crates/mesh-io/src/handoff.rs::two_faces_between_one_pair_merge_into_one",

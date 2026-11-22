@@ -4,7 +4,7 @@
 
 The verification grade of every feature (AG-17), how it was checked and what is still missing. A partial result is never presented as success; every tool result also carries a `limitations` list.
 
-- **verified** (7): checked against an exact or independent reference by a named test
+- **verified** (8): checked against an exact or independent reference by a named test
 - **partial** (7): works on the named fixtures, with known gaps
 - **unverified** (1): built, not yet checked
 - **open** (0): not built
@@ -14,10 +14,11 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 | M1 box clipped Voronoi, validation, VTU and Gmsh export, CLI and MCP | verified | 16/64/256-site lattice and clustered fixtures read back by independent VTU and MSH 4.1 readers and by Gmsh; CLI and MCP builds give equal topology digests and identical files; analytic two-cell metrics | All-pairs clipping only (ALG-04 open) | M1-01, M1-11 |
 | M2 STL import and convex STL meshing | partial | Unit and skewed boxes against the analytic box; malformed, inward, nonconvex and non-manifold shells rejected | Convex surfaces only; size control: see the next row | M2, GEO-02 |
 | M2 size control: size field from datum objects and coordinate regions, CVT seeding (ALG-05) | partial | Exact distances of every shape and the field's slope bound by unit tests; graded meshes on the unit and skewed boxes validate, the median cbrt(V)/h is within 5 % of 1 with p10 and p90 within 15 %, each source's cells reach its size within 10 % (median), equal inputs give equal meshes, the estimate equals the build, and edited evidence fails the digest; benchmark against DistMesh springs in research/m2-size-control.md | The gradation bounds the field; about 10 % of neighbour pairs exceed it on the cells and are reported. STL datum objects and curvature, gap and feature sizes (GRD-04) open; convex domains only; all-pairs clipping limits fields to 20,000 seeds (ALG-04) | ALG-05, GRD-01, GRD-02, GRD-03, GRD-05, GRD-08 |
+| M2 boundary patch tools: patch maps, selections and roles through every export (BC-01, BC-02) | verified | Region growing and the inlet plane recover exactly the port caps recorded by hand on the 90,894-facet SolidCraft surface (area to 1e-12); exact areas, normals, regions and neighbours on the unit box; splitting the skewed box at 10° gives its six sides; maps from another STL, with a bad index, an empty or repeated patch or a bad name are refused; the names reach MSH 4.1, the FoehnCraft VTU and OpenFOAM and the roles the VTU, OpenFOAM types and evidence; a session of patch calls replays from its journal; CI reads a patched box in all three formats with `foehn mesh` | Volume meshing with a map is convex STL only; the duct path still reads its own port-range map; proposals (BC-03), the boundary-condition skeleton (BC-05) and the shell role are open; the viewing VTU carries no patch names | BC-01, BC-02, BC-04, BC-06 |
 | Swept block and pipe with prism layers | partial | Exact block volume; pipe volume 0.0564 % below the cylinder; refinement and grading checks (docs/analytic-development.md) | Analytic shapes only | BL-01, BL-03 |
 | Straight channel with port-terminated layers (M3, BL-10) | partial | Native prisms and the Gmsh core subdivision share the tagged boundary; both full ports exported; colliding layers rejected (research/open-port-layers.md) | Planar walls only | BL-10 |
 | Nonconvex duct, bulk, layered and polyhedral (M4/M5 prototype) | partial | Elbow volume and patch areas to 1e-9; every layer reaches both ports | Needs a Gmsh scaffold and a Python preparation script (OPEN-07); fitted volume 0.183 % below the STL; the polyhedral dual has 10 faces with S·d ≤ 0; flow accuracy untested | M4, M5 |
-| FoehnCraft hand-off: MSH 4.1, single-file VTU, names, evidence (FC-01, FC-02, FC-04 to FC-06) | partial | CI reads 26 exports back with `foehn mesh`: counts, volume, closure and patch areas agree to 1e-12 | FoehnCraft reports the polyhedral elbow invalid (inverted faces, see duct); binary MSH open | FC-01, FC-02, FC-04, FC-05, FC-06 |
+| FoehnCraft hand-off: MSH 4.1, single-file VTU, names, evidence (FC-01, FC-02, FC-04 to FC-06) | partial | CI reads 29 exports back with `foehn mesh`: counts, volume, closure and patch areas agree to 1e-12 | FoehnCraft reports the polyhedral elbow invalid (inverted faces, see duct); binary MSH open | FC-01, FC-02, FC-04, FC-05, FC-06 |
 | OpenFOAM polyMesh export (FC-03) | unverified | Written for every mesh type from the hand-off mesh, with patch types and cellZones; boundary ranges tile the faces | No independent reader in tests or CI; the box round trip is an ignored test | FC-03 |
 | Tool registry, result envelope and diagnostic codes (AG-12, AG-18, FC-07) | verified | Ids unique and dotted, schemas closed, docs/tools.md regenerated and compared, `kofl commands` and `kofl call` agree, codes unique and every engine code registered | — | AG-12, AG-18, FC-07 |
 | Journal and replay (AG-13) | verified | A recorded session replays in a fresh directory with equal status, exit code and result digests; a changed call is reported as TOOL005; MCP calls are journaled | — | AG-13 |
@@ -55,6 +56,17 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 - `every_shape_grades_an_angled_surface` in [crates/mesh-engine/tests/size_field.rs](../crates/mesh-engine/tests/size_field.rs)
 - `invalid_size_fields_are_diagnosed` in [crates/mesh-engine/tests/size_field.rs](../crates/mesh-engine/tests/size_field.rs)
 - `estimates_match_the_built_cell_counts` in [crates/mesh-cli/tests/kofl.rs](../crates/mesh-cli/tests/kofl.rs)
+
+### M2 boundary patch tools: patch maps, selections and roles through every export (BC-01, BC-02)
+
+- `closest_point_by_region` in [crates/mesh-geometry/src/patches.rs](../crates/mesh-geometry/src/patches.rs)
+- `solid_names_start_the_map_with_exact_evidence` in [crates/mesh-engine/tests/patches.rs](../crates/mesh-engine/tests/patches.rs)
+- `region_growing_and_planes_recover_the_solidcraft_ports` in [crates/mesh-engine/tests/patches.rs](../crates/mesh-engine/tests/patches.rs)
+- `selections_merge_and_split_on_the_skewed_box` in [crates/mesh-engine/tests/patches.rs](../crates/mesh-engine/tests/patches.rs)
+- `invalid_maps_and_empty_operations_are_diagnosed` in [crates/mesh-engine/tests/patches.rs](../crates/mesh-engine/tests/patches.rs)
+- `patch_map_names_and_roles_reach_every_export` in [crates/mesh-engine/tests/patches.rs](../crates/mesh-engine/tests/patches.rs)
+- `patch_tools_define_a_boundary_that_meshes_and_replays` in [crates/mesh-cli/tests/kofl.rs](../crates/mesh-cli/tests/kofl.rs)
+- `cargo m1 --require-gmsh --require-foehn` (CI)
 
 ### Swept block and pipe with prism layers
 

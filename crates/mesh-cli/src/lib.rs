@@ -27,8 +27,8 @@ const USAGE: &str = "Usage: kofl [--journal FILE] [--check] COMMAND
   kofl generate-duct SURFACE.stl PATCHES.json PARTITION.json bulk|layered|polyhedral NEW_OUTPUT_DIR
   kofl generate-sweep CONFIG.json NEW_OUTPUT_DIR
   kofl generate-channel CONFIG.json NEW_OUTPUT_DIR
-  kofl inspect-stl SURFACE.stl CONFIG.json
-  kofl generate-stl SURFACE.stl CONFIG.json ARTIFACT.json
+  kofl inspect-stl SURFACE.stl CONFIG.json [--patches PATCHES.json]
+  kofl generate-stl SURFACE.stl CONFIG.json ARTIFACT.json [--patches PATCHES.json]
   kofl check ARTIFACT.json
   kofl report ARTIFACT.json
   kofl export ARTIFACT.json vtu|gmsh|gmsh-2.2|foehncraft OUTPUT
@@ -36,6 +36,8 @@ const USAGE: &str = "Usage: kofl [--journal FILE] [--check] COMMAND
 
 `--check` prints the estimate of a build command (`mesh.estimate`:
 cells, memory, output, files) instead of running it.
+Boundary patches are defined with the `patch.*` tools through
+`kofl call` (see docs/m2-stl.md); `--patches` meshes with their map.
 `--journal FILE` (or `KOFL_JOURNAL`) appends every tool call to a
 journal that `kofl run --script` replays. `mesh-cli` accepts the same
 commands.";
@@ -218,9 +220,20 @@ fn parse(args: &[OsString]) -> Result<Request, Diagnostic> {
             "domain.inspect_stl",
             json!({ "surface": text(surface)?, "config": read_json(config)? }),
         ),
+        ("inspect-stl", [surface, config, flag, patches]) if flag == "--patches" => C(
+            "domain.inspect_stl",
+            json!({ "surface": text(surface)?, "config": read_json(config)?, "patches": text(patches)? }),
+        ),
         ("generate-stl", [surface, config, artifact]) => C(
             "mesh.generate_stl",
             json!({ "surface": text(surface)?, "config": read_json(config)?, "artifact": text(artifact)? }),
+        ),
+        ("generate-stl", [surface, config, artifact, flag, patches]) if flag == "--patches" => C(
+            "mesh.generate_stl",
+            json!({
+                "surface": text(surface)?, "config": read_json(config)?,
+                "artifact": text(artifact)?, "patches": text(patches)?
+            }),
         ),
         ("check", [artifact]) => C("mesh.check", json!({ "artifact": text(artifact)? })),
         ("report", [artifact]) => C("mesh.report", json!({ "artifact": text(artifact)? })),

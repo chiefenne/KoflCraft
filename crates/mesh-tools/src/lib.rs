@@ -15,6 +15,7 @@ pub mod journal;
 mod markdown;
 mod mesh;
 mod page;
+mod patch;
 mod schemas;
 
 use std::time::Instant;
@@ -152,17 +153,149 @@ pub static TOOLS: &[Tool] = &[
         id: "domain.inspect_stl",
         version: 1,
         action: Action::Read,
-        summary: "Validate a convex STL shell and report bounds, volume and named patches.",
+        summary: "Validate a convex STL shell and report bounds, volume and named patches (from the STL solids, or from a patch map given as `patches`).",
         legacy_name: Some("inspect_stl_domain"),
         outputs: &[],
         input_schema: || {
             schemas::input(
-                json!({"surface": schemas::path(), "config": schemas::stl_config()}),
-                &[],
+                json!({"surface": schemas::path(), "config": schemas::stl_config(), "patches": schemas::path()}),
+                &["patches"],
             )
         },
         output_schema: out!("inspect_stl_domain"),
         run: mesh::inspect_stl,
+    },
+    Tool {
+        id: "patch.init",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Start a patch map for a closed STL (convex or not) from its solid names: one patch per solid, names made FoehnCraft boundary names, roles from the names (BC-01).",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: || {
+            schemas::input(
+                json!({"surface": schemas::path(), "output": schemas::path()}),
+                &[],
+            )
+        },
+        output_schema: schemas::patch_result,
+        run: patch::init,
+    },
+    Tool {
+        id: "patch.list",
+        version: 1,
+        action: Action::Read,
+        summary: "Check a patch map against its STL (every facet in exactly one patch, BC-06) and report each patch: role, facets, area, mean normal and its spread, bounds, regions and neighbouring patches.",
+        legacy_name: None,
+        outputs: &[],
+        input_schema: || {
+            schemas::input(
+                json!({"surface": schemas::path(), "patches": schemas::path()}),
+                &[],
+            )
+        },
+        output_schema: schemas::patch_summary,
+        run: patch::list,
+    },
+    Tool {
+        id: "patch.select_plane",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Move the facets whose three corners lie on a plane (within `tolerance`) into the patch `name`, optionally only from the patches in `within`; write the new map to `output`.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: schemas::patch_plane,
+        output_schema: schemas::patch_result,
+        run: patch::select_plane,
+    },
+    Tool {
+        id: "patch.select_box",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Move the facets inside an axis-aligned box (by centroid, or `contain: all_corners`) into the patch `name`.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: schemas::patch_box,
+        output_schema: schemas::patch_result,
+        run: patch::select_box,
+    },
+    Tool {
+        id: "patch.select_normal",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Move the facets whose outward normal is within `max_angle_deg` of `direction` into the patch `name`.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: schemas::patch_normal,
+        output_schema: schemas::patch_result,
+        run: patch::select_normal,
+    },
+    Tool {
+        id: "patch.grow",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Feature-angle region growing: from `seed_facet` (or the facet nearest to `seed_point`) across every edge whose dihedral angle is at most `feature_angle_deg`, and move the region into the patch `name`.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: schemas::patch_grow,
+        output_schema: schemas::patch_result,
+        run: patch::grow,
+    },
+    Tool {
+        id: "patch.split",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Split a patch into its regions, separated by feature edges sharper than `feature_angle_deg` (or only by connectivity), named `names` or `<patch>_1`, `<patch>_2`, ….",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: schemas::patch_split,
+        output_schema: schemas::patch_result,
+        run: patch::split,
+    },
+    Tool {
+        id: "patch.merge",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Merge the patches in `merge` into one patch `name` (one of them or a new name) with `role` or the first one's role.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: schemas::patch_merge,
+        output_schema: schemas::patch_result,
+        run: patch::merge,
+    },
+    Tool {
+        id: "patch.rename",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Rename a patch; the new name must be free.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: || {
+            schemas::input(
+                json!({"surface": schemas::path(), "patches": schemas::path(), "output": schemas::path(),
+                       "from": {"type": "string"}, "to": {"type": "string"}}),
+                &[],
+            )
+        },
+        output_schema: schemas::patch_result,
+        run: patch::rename,
+    },
+    Tool {
+        id: "patch.set_role",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Set the role of a patch (wall, inlet, outlet, symmetry, interface, unspecified), which maps to a FoehnCraft boundary-condition type and an OpenFOAM patch type (BC-04).",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: || {
+            schemas::input(
+                json!({"surface": schemas::path(), "patches": schemas::path(), "output": schemas::path(),
+                       "name": {"type": "string"}, "role": schemas::role()}),
+                &[],
+            )
+        },
+        output_schema: schemas::patch_result,
+        run: patch::set_role,
     },
     Tool {
         id: "mesh.generate",
@@ -184,13 +317,13 @@ pub static TOOLS: &[Tool] = &[
         id: "mesh.generate_stl",
         version: 1,
         action: Action::StartBuild,
-        summary: "Generate a mesh inside a convex STL surface and save it with its source geometry.",
+        summary: "Generate a mesh inside a convex STL surface and save it with its source geometry. With a patch map (`patches`, from the `patch.*` tools) its names and roles name the boundary faces in every export.",
         legacy_name: Some("generate_stl_mesh"),
         outputs: &["artifact"],
         input_schema: || {
             schemas::input(
-                json!({"surface": schemas::path(), "config": schemas::stl_config(), "artifact": schemas::path()}),
-                &[],
+                json!({"surface": schemas::path(), "config": schemas::stl_config(), "artifact": schemas::path(), "patches": schemas::path()}),
+                &["patches"],
             )
         },
         output_schema: out!("generate_stl_mesh"),

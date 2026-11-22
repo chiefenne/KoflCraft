@@ -55,6 +55,9 @@ pub struct GenerateInput {
 pub struct StlInput {
     pub surface: String,
     pub config: StlMeshConfig,
+    /// A patch map (`koflcraft.patch-map`) whose names replace the solids'.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patches: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -63,6 +66,10 @@ pub struct GenerateStlInput {
     pub surface: String,
     pub config: StlMeshConfig,
     pub artifact: String,
+    /// A patch map (`koflcraft.patch-map`) whose names and roles replace
+    /// the solids' (BC-01, BC-04).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patches: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -126,6 +133,13 @@ fn artifact(ctx: &Context, path: &str) -> Result<MeshArtifact, Diagnostic> {
     Ok(artifact)
 }
 
+fn patch_map(
+    ctx: &Context,
+    path: Option<&str>,
+) -> Result<Option<mesh_engine::patches::PatchMap>, Diagnostic> {
+    path.map(|p| json_file(ctx, p)).transpose()
+}
+
 fn facet_limit(ctx: &Context) -> Option<usize> {
     ctx.limits.as_ref().map(|l| l.max_surface_facets)
 }
@@ -152,10 +166,12 @@ pub(crate) fn inspect_stl(input: Value, ctx: &Context) -> Run {
     let i: StlInput = decode(input)?;
     let bytes = ctx.read(&i.surface)?;
     sites(ctx, stl_site_count(&bytes, &i.config, facet_limit(ctx))?)?;
+    let patches = patch_map(ctx, i.patches.as_deref())?;
     Ok(json!(inspect_stl_domain(
         &bytes,
         &i.config,
-        facet_limit(ctx)
+        facet_limit(ctx),
+        patches.as_ref()
     )?))
 }
 
@@ -164,7 +180,8 @@ pub(crate) fn generate_stl(input: Value, ctx: &Context) -> Run {
     let bytes = ctx.read(&i.surface)?;
     sites(ctx, stl_site_count(&bytes, &i.config, facet_limit(ctx))?)?;
     let (dir, name) = ctx.target(&i.artifact)?;
-    let artifact = build_stl_mesh(&bytes, i.config, facet_limit(ctx))?;
+    let patches = patch_map(ctx, i.patches.as_deref())?;
+    let artifact = build_stl_mesh(&bytes, i.config, facet_limit(ctx), patches.as_ref())?;
     artifact.write_new(&dir, &name)?;
     let mut output = json!({
         "schema_version": SCHEMA_VERSION,

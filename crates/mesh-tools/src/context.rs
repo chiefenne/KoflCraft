@@ -23,6 +23,8 @@ pub struct Limits {
     pub max_duct_facets: usize,
     pub max_duct_layers: usize,
     pub max_duct_regions: usize,
+    /// Facets of an STL the patch tools work on (BC-02).
+    pub max_patch_facets: usize,
     /// Rows per page of per-cell and per-face detail (AG-16).
     pub max_page_rows: usize,
     /// Cells one build may make without approval (AG-15).
@@ -49,6 +51,7 @@ impl Limits {
             max_duct_facets: 100_000,
             max_duct_layers: 4,
             max_duct_regions: 64,
+            max_patch_facets: 200_000,
             max_page_rows: 500,
             max_build_cells: 500_000,
             max_output_bytes: 1 << 30,

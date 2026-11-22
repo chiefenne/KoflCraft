@@ -272,7 +272,8 @@ fn stl_tools_reuse_check_and_export_for_a_skewed_surface() {
         "west inlet"
     );
     let local =
-        mesh_engine::build_stl_mesh(source, serde_json::from_value(config).unwrap(), None).unwrap();
+        mesh_engine::build_stl_mesh(source, serde_json::from_value(config).unwrap(), None, None)
+            .unwrap();
     let actual = &responses[2]["result"]["structuredContent"]["result"];
     assert_eq!(actual["artifact_schema_version"], 2);
     assert_eq!(actual["build"]["mesh_digest"], local.build().mesh_digest);

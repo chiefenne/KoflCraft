@@ -193,9 +193,9 @@ pub(crate) fn output_schema(name: &str) -> Value {
             "schema_version": version,
             "bounds": object_schema(json!({ "min": point, "max": point })),
             "site_count": count, "facet_count": count, "vertex_count": count, "volume": number,
-            "patches": { "type": "array", "items": object_schema(json!({
-                "name": string, "facets": count, "area": number
-            })) },
+            "patches": { "type": "array", "items": input(json!({
+                "name": string, "role": role(), "facets": count, "area": number
+            }), &["role"]) },
             "fixture_id": fixture, "seed": seed, "algorithm": string
         })),
         "generate_duct" => {
@@ -286,6 +286,118 @@ pub(crate) fn output_schema(name: &str) -> Value {
         })),
         _ => json!({ "type": "object" }),
     }
+}
+
+/// A patch role (BC-04, FC-04).
+pub(crate) fn role() -> Value {
+    json!({ "enum": ["wall", "inlet", "outlet", "symmetry", "interface", "unspecified"] })
+}
+
+fn name() -> Value {
+    json!({ "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$" })
+}
+
+fn names() -> Value {
+    json!({ "type": "array", "items": name() })
+}
+
+fn angle() -> Value {
+    json!({ "type": "number", "minimum": 0, "maximum": 180, "description": "Degrees" })
+}
+
+/// The fields of every selection tool, with `extra` and its optional keys.
+fn selection(extra: Value, optional: &[&str]) -> Value {
+    let mut properties = json!({
+        "surface": path(), "patches": path(), "output": path(),
+        "name": name(), "role": role(), "within": names()
+    });
+    let mut keep = vec!["role", "within"];
+    keep.extend_from_slice(optional);
+    if let (Some(p), Some(e)) = (properties.as_object_mut(), extra.as_object()) {
+        p.extend(e.clone());
+    }
+    input(properties, &keep)
+}
+
+pub(crate) fn patch_plane() -> Value {
+    selection(
+        json!({"point": point(), "normal": point(),
+               "tolerance": {"type": "number", "minimum": 0, "description": "Largest distance of a corner from the plane; default 1e-6 of the longest extent"}}),
+        &["tolerance"],
+    )
+}
+
+pub(crate) fn patch_box() -> Value {
+    selection(
+        json!({"min": point(), "max": point(), "contain": {"enum": ["centroid", "all_corners"]}}),
+        &["contain"],
+    )
+}
+
+pub(crate) fn patch_normal() -> Value {
+    selection(json!({"direction": point(), "max_angle_deg": angle()}), &[])
+}
+
+pub(crate) fn patch_grow() -> Value {
+    selection(
+        json!({"seed_facet": {"type": "integer", "minimum": 0}, "seed_point": point(),
+               "feature_angle_deg": angle()}),
+        &["seed_facet", "seed_point"],
+    )
+}
+
+pub(crate) fn patch_split() -> Value {
+    input(
+        json!({"surface": path(), "patches": path(), "output": path(), "patch": name(),
+               "feature_angle_deg": angle(), "names": names()}),
+        &["feature_angle_deg", "names"],
+    )
+}
+
+pub(crate) fn patch_merge() -> Value {
+    input(
+        json!({"surface": path(), "patches": path(), "output": path(),
+               "merge": {"type": "array", "items": name(), "minItems": 1}, "name": name(), "role": role()}),
+        &["role"],
+    )
+}
+
+/// The result of a `patch.*` tool that writes a map.
+pub(crate) fn patch_result() -> Value {
+    let string = json!({ "type": "string" });
+    let digest = json!({ "type": "string", "pattern": "^[a-f0-9]{64}$" });
+    object_schema(json!({
+        "format": {"const": "koflcraft.patch-result"}, "format_version": string,
+        "output": string,
+        "files": { "type": "array", "items": object_schema(json!({ "path": string, "sha256": digest })) },
+        "change": object_schema(json!({
+            "facets_changed": {"type": "integer", "minimum": 0}, "created": names(), "removed": names()
+        })),
+        "summary": patch_summary()
+    }))
+}
+
+/// `koflcraft.patch-summary`: evidence per patch and the BC-06 check.
+pub(crate) fn patch_summary() -> Value {
+    let count = json!({ "type": "integer", "minimum": 0 });
+    let number = json!({ "type": "number" });
+    let point = point();
+    let patch = input(
+        json!({
+            "name": name(), "role": role(), "foehncraft_type": {"type": ["string", "null"]},
+            "source_name": {"type": "string"}, "facets": count, "area": number,
+            "normal": {"anyOf": [point, {"type": "null"}]}, "max_normal_deviation_deg": number,
+            "bounds": {"anyOf": [{"type": "array", "items": point, "minItems": 2, "maxItems": 2}, {"type": "null"}]},
+            "regions": count, "neighbours": names()
+        }),
+        &["source_name"],
+    );
+    object_schema(json!({
+        "format": {"const": "koflcraft.patch-summary"}, "format_version": {"type": "string"},
+        "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "facet_count": count, "area": number, "every_facet_in_one_patch": {"const": true},
+        "patches": {"type": "array", "items": patch}
+    }))
 }
 
 pub(crate) fn object_schema(properties: Value) -> Value {

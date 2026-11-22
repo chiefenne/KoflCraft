@@ -299,3 +299,131 @@ fn estimates_match_the_built_cell_counts() {
     assert!(!ok, "only build tools have an estimate");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Keep rule (SW-18). Invariant (BC-02, AG-13): the boundary of a case is
+/// defined by `patch.*` calls alone, each writes a new map, the mesh built
+/// with the last map names its OpenFOAM patches after it, and the journal
+/// of the whole session replays in a fresh directory with equal results.
+/// A patch tool missing from the registry, a nondeterministic result or a
+/// `--patches` flag that is not passed on breaks it; the engine tests do
+/// not go through the command line or the journal.
+#[test]
+fn patch_tools_define_a_boundary_that_meshes_and_replays() {
+    let rec = fresh("patch");
+    let stl = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test-fixtures/unit-box.stl"
+    );
+    let sites = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test-fixtures/stl-sites.json"
+    );
+    let journal = rec.join("j.jsonl");
+    let j = journal.to_str().unwrap();
+    let calls = [
+        (
+            "patch.init",
+            serde_json::json!({"surface": stl, "output": "p0.json"}),
+        ),
+        (
+            "patch.select_plane",
+            serde_json::json!({"surface": stl, "patches": "p0.json", "output": "p1.json",
+                "name": "inlet", "role": "inlet", "point": [0, 0, 0], "normal": [1, 0, 0]}),
+        ),
+        (
+            "patch.merge",
+            serde_json::json!({"surface": stl, "patches": "p1.json", "output": "p2.json",
+                "merge": ["south_wall", "north_wall", "floor", "ceiling"], "name": "walls", "role": "wall"}),
+        ),
+        (
+            "patch.rename",
+            serde_json::json!({"surface": stl, "patches": "p2.json", "output": "p3.json",
+                "from": "east_outlet", "to": "outlet"}),
+        ),
+        (
+            "patch.list",
+            serde_json::json!({"surface": stl, "patches": "p3.json"}),
+        ),
+    ];
+    let mut last = Value::Null;
+    for (k, (id, input)) in calls.iter().enumerate() {
+        let file = rec.join(format!("in{k}.json"));
+        std::fs::write(&file, input.to_string()).unwrap();
+        let (ok, envelope) = kofl_in(
+            &rec,
+            &[
+                "--journal",
+                j,
+                "call",
+                id,
+                "--input",
+                file.to_str().unwrap(),
+            ],
+        );
+        assert!(ok, "{id}: {envelope:#}");
+        last = envelope;
+    }
+    let names: Vec<&str> = last["result"]["patches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["outlet", "walls", "inlet"]);
+    assert_eq!(last["result"]["every_facet_in_one_patch"], true);
+
+    let (ok, built) = kofl_in(
+        &rec,
+        &[
+            "--journal",
+            j,
+            "generate-stl",
+            stl,
+            sites,
+            "m.json",
+            "--patches",
+            "p3.json",
+        ],
+    );
+    assert!(ok, "{built:#}");
+    let (ok, _) = kofl_in(
+        &rec,
+        &["--journal", j, "export", "m.json", "openfoam", "foam"],
+    );
+    assert!(ok);
+    let boundary = std::fs::read_to_string(rec.join("foam/boundary")).unwrap();
+    for (name, kind) in [("outlet", "patch"), ("walls", "wall"), ("inlet", "patch")] {
+        let block = boundary.split(&format!("    {name}\n")).nth(1).unwrap();
+        assert!(block.contains(&format!("type        {kind};")), "{name}");
+    }
+
+    // an unknown field of a selection tool is refused, not ignored
+    let bad = rec.join("bad.json");
+    std::fs::write(
+        &bad,
+        serde_json::json!({"surface": stl, "patches": "p3.json", "output": "p9.json",
+            "name": "x", "direction": [1, 0, 0], "max_angle_deg": 1, "angle": 3})
+        .to_string(),
+    )
+    .unwrap();
+    let (ok, envelope) = kofl_in(
+        &rec,
+        &[
+            "call",
+            "patch.select_normal",
+            "--input",
+            bad.to_str().unwrap(),
+        ],
+    );
+    assert!(!ok);
+    assert_eq!(envelope["diagnostics"][0]["code"], "TOOL002");
+
+    let again = fresh("patch-again");
+    let (ok, envelope) = kofl_in(&again, &["run", "--script", j]);
+    assert!(ok, "{envelope:#}");
+    assert_eq!(envelope["result"]["replayed"], 7);
+    assert_eq!(envelope["result"]["different"], 0);
+    for d in [rec, again] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
