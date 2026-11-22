@@ -47,7 +47,11 @@ pub(crate) fn cells(id: &str, input: Value, ctx: &Context) -> Result<usize, Diag
     }
     Ok(match tool.id {
         "mesh.generate" => decode::<GenerateInput>(input)?.config.sites.len(),
-        "mesh.generate_stl" => decode::<GenerateStlInput>(input)?.config.sites.len(),
+        "mesh.generate_stl" => {
+            let i: GenerateStlInput = decode(input)?;
+            let facets = ctx.limits.as_ref().map(|l| l.max_surface_facets);
+            mesh_engine::stl_site_count(&ctx.read(&i.surface)?, &i.config, facets)?
+        }
         "mesh.generate_channel" => {
             mesh_engine::channel::cell_count(&decode::<ChannelInput>(input)?.config)?
         }

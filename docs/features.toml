@@ -44,7 +44,25 @@ tests = [
   "crates/mesh-mcp/tests/stdio.rs::stl_tools_reuse_check_and_export_for_a_skewed_surface",
 ]
 commands = []
-gaps = "Convex surfaces only; size control (ALG-05) open"
+gaps = "Convex surfaces only; size control: see the next row"
+
+[[feature]]
+id = "m2-size-control"
+title = "M2 size control: size field from datum objects and coordinate regions, CVT seeding (ALG-05)"
+requirements = ["ALG-05", "GRD-01", "GRD-02", "GRD-03", "GRD-05", "GRD-08"]
+grade = "partial"
+how = "Exact distances of every shape and the field's slope bound by unit tests; graded meshes on the unit and skewed boxes validate, the median cbrt(V)/h is within 5 % of 1 with p10 and p90 within 15 %, each source's cells reach its size within 10 % (median), equal inputs give equal meshes, the estimate equals the build, and edited evidence fails the digest; benchmark against DistMesh springs in research/m2-size-control.md"
+tests = [
+  "crates/mesh-algorithms/src/sizing/field.rs::shape_distances_are_exact",
+  "crates/mesh-algorithms/src/sizing/field.rs::the_field_is_a_clamped_gradation_limited_minimum",
+  "crates/mesh-algorithms/src/sizing/mod.rs::uniform_count_and_determinism",
+  "crates/mesh-engine/tests/size_field.rs::size_field_grades_the_stl_mesh_and_reports_each_source",
+  "crates/mesh-engine/tests/size_field.rs::every_shape_grades_an_angled_surface",
+  "crates/mesh-engine/tests/size_field.rs::invalid_size_fields_are_diagnosed",
+  "crates/mesh-cli/tests/kofl.rs::estimates_match_the_built_cell_counts",
+]
+commands = []
+gaps = "The gradation bounds the field; about 10 % of neighbour pairs exceed it on the cells and are reported. STL datum objects and curvature, gap and feature sizes (GRD-04) open; convex domains only; all-pairs clipping limits fields to 20,000 seeds (ALG-04)"
 
 [[feature]]
 id = "sweep"

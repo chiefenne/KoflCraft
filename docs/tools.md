@@ -164,6 +164,7 @@ Action `start-build`, version 1; MCP name before the registry `generate_stl_mesh
 | `artifact_schema_version` | yes | `2` |
 | `build` | yes | object |
 | `schema_version` | yes | `1` |
+| `sizing` | no | object |
 
 ## `mesh.generate_sweep`
 
@@ -391,6 +392,7 @@ No fields.
 | `MESH004` | `invalid_connectivity` | error | The mesh connectivity is inconsistent (artifact or hand-off mesh). |  |
 | `MESH005` | `digest_mismatch` | error | An artifact's stored digest does not match its content: it was changed after it was built. | Generate the artifact again. |
 | `MESH006` | `validation_failed` | error | The mesh failed validation (closure, orientation, volume or area conservation, layer collision). |  |
+| `MESH007` | `invalid_size_field` | error | The size field is invalid (sizes, gradation, frames, shapes) or asks for more seeds than allowed. | Keep min_size <= every source size <= max_size and gradation > 1; raise the sizes to need fewer seeds. |
 | `IO001` | `unsupported_format` | error | The export format is not one of vtu, gmsh, gmsh-2.2, foehncraft, openfoam. |  |
 | `IO002` | `export_failed` | error | A file could not be produced from a valid mesh. |  |
 | `IO003` | `io_error` | error | A file could not be read or written (missing, exists already, permission). | Outputs must be new; pick a name that does not exist. |

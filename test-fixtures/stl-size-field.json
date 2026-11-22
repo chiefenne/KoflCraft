@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "size_field": {
+    "min_size": 0.06,
+    "max_size": 0.25,
+    "gradation": 1.3,
+    "frames": [
+      {
+        "name": "diagonal",
+        "origin": [0.5, 0.5, 0.5],
+        "x_axis": [1.0, 1.0, 0.0],
+        "y_axis": [-1.0, 1.0, 0.0]
+      }
+    ],
+    "sources": [
+      {
+        "kind": "datum",
+        "name": "probe",
+        "shape": { "type": "point", "point": [0.25, 0.25, 0.25] },
+        "size": 0.06,
+        "distance": 0.08
+      },
+      {
+        "kind": "region",
+        "name": "band",
+        "frame": "diagonal",
+        "shape": { "type": "slab", "axis": "y", "min": -0.05, "max": 0.05 },
+        "size": 0.1
+      }
+    ]
+  },
+  "fixture_id": "stl-box-size-field",
+  "seed": 1
+}

@@ -183,6 +183,15 @@ pub const CODES: &[Code] = &[
         None,
     ),
     code(
+        "MESH007",
+        "invalid_size_field",
+        Error,
+        "The size field is invalid (sizes, gradation, frames, shapes) or asks for more seeds than allowed.",
+        Some(
+            "Keep min_size <= every source size <= max_size and gradation > 1; raise the sizes to need fewer seeds.",
+        ),
+    ),
+    code(
         "IO001",
         "unsupported_format",
         Error,
@@ -311,6 +320,7 @@ mod tests {
             InvalidConnectivity,
             DigestMismatch,
             ValidationFailed,
+            InvalidSizeField,
             UnsupportedFormat,
             ExportFailed,
             IoError,

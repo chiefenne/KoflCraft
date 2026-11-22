@@ -54,15 +54,79 @@ pub(crate) fn stl_config() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["schema_version", "sites"],
+        "required": ["schema_version"],
+        "description": "Give either `sites` or a `size_field` that places them (ALG-05).",
         "properties": {
             "schema_version": config["properties"]["schema_version"],
             "sites": config["properties"]["sites"],
+            "size_field": size_field(),
             "fixture_id": config["properties"]["fixture_id"],
             "seed": config["properties"]["seed"],
             "facet_patches": { "type": ["array", "null"], "items": { "type": "string" } }
         }
     })
+}
+
+/// The size field of `mesh_engine::sizing::SizeFieldConfig` (GRD-01 to GRD-05, GRD-08).
+pub(crate) fn size_field() -> Value {
+    let positive = json!({"type": "number", "exclusiveMinimum": 0});
+    let nonnegative = json!({"type": "number", "minimum": 0});
+    let p = point();
+    let name = json!({"type": "string", "minLength": 1});
+    let shape = |kind: &str, props: Value| {
+        let mut props = props;
+        props["type"] = json!({ "const": kind });
+        object_schema(props)
+    };
+    let point_shape = shape("point", json!({"point": p}));
+    let segment = shape("segment", json!({"start": p, "end": p}));
+    let plane = shape("plane", json!({"point": p, "normal": p}));
+    let cuboid = shape("box", json!({"min": p, "max": p}));
+    let slab = shape(
+        "slab",
+        json!({"axis": {"enum": ["x", "y", "z"]}, "min": {"type": "number"}, "max": {"type": "number"}}),
+    );
+    let sphere = shape("sphere", json!({"centre": p, "radius": positive}));
+    let cylinder = shape(
+        "cylinder",
+        json!({"start": p, "end": p, "radius": positive}),
+    );
+    let cone = shape(
+        "cone",
+        json!({"start": p, "end": p, "start_radius": nonnegative, "end_radius": nonnegative}),
+    );
+    let frame = json!({"type": "string", "description": "A frame name; `global` when absent"});
+    let datum = input(
+        json!({
+            "kind": {"const": "datum"}, "name": name,
+            "shape": {"oneOf": [point_shape, segment, plane, cuboid, slab, sphere, cylinder, cone]},
+            "size": positive,
+            "distance": {"type": "number", "minimum": 0, "description": "The size holds within this distance; default 0"},
+            "growth": {"type": "number", "exclusiveMinimum": 1, "description": "Size growth per unit distance is growth - 1, capped at gradation - 1; default gradation"},
+            "frame": frame
+        }),
+        &["distance", "growth", "frame"],
+    );
+    let region = input(
+        json!({
+            "kind": {"const": "region"}, "name": name,
+            "shape": {"oneOf": [cuboid, slab, cylinder]},
+            "size": positive, "frame": frame
+        }),
+        &["frame"],
+    );
+    let frame_def = object_schema(json!({"name": name, "origin": p, "x_axis": p, "y_axis": p}));
+    input(
+        json!({
+            "min_size": positive,
+            "max_size": {"type": "number", "exclusiveMinimum": 0, "description": "Also the size where no source applies"},
+            "gradation": {"type": "number", "exclusiveMinimum": 1, "description": "Largest neighbour size ratio; bounds the field slope by gradation - 1"},
+            "relaxation_iterations": {"type": "integer", "minimum": 0, "description": "Lloyd (CVT) iterations; default 20"},
+            "frames": {"type": "array", "items": frame_def},
+            "sources": {"type": "array", "items": {"oneOf": [datum, region]}}
+        }),
+        &["relaxation_iterations", "frames", "sources"],
+    )
 }
 
 pub(crate) fn channel_config() -> Value {
@@ -176,10 +240,14 @@ pub(crate) fn output_schema(name: &str) -> Value {
                 }))
             }))
         }
-        "generate_stl_mesh" => object_schema(json!({
-            "schema_version": version, "artifact_schema_version": { "const": SURFACE_ARTIFACT_VERSION },
-            "artifact": string, "build": build
-        })),
+        "generate_stl_mesh" => input(
+            json!({
+                "schema_version": version, "artifact_schema_version": { "const": SURFACE_ARTIFACT_VERSION },
+                "artifact": string, "build": build,
+                "sizing": { "type": "object", "description": "Present when a size field placed the sites: the seeding and the achieved sizes per source (GRD-08)" }
+            }),
+            &["sizing"],
+        ),
         "check_mesh" => check,
         "mesh_report" => {
             let cell = object_schema(json!({

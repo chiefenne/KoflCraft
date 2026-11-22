@@ -5,14 +5,15 @@
 The verification grade of every feature (AG-17), how it was checked and what is still missing. A partial result is never presented as success; every tool result also carries a `limitations` list.
 
 - **verified** (7): checked against an exact or independent reference by a named test
-- **partial** (6): works on the named fixtures, with known gaps
+- **partial** (7): works on the named fixtures, with known gaps
 - **unverified** (1): built, not yet checked
 - **open** (0): not built
 
 | Feature | Grade | How it was checked | Gaps | Requirements |
 |---|---|---|---|---|
 | M1 box clipped Voronoi, validation, VTU and Gmsh export, CLI and MCP | verified | 16/64/256-site lattice and clustered fixtures read back by independent VTU and MSH 4.1 readers and by Gmsh; CLI and MCP builds give equal topology digests and identical files; analytic two-cell metrics | All-pairs clipping only (ALG-04 open) | M1-01, M1-11 |
-| M2 STL import and convex STL meshing | partial | Unit and skewed boxes against the analytic box; malformed, inward, nonconvex and non-manifold shells rejected | Convex surfaces only; size control (ALG-05) open | M2, GEO-02 |
+| M2 STL import and convex STL meshing | partial | Unit and skewed boxes against the analytic box; malformed, inward, nonconvex and non-manifold shells rejected | Convex surfaces only; size control: see the next row | M2, GEO-02 |
+| M2 size control: size field from datum objects and coordinate regions, CVT seeding (ALG-05) | partial | Exact distances of every shape and the field's slope bound by unit tests; graded meshes on the unit and skewed boxes validate, the median cbrt(V)/h is within 5 % of 1 with p10 and p90 within 15 %, each source's cells reach its size within 10 % (median), equal inputs give equal meshes, the estimate equals the build, and edited evidence fails the digest; benchmark against DistMesh springs in research/m2-size-control.md | The gradation bounds the field; about 10 % of neighbour pairs exceed it on the cells and are reported. STL datum objects and curvature, gap and feature sizes (GRD-04) open; convex domains only; all-pairs clipping limits fields to 20,000 seeds (ALG-04) | ALG-05, GRD-01, GRD-02, GRD-03, GRD-05, GRD-08 |
 | Swept block and pipe with prism layers | partial | Exact block volume; pipe volume 0.0564 % below the cylinder; refinement and grading checks (docs/analytic-development.md) | Analytic shapes only | BL-01, BL-03 |
 | Straight channel with port-terminated layers (M3, BL-10) | partial | Native prisms and the Gmsh core subdivision share the tagged boundary; both full ports exported; colliding layers rejected (research/open-port-layers.md) | Planar walls only | BL-10 |
 | Nonconvex duct, bulk, layered and polyhedral (M4/M5 prototype) | partial | Elbow volume and patch areas to 1e-9; every layer reaches both ports | Needs a Gmsh scaffold and a Python preparation script (OPEN-07); fitted volume 0.183 % below the STL; the polyhedral dual has 10 faces with S·d ≤ 0; flow accuracy untested | M4, M5 |
@@ -44,6 +45,16 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 - `skewed_box_clips_against_the_surface_and_exports` in [tests/stl_workflow.rs](../tests/stl_workflow.rs)
 - `invalid_stl_shells_are_rejected` in [tests/stl_workflow.rs](../tests/stl_workflow.rs)
 - `stl_tools_reuse_check_and_export_for_a_skewed_surface` in [crates/mesh-mcp/tests/stdio.rs](../crates/mesh-mcp/tests/stdio.rs)
+
+### M2 size control: size field from datum objects and coordinate regions, CVT seeding (ALG-05)
+
+- `shape_distances_are_exact` in [crates/mesh-algorithms/src/sizing/field.rs](../crates/mesh-algorithms/src/sizing/field.rs)
+- `the_field_is_a_clamped_gradation_limited_minimum` in [crates/mesh-algorithms/src/sizing/field.rs](../crates/mesh-algorithms/src/sizing/field.rs)
+- `uniform_count_and_determinism` in [crates/mesh-algorithms/src/sizing/mod.rs](../crates/mesh-algorithms/src/sizing/mod.rs)
+- `size_field_grades_the_stl_mesh_and_reports_each_source` in [crates/mesh-engine/tests/size_field.rs](../crates/mesh-engine/tests/size_field.rs)
+- `every_shape_grades_an_angled_surface` in [crates/mesh-engine/tests/size_field.rs](../crates/mesh-engine/tests/size_field.rs)
+- `invalid_size_fields_are_diagnosed` in [crates/mesh-engine/tests/size_field.rs](../crates/mesh-engine/tests/size_field.rs)
+- `estimates_match_the_built_cell_counts` in [crates/mesh-cli/tests/kofl.rs](../crates/mesh-cli/tests/kofl.rs)
 
 ### Swept block and pipe with prism layers
 

@@ -196,8 +196,8 @@ fn kofl_mcp_serves_the_registry_and_journals() {
 }
 
 /// Invariant (AG-15): `kofl --check` predicts exactly the cells each
-/// generator then builds: box sites, channel grid, swept section, and the
-/// duct in all three modes. A generator change that alters its cell count
+/// generator then builds: box sites, STL seeds placed by a size field,
+/// channel grid, swept section, and the duct in all three modes. A generator change that alters its cell count
 /// without its estimate breaks it; no other test compares the two.
 #[test]
 fn estimates_match_the_built_cell_counts() {
@@ -205,6 +205,8 @@ fn estimates_match_the_built_cell_counts() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../test-fixtures");
     for f in [
         "straight-channel.json",
+        "unit-box.stl",
+        "stl-size-field.json",
         "elbow/elbow.stl",
         "elbow/patches.json",
         "elbow/partition.json",
@@ -219,6 +221,9 @@ fn estimates_match_the_built_cell_counts() {
     )
     .unwrap();
     let built = |v: &Value| -> u64 {
+        if let Some(seeds) = v["sizing"]["seeds"].as_u64() {
+            return seeds;
+        }
         let r = &v["report"];
         if r["cells"].is_u64() {
             return r["cells"].as_u64().unwrap();
@@ -228,8 +233,17 @@ fn estimates_match_the_built_cell_counts() {
             .map(|k| r[k].as_u64().unwrap_or(0))
             .sum()
     };
-    let cases: [(&[&str], Option<u64>); 6] = [
+    let cases: [(&[&str], Option<u64>); 7] = [
         (&["generate", "box.json", "m.json"], Some(4)),
+        (
+            &[
+                "generate-stl",
+                "unit-box.stl",
+                "stl-size-field.json",
+                "sf.json",
+            ],
+            None,
+        ),
         (&["generate-channel", "straight-channel.json", "ch"], None),
         (&["generate-sweep", "sweep.json", "sw"], None),
         (
