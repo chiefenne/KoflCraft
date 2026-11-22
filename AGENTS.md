@@ -47,6 +47,11 @@ in the same form as the companion solver
   translate it (LIC-03, LIC-09).
 - **MUST** build algorithms from papers and documented formats and cite them
   in `research/` or the relevant doc.
+- **MUST** look for algorithms first in the computer graphics and geometry
+  processing literature, above all the work of Keenan Crane (CMU) and Bruno
+  Lévy (INRIA) (OBJ-19), and benchmark the candidate against the classical
+  method before choosing, with the outcome in a `research/` note (ALG-16).
+  The papers are the source; their authors' code follows the rules above.
 - **MAY** run Gmsh and other copyleft programs as separate processes for
   tests and fixture preparation only; never link them.
 - **MUST** record the provenance of every fixture beside it (LIC-10).

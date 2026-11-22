@@ -26,7 +26,7 @@
 | OBJ-04 | D | Begin with a constrained, testable prototype rather than a production mesher. | M1 |
 | OBJ-05 | D | Follow the development method of the ArtCraft Craft Anything apps, as FoehnCraft does: one Rust engine with thin front ends, every behaviour a registered tool, headless first, honest status, rules and lessons in the repository, clean room. Work in a *Study → Plan → Build → Check → Approve* loop with reproducible evidence. | Reworked 2026-11-22; details in sections 7 and 7a. The method is adopted, not the products' behaviour |
 | OBJ-06 | D | Expose the same underlying operations via Rust library, CLI, and MCP server. | Minimal set from M1 |
-| OBJ-07 | D | Assess suitable computer-graphics and computational-geometry research before committing to major meshing algorithms. | Ongoing |
+| OBJ-07 | D | Assess suitable computer-graphics and computational-geometry research before committing to major meshing algorithms. | Ongoing; sharpened into the guiding principle OBJ-19 on 2026-11-22 |
 | OBJ-08 | L | Support demanding industrial mesh scales of approximately 1–10 million cells. | Performance milestone, not M1 |
 | OBJ-09 | L | Generate prismatic boundary-layer meshes with conformal polyhedral core transitions. | After basic bulk meshing |
 | OBJ-10 | L | Provide GPU-accelerated execution for algorithms shown to benefit from it. | CPU baseline first; optional GPU backend |
@@ -35,6 +35,7 @@
 | OBJ-14 | D | Implement algorithms independently from published mathematics and algorithms; do not copy or translate third-party source code. | Clean-room engineering process |
 | OBJ-15 | D | Keep a traceable, versioned research-to-requirement-to-implementation record. | Publications and design rationale, no source-code reuse |
 | OBJ-16 | L | Investigate wall-normal refinement using Voronoi seed distributions *without* a conventional prism stack. | Alternative near-wall meshing, not a replacement for committed prism-layer support |
+| OBJ-19 | D | **Guiding principle (maintainer, 2026-11-22): the algorithms of KoflCraft come from the computer graphics and geometry processing community.** The key people are **Keenan Crane (Carnegie Mellon University)** and **Bruno Lévy (INRIA)** and their groups. For every geometry or meshing topic, their published methods and the papers that build on them are the first candidates; a classical CFD-mesher method replaces them only where a measured benchmark shows the graphics method falls short, and the decision records why (ALG-16). | Section 9a lists the topics and the candidates. Fits the clean-room policy (section 14) because the sources are published papers, not code |
 | OBJ-12 | P | Offer an interactive 3D GUI. | Headless-first architecture. If built, it dispatches the same tool ids as the CLI and MCP (AG-12) and follows FoehnCraft's GUI rules (its L7: translation keys, keyboard use, accessibility tree, theme tokens) |
 | OBJ-17 | D | Be the mesher of the Craft family: every KoflCraft volume mesh is directly usable by FoehnCraft without conversion by a third tool. | Section 16. FoehnCraft defers its own general mesher (its L8) and reads meshes from files |
 | OBJ-18 | L | Support multi-physics meshes: several named cell zones (fluid, solid, porous) in one conformal mesh, with named region interfaces, for conjugate heat transfer and the region model of FoehnCraft (its D112, D113). | After single-region boundary-layer meshing (M5) |
@@ -111,6 +112,7 @@ Grades follow AG-17: **verified** (checked against an exact or independent refer
 | ALG-13 | D | Accept no missing cell fragments or non-conservative topology arising from heuristic neighbor cutoffs. | Any accelerated candidate search must be verified against an exact/reliable geometric completeness criterion or CPU reference. |
 | ALG-14 | P | Conforming mirror-seed/VoroCrust-style construction rather than surface clipping. | Research alternative for future geometry, **not** the M1 algorithm. |
 | ALG-15 | P | Voronoi seeds with wall-normal anisotropic spacing instead of explicit prism stacks. | Compare in CFD validation for WMLES and wall-resolved requirements. |
+| ALG-16 | D | **Graphics-first selection rule.** Each algorithm choice has a design note in `research/` that names the computer graphics / geometry processing candidate (OBJ-19), the classical alternative, and a benchmark on the project fixtures that compares them for validity first (closed cells, conservation, no inverted cells), then robustness on the hard fixtures, then speed and memory. The note records the outcome even when the classical method wins. | Same rule as FoehnCraft's 2026-11-21 decision on geometry topics (robust mesh Booleans, fast winding numbers, dual contouring, narrow-band distance grids, heat and signed heat methods). Extends OBJ-15 |
 
 **Important algorithm caveat:** The clipped-Voronoi M1 algorithm assumes a convex box. Simply clipping Voronoi cells against arbitrary non-convex domains or triangle soups does not guarantee valid CFD cells; extension needs a robust boundary-conforming strategy.
 
@@ -264,7 +266,7 @@ The table keeps AG-01 to AG-11 and adds AG-12 to AG-21. The FoehnCraft column na
 
 ## 9. Research watchlist and decision evidence
 
-Research is an explicit development workstream, not a fixed algorithm selection. Papers below are relevant leads, not proof of full CFD meshing capability.
+Research is an explicit development workstream, not a fixed algorithm selection. Papers below are relevant leads, not proof of full CFD meshing capability. Under OBJ-19 the computer graphics and geometry processing literature, above all the work of Keenan Crane (CMU) and Bruno Lévy (INRIA), is where algorithm candidates are looked for first; section 9a maps their work to project topics.
 
 | Status | Paper / group | Why relevant | Project interpretation |
 |---|---|---|---|
@@ -282,6 +284,24 @@ Research is an explicit development workstream, not a fixed algorithm selection.
 | D | *Anisotropic boundary layer surface mesh generation by improved advancing-front/local-reconnection approach* (2026) | Advancing layer and local reconnection ideas | Relevant to BL research, **surface** layering specifically |
 | P | RWTH Aachen field-aligned and hexahedral meshing work | Structure/quality insights | Lower priority for unrestricted polyhedra |
 | P | Bruno Lévy and collaborators' Geogram Voronoi/power diagram papers | Mature conceptual foundations | Reimplement selected ideas in Rust, subject to licenses |
+
+## 9a. Computer graphics principle: key groups and topics
+
+Decided by the maintainer on 2026-11-22 (OBJ-19). The table maps topics KoflCraft needs to published work of the two key groups. It lists leads for the design notes of ALG-16 and commits to no algorithm. Entries cite only works already in the watchlist above or named in FoehnCraft's requirements; further papers are added to `research/` when a design note reads them.
+
+| Topic | Candidate from the key groups | Where it enters | Status |
+|---|---|---|---|
+| Clipped and restricted Voronoi, power diagrams, efficient neighbour search | Lévy and collaborators: Yan, Wang, Lévy & Liu (2010); the Voronoi and power diagram papers behind Lévy's Geogram library | M1 clipper (done, all-pairs), ALG-04 neighbour search, ALG-06, nonconvex domains in M4 | Studied (2010 paper); the Geogram line is **P** |
+| Robust geometric predicates and exact constructions | Lévy (2025), *Exact Predicates, Exact Constructions and Combinatorics for Mesh CSG* | ALG-09, OPEN-06, STL clipping and boundary conformity (M4) | **High priority** to study |
+| Mesh Booleans and intersections on imperfect surfaces | Lévy (2025), as above | Port termination and layer collision handling (M5), imprinting for FoehnCraft's immersed-boundary plan (FC-08) | Lead |
+| Signed distance, inside/outside, wall distance on imperfect surfaces | Feng & Crane (2024), *A Heat Method for Generalized Signed Distance*; Crane, Weischedel & Wardetzky (2013), the heat method for distance, as FoehnCraft cites it | Layer growth directions and local thickness limits in gaps (BL-04, BL-05), FC-08 | Lead; FoehnCraft's D108/L13 plan names the same method |
+| Surface reconstruction that keeps thin features | Baktash, Gillespie & Crane, *Subgrid Marching Tetrahedra* | Preparing damaged STL input (GEO-05) | **P** |
+| Surface parameterization and remeshing under layers | Corman & Crane (2025), rectangular surface parameterization, as FoehnCraft cites it | Surface mesh quality under prism layers (BL-03, M5) | Lead |
+
+**Fit with the existing policy.**
+- **Watchlist:** it already contains five works of the two groups (rows for Yan et al. 2010, Lévy 2025, Feng & Crane 2024, Baktash et al., and the Geogram line). OBJ-19 turns them from leads into the first place to look. Non-graphics entries (Cadence, Discreetize, boundary-layer surface mesh paper) stay as leads for CFD-specific needs the graphics literature does not cover, mainly layers and near-wall resolution.
+- **Clean room and MIT (section 14):** nothing changes. Algorithms are built from the papers and their mathematics (LIC-02, LIC-03). The groups also publish software; LIC-09 applies to it like any other source: do not read copyleft code, permissively licensed code may be read and is never copied, and each library's licence is checked at the LIC-05 audit before anyone opens it. An author's reference implementation is not a licence to copy it.
+- **Limits of the principle:** a graphics paper often assumes a clean surface and aims at visual quality. KoflCraft needs closed, conforming, conserving cells (ALG-12, ALG-13), so a graphics method is accepted after the validity benchmark of ALG-16, never on the paper's claims alone. The patent assessment of LIC-08 still applies.
 
 ### Sources and starting URLs
 
@@ -421,6 +441,7 @@ The GPU algorithm pre-tetrahedralizes the domain, pairs candidate cells and tetr
 | LIC-09 | D | Do not read copyleft (GPL, LGPL, AGPL) meshing or geometry source code at all. Permissively licensed source may be read and is never copied. Copyleft programs, such as Gmsh, may run as separate processes for tests and fixture preparation; their output is data with recorded provenance. | Stricter clean room as FoehnCraft D201 and ArtCraft `clean-room.md`; replaces "licence permitting" readings |
 | LIC-10 | D | Every fixture and asset records its provenance (author, tool and version, licence) beside it. Geometry or numbers produced by proprietary meshers need a decision of their own before use as a reference. | ArtCraft A13; FoehnCraft D201 |
 | LIC-11 | D | Commercial meshers and codes may be named where appropriate (a file format, a published reference, a comparison), without breaking LIC-03 or their licences; trademarks used as format names are marked. | FoehnCraft owner decision 2026-11-22 |
+| LIC-12 | D | The graphics-community principle (OBJ-19) works through papers and mathematics only. Software published by the key groups is treated like any third-party source under LIC-03 and LIC-09. | Maintainer principle 2026-11-22; section 9a |
 
 **Dependency caveat:** As of 2026-11-17, `brepkit` v3+ is AGPL-3.0-only or commercial; versions through 2.129.x are reported MIT OR Apache-2.0. This only establishes possible *license* eligibility for a pinned historical version; it does not demonstrate suitability, maintenance, numerical robustness or permission to copy its implementation. The project will not depend on it at M1.
 
