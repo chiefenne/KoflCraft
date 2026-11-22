@@ -40,6 +40,10 @@ The guiding targets are:
 - **Agent-ready.** One Rust engine behind a command line and an MCP server,
   JSON in and out, every result with its evidence: input digests, algorithm,
   version, timings and validation.
+- **Graphics-grade geometry.** Algorithms come first from the computer
+  graphics and geometry processing community, above all the work of Keenan
+  Crane (CMU) and Bruno Lévy (INRIA), and are benchmarked before they are
+  adopted.
 - **Clean room.** Algorithms implemented from published papers and documented
   formats, MIT licensed, no copyleft code.
 
