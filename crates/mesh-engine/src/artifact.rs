@@ -10,6 +10,7 @@ use mesh_quality::{MeshDomain, MeshMetrics, validate_domain};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::sizing::SizingEvidence;
 use crate::{EngineError, ErrorCode, GeneratedMesh, GenerationError, MeshDirectory, generate_mesh};
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -82,6 +83,9 @@ pub struct MeshArtifact {
     mesh: PackedMesh,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     surface: Option<PackedSurface>,
+    /// How a size field placed the sites, and the sizes achieved (GRD-08).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sizing: Option<SizingEvidence>,
 }
 
 pub(crate) enum ArtifactDomain {
@@ -115,6 +119,10 @@ impl MeshArtifact {
         &self.build
     }
 
+    pub fn sizing(&self) -> Option<&SizingEvidence> {
+        self.sizing.as_ref()
+    }
+
     pub fn write_new(&self, dir: &MeshDirectory, name: &OsStr) -> Result<(), EngineError> {
         let mut data = serde_json::to_vec_pretty(self)
             .map_err(|error| EngineError::new(ErrorCode::SerializationFailed, error))?;
@@ -143,7 +151,8 @@ impl MeshArtifact {
             ));
         }
         if self.build.input_digest != input_digest(&self.config, self.surface.as_ref())?
-            || self.build.config_digest != config_digest(&self.config, self.surface.as_ref())?
+            || self.build.config_digest
+                != config_digest(&self.config, self.surface.as_ref(), self.sizing.as_ref())?
             || self.build.topology_digest != digest(&self.mesh.topology)?
             || self.build.mesh_digest != digest(&self.mesh)?
         {
@@ -184,7 +193,7 @@ pub fn build_mesh(config: MeshConfig) -> Result<MeshArtifact, EngineError> {
     let (domain, sites) = config.input()?;
     let started = Instant::now();
     let generated = generate_mesh(domain, &sites).map_err(generation_error)?;
-    pack_artifact(config, &generated, None, started)
+    pack_artifact(config, &generated, None, None, started)
 }
 
 pub(crate) fn generation_error(error: GenerationError) -> EngineError {
@@ -205,6 +214,7 @@ pub(crate) fn pack_artifact(
     config: MeshConfig,
     generated: &GeneratedMesh,
     surface: Option<&ConvexSurface>,
+    sizing: Option<SizingEvidence>,
     started: Instant,
 ) -> Result<MeshArtifact, EngineError> {
     let elapsed_micros = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
@@ -223,7 +233,7 @@ pub(crate) fn pack_artifact(
         debug_assertions: cfg!(debug_assertions),
         elapsed_micros,
         input_digest: input_digest(&config, surface.as_ref())?,
-        config_digest: config_digest(&config, surface.as_ref())?,
+        config_digest: config_digest(&config, surface.as_ref(), sizing.as_ref())?,
         topology_digest: digest(&mesh.topology)?,
         mesh_digest: digest(&mesh)?,
     };
@@ -233,6 +243,7 @@ pub(crate) fn pack_artifact(
         build,
         mesh,
         surface,
+        sizing,
     })
 }
 
@@ -434,13 +445,17 @@ fn input_digest(
     }
 }
 
+/// The sizing evidence joins the digest only when present, so artifacts
+/// built from explicit sites keep their digests.
 fn config_digest(
     config: &MeshConfig,
     surface: Option<&PackedSurface>,
+    sizing: Option<&SizingEvidence>,
 ) -> Result<String, EngineError> {
-    match surface {
-        Some(surface) => digest(&(config, surface)),
-        None => digest(config),
+    match (surface, sizing) {
+        (Some(surface), Some(sizing)) => digest(&(config, surface, sizing)),
+        (Some(surface), None) => digest(&(config, surface)),
+        (None, _) => digest(config),
     }
 }
 

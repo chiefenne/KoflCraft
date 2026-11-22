@@ -4,6 +4,7 @@ pub mod channel;
 mod export;
 pub mod handoff;
 mod report;
+pub mod sizing;
 mod stl;
 
 use std::fmt;
@@ -23,7 +24,10 @@ pub use report::{
     CellReport, DomainReport, FaceReport, MeshCheck, MeshReport, check_mesh, inspect_domain,
     mesh_report,
 };
-pub use stl::{StlDomainReport, StlMeshConfig, StlPatchReport, build_stl_mesh, inspect_stl_domain};
+pub use stl::{
+    StlDomainReport, StlMeshConfig, StlPatchReport, build_stl_mesh, inspect_stl_domain,
+    stl_site_count,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,6 +39,7 @@ pub enum ErrorCode {
     InvalidConnectivity,
     DigestMismatch,
     ValidationFailed,
+    InvalidSizeField,
     UnsupportedFormat,
     ExportFailed,
     IoError,

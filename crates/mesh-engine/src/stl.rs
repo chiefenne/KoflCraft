@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::artifact::{
     Point, SURFACE_ALGORITHM, generation_error, pack_artifact, point, require_schema, vector,
 };
+use crate::sizing::{SizeFieldConfig, evidence};
 use crate::{
     BoxBounds, EngineError, ErrorCode, MeshArtifact, MeshConfig, SCHEMA_VERSION,
     generate_surface_mesh,
@@ -17,7 +18,12 @@ use crate::{
 #[serde(deny_unknown_fields)]
 pub struct StlMeshConfig {
     pub schema_version: u32,
+    /// Explicit sites; leave empty when `size_field` places them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sites: Vec<[f64; 3]>,
+    /// The size field that places the sites (ALG-05, GRD-01 to GRD-05).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_field: Option<SizeFieldConfig>,
     pub fixture_id: Option<String>,
     pub seed: Option<u64>,
     /// Optional override with one name per triangle in the input file's order.
@@ -52,8 +58,14 @@ pub fn inspect_stl_domain(
     facet_limit: Option<usize>,
 ) -> Result<StlDomainReport, EngineError> {
     let surface = import(data, config, facet_limit)?;
-    validate_surface_sites(&surface, &site_vectors(&config.sites))
-        .map_err(|error| EngineError::new(ErrorCode::InvalidSites, error))?;
+    let site_count = match &config.size_field {
+        Some(field) => field.count(&surface)?,
+        None => {
+            validate_surface_sites(&surface, &site_vectors(&config.sites))
+                .map_err(|error| EngineError::new(ErrorCode::InvalidSites, error))?;
+            config.sites.len()
+        }
+    };
     let scale = surface.bounds().extent().max_abs_component();
     let mut patches: Vec<_> = surface
         .patch_names()
@@ -72,7 +84,7 @@ pub fn inspect_stl_domain(
     Ok(StlDomainReport {
         schema_version: SCHEMA_VERSION,
         bounds: bounds(&surface),
-        site_count: config.sites.len(),
+        site_count,
         facet_count: surface.facets().len(),
         vertex_count: surface.vertices().len(),
         volume: surface.volume(),
@@ -91,16 +103,46 @@ pub fn build_stl_mesh(
 ) -> Result<MeshArtifact, EngineError> {
     let surface = import(data, &config, facet_limit)?;
     let started = Instant::now();
-    let generated =
-        generate_surface_mesh(&surface, &site_vectors(&config.sites)).map_err(generation_error)?;
+    let (sites, sizing) = match &config.size_field {
+        Some(field_config) => {
+            let seed = config.seed.unwrap_or(0);
+            let (field, set) = field_config.seeds(&surface, seed)?;
+            (set.sites.clone(), Some((field_config, field, set, seed)))
+        }
+        None => (site_vectors(&config.sites), None),
+    };
+    let generated = generate_surface_mesh(&surface, &sites).map_err(generation_error)?;
+    let evidence = sizing.map(|(field_config, field, set, seed)| {
+        evidence(
+            field_config,
+            &field,
+            &set,
+            seed,
+            generated.mesh(),
+            generated.metrics(),
+        )
+    });
     let config = MeshConfig {
         schema_version: config.schema_version,
         domain: bounds(&surface),
-        sites: config.sites,
+        sites: sites.into_iter().map(point).collect(),
         fixture_id: config.fixture_id,
         seed: config.seed,
     };
-    pack_artifact(config, &generated, Some(&surface), started)
+    pack_artifact(config, &generated, Some(&surface), evidence, started)
+}
+
+/// The number of cells a build makes: the explicit sites, or the seed count
+/// of the size field (exact: the same function the build calls).
+pub fn stl_site_count(
+    data: &[u8],
+    config: &StlMeshConfig,
+    facet_limit: Option<usize>,
+) -> Result<usize, EngineError> {
+    match &config.size_field {
+        Some(field) => field.count(&import(data, config, facet_limit)?),
+        None => Ok(config.sites.len()),
+    }
 }
 
 fn import(
@@ -109,6 +151,12 @@ fn import(
     facet_limit: Option<usize>,
 ) -> Result<ConvexSurface, EngineError> {
     require_schema(config.schema_version)?;
+    if config.size_field.is_some() && !config.sites.is_empty() {
+        return Err(EngineError::new(
+            ErrorCode::InvalidSites,
+            "give either sites or a size_field, not both",
+        ));
+    }
     import_stl(
         data,
         StlOptions {

@@ -10,6 +10,7 @@ use mesh_engine::sweep::SweepConfig;
 use mesh_engine::{
     ExportData, MeshArtifact, MeshConfig, SCHEMA_VERSION, StlMeshConfig, build_mesh,
     build_stl_mesh, check_mesh, export_mesh, inspect_domain, inspect_stl_domain, mesh_report,
+    stl_site_count,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -149,8 +150,8 @@ pub(crate) fn generate(input: Value, ctx: &Context) -> Run {
 
 pub(crate) fn inspect_stl(input: Value, ctx: &Context) -> Run {
     let i: StlInput = decode(input)?;
-    sites(ctx, i.config.sites.len())?;
     let bytes = ctx.read(&i.surface)?;
+    sites(ctx, stl_site_count(&bytes, &i.config, facet_limit(ctx))?)?;
     Ok(json!(inspect_stl_domain(
         &bytes,
         &i.config,
@@ -160,17 +161,21 @@ pub(crate) fn inspect_stl(input: Value, ctx: &Context) -> Run {
 
 pub(crate) fn generate_stl(input: Value, ctx: &Context) -> Run {
     let i: GenerateStlInput = decode(input)?;
-    sites(ctx, i.config.sites.len())?;
-    let (dir, name) = ctx.target(&i.artifact)?;
     let bytes = ctx.read(&i.surface)?;
+    sites(ctx, stl_site_count(&bytes, &i.config, facet_limit(ctx))?)?;
+    let (dir, name) = ctx.target(&i.artifact)?;
     let artifact = build_stl_mesh(&bytes, i.config, facet_limit(ctx))?;
     artifact.write_new(&dir, &name)?;
-    Ok(json!({
+    let mut output = json!({
         "schema_version": SCHEMA_VERSION,
         "artifact_schema_version": artifact.schema_version(),
         "artifact": i.artifact,
         "build": artifact.build()
-    }))
+    });
+    if let Some(sizing) = artifact.sizing() {
+        output["sizing"] = json!(sizing);
+    }
+    Ok(output)
 }
 
 pub(crate) fn sweep(input: Value, ctx: &Context) -> Run {
@@ -293,7 +298,21 @@ pub(crate) fn limitations(id: &str, output: &Value) -> Vec<String> {
     let report = &output["report"];
     match id {
         "mesh.generate_stl" | "domain.inspect_stl" => {
-            l.push("convex STL surfaces only; mesh size control (ALG-05) is open".into())
+            l.push("convex STL surfaces only".into());
+            if let Some(sizing) = output.get("sizing") {
+                l.push(
+                    "size field: datum objects and coordinate regions only; curvature, gap and STL datum sources (GRD-04) are open".into(),
+                );
+                if let (Some(over), Some(total)) = (
+                    sizing["faces_over_gradation"].as_u64(),
+                    sizing["interior_faces"].as_u64(),
+                ) && over > 0
+                {
+                    l.push(format!(
+                        "{over} of {total} interior faces join cells whose size ratio exceeds the gradation; the limit bounds the size field, not each cell pair"
+                    ));
+                }
+            }
         }
         "mesh.generate_sweep" => {
             l.push("analytic block and pipe shapes only".into());
