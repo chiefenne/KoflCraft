@@ -182,6 +182,12 @@ impl ConvexPolyhedron {
         }))
     }
 
+    pub(crate) fn map_indexed_vertices(&mut self, map: impl Fn(usize, Vec3) -> Vec3) {
+        for (i, vertex) in self.vertices.iter_mut().enumerate() {
+            *vertex = map(i, *vertex);
+        }
+    }
+
     pub(crate) fn map_vertices(&mut self, map: impl Fn(Vec3) -> Vec3) {
         for vertex in &mut self.vertices {
             *vertex = map(*vertex);

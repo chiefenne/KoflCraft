@@ -251,3 +251,82 @@ fn seeded_near_wall_and_nearly_coincident_sites_remain_resolvable() {
         }
     }
 }
+
+/// The bisector neighbours of a cell, with each face's area and the cell's
+/// volume, independent of the order its faces were cut in.
+fn signature(cell: &ConvexPolyhedron, site: Vec3) -> (f64, Vec<(String, f64)>) {
+    let points = cell.vertices();
+    let mut faces: Vec<(String, f64)> = cell
+        .faces()
+        .iter()
+        .map(|face| {
+            let ids = face.vertices();
+            let a = points[ids[0]];
+            let area: f64 = ids[1..]
+                .windows(2)
+                .map(|p| (points[p[0]] - a).cross(points[p[1]] - a).length() / 2.0)
+                .sum();
+            (format!("{:?}", face.source()), area)
+        })
+        .collect();
+    faces.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    (volume_and_closedness(cell, site), faces)
+}
+
+/// Keep rule (SW-18). Invariant (ALG-04, ALG-13): clipping each cell by its
+/// nearest sites until the security radius proves it complete gives the
+/// same cells as the exhaustive all-pairs reference: the same bisector
+/// neighbours and boundary faces, face areas and volumes to round-off, on
+/// degenerate lattices (many cospherical sites), clustered sites and 2,000
+/// scattered sites with a 100:1 density range. A security test that stops
+/// too early drops a neighbour and fails here; the mesh validation would
+/// catch only a cell that no longer tiles the box.
+#[test]
+fn nearest_site_clipping_equals_the_all_pairs_reference() {
+    use koflcraft::voronoi::{Strategy, clipped_voronoi_with};
+    let mut cases: Vec<Vec<Vec3>> = fixtures::LATTICES
+        .iter()
+        .map(|&l| fixtures::lattice(l))
+        .collect();
+    cases.push(fixtures::lattice([8, 8, 8]));
+    cases.push(fixtures::clustered(256));
+    let mut seed = fixtures::SEED;
+    cases.push(
+        (0..2000)
+            .map(|_| {
+                // dense near the x = 0 face: x = u^3 spans two decades
+                let u = fixtures::sample(&mut seed);
+                Vec3::new(
+                    (u * u * u).clamp(1e-4, 1.0 - 1e-4),
+                    fixtures::sample(&mut seed).clamp(1e-4, 1.0 - 1e-4),
+                    fixtures::sample(&mut seed).clamp(1e-4, 1.0 - 1e-4),
+                )
+            })
+            .collect(),
+    );
+    for sites in &cases {
+        let fast = clipped_voronoi_with(unit_box(), sites, Strategy::Nearest).unwrap();
+        let slow = clipped_voronoi_with(unit_box(), sites, Strategy::AllPairs).unwrap();
+        assert_eq!(fast.len(), slow.len());
+        for (i, (a, b)) in fast.iter().zip(&slow).enumerate() {
+            let (va, fa) = signature(a, sites[i]);
+            let (vb, fb) = signature(b, sites[i]);
+            assert!(
+                (va - vb).abs() <= 1e-12,
+                "{} sites, cell {i}: volume {va} vs {vb}",
+                sites.len()
+            );
+            let names = |f: &[(String, f64)]| f.iter().map(|x| x.0.clone()).collect::<Vec<_>>();
+            assert_eq!(names(&fa), names(&fb), "{} sites, cell {i}", sites.len());
+            for (x, y) in fa.iter().zip(&fb) {
+                assert!(
+                    (x.1 - y.1).abs() <= 1e-12,
+                    "{} sites, cell {i}, face {}",
+                    sites.len(),
+                    x.0
+                );
+            }
+        }
+        generate_mesh(unit_box(), sites).unwrap();
+    }
+}

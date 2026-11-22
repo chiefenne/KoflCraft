@@ -17,7 +17,7 @@ use crate::{EngineError, ErrorCode};
 /// Lloyd iterations unless the config says otherwise (research/m2-size-control.md).
 pub const DEFAULT_RELAXATION_ITERATIONS: usize = 20;
 /// The largest seed count a size field may ask for while clipping is all-pairs (ALG-04).
-pub const MAX_SIZED_SEEDS: usize = 20_000;
+pub const MAX_SIZED_SEEDS: usize = 200_000;
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

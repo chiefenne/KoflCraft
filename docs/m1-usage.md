@@ -65,7 +65,7 @@ Configure the MCP client to launch `target/debug/kofl mcp --read-root /abs/input
 
 `mesh.report` returns a summary over MCP (AG-16): build evidence, validation, counts and extremes of the cell and face metrics (`summary`), and one page of rows (`page`: `rows` is `cells` or `faces`, then `offset`, `count`, `items` and `next_cursor`). Pass `next_cursor` back as `cursor` to get the next page, until it is null; the cells come first, then the faces. `page_size` sets the rows per page, at most 500. A cursor carries the start of the mesh digest and is refused (TOOL002) for another or a changed artifact. `kofl report` on the command line prints the full report; `kofl call mesh.report` pages only when given `cursor` or `page_size`.
 
-The server bounds each request to 256 KiB, file reads to 8 MiB, and reference workloads (256 sites, 2048 STL facets, 8 channel layers and 32 axial cells, 500 000 sweep cells, duct facets, layers and regions); a larger input fails with TOOL008. Path errors are TOOL006.
+The server bounds each request to 256 KiB, file reads to 8 MiB, and reference workloads (20,000 sites, of which an inline site list fits a few thousand within the request size; 2048 STL facets, 8 channel layers and 32 axial cells, 500 000 sweep cells, duct facets, layers and regions); a larger input fails with TOOL008. Path errors are TOOL006.
 
 ### Approvals (AG-15)
 
