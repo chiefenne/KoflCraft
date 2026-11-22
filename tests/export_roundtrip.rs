@@ -4,7 +4,9 @@ use koflcraft::clipping::{ConvexPolyhedron, FaceSource};
 use koflcraft::generate_mesh;
 use koflcraft::geometry::{AxisAlignedBox, Vec3};
 use koflcraft::mesh::{FaceAdjacency, Mesh};
-use koflcraft::mesh_export::{ExportError, PolyMeshWriters, write_gmsh, write_openfoam, write_vtu};
+use koflcraft::mesh_export::{
+    ExportError, GmshVersion, PolyMeshWriters, write_gmsh, write_openfoam, write_vtu,
+};
 
 fn unit_box() -> AxisAlignedBox {
     AxisAlignedBox::new(Vec3::ZERO, Vec3::new(1.0, 1.0, 1.0)).unwrap()
@@ -246,7 +248,7 @@ fn gmsh_triangulation_keeps_vertices_on_split_boundary_edges() {
     }
     let mesh = Mesh::from_faces(vertices, offsets, connectivity, adjacency, 1).unwrap();
     let mut msh = Vec::new();
-    write_gmsh(unit_box(), &mesh, &mut msh).unwrap();
+    write_gmsh(unit_box(), &mesh, GmshVersion::V2_2, &mut msh).unwrap();
     let text = String::from_utf8(msh).unwrap();
     assert!(text.contains("$Nodes\n12\n"));
     assert!(text.contains("9 0e0 0e0 5e-1\n"));

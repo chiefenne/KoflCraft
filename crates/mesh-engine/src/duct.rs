@@ -287,7 +287,7 @@ pub fn generate(
     let mut faces: [Vec<u8>; 3] = Default::default();
     let io = |e| EngineError::new(ErrorCode::ExportFailed, e);
     mesh_io::duct::volume(&mesh, &mut volume).map_err(io)?;
-    mesh_io::duct::gmsh(&mesh, &mut gmsh).map_err(io)?;
+    mesh_io::duct::gmsh(&mesh, mesh_io::GmshVersion::V4_1, &mut gmsh).map_err(io)?;
     for (i, out) in faces.iter_mut().enumerate() {
         mesh_io::duct::patch(&mesh, i + 1, out).map_err(io)?;
     }

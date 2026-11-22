@@ -140,7 +140,7 @@ pub fn generate(
     let mut vtu = Vec::new();
     export::volume(&mesh, &points, &mut vtu).map_err(io)?;
     let mut gmsh = Vec::new();
-    export::gmsh(&mesh, &points, &mut gmsh).map_err(io)?;
+    export::gmsh(&mesh, &points, mesh_io::GmshVersion::V4_1, &mut gmsh).map_err(io)?;
     let [inlet, outlet, walls] = export::patches(&mesh, &points).map_err(io)?;
     let multiblock = if profile.blind() {
         export::BLIND_MULTIBLOCK

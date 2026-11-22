@@ -131,7 +131,7 @@ pub fn generate_channel(
     let [mut inlet, mut outlet, mut walls] = std::array::from_fn(|_| Vec::new());
     let io = |e| EngineError::new(ErrorCode::ExportFailed, e);
     write_volume(&channel, &mut volume).map_err(io)?;
-    write_gmsh(&channel, &mut msh).map_err(io)?;
+    write_gmsh(&channel, mesh_io::GmshVersion::V4_1, &mut msh).map_err(io)?;
     for (patch, out) in [
         (ChannelPatch::Inlet, &mut inlet),
         (ChannelPatch::Outlet, &mut outlet),
