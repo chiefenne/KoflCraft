@@ -10,6 +10,7 @@
 
 pub mod context;
 pub mod diag;
+pub mod journal;
 mod markdown;
 mod mesh;
 mod schemas;
@@ -21,6 +22,7 @@ use serde_json::{Value, json};
 
 pub use context::{Context, Limits};
 pub use diag::{CODES, Diagnostic};
+pub use journal::{Journal, ReplayInput, call_journaled};
 pub use markdown::markdown;
 pub use mesh::{
     ArtifactInput, ChannelInput, ConfigInput, DuctInput, ExportInput, GenerateInput,
@@ -279,6 +281,22 @@ pub static TOOLS: &[Tool] = &[
         output_schema: out!("export_mesh"),
         run: mesh::export,
     },
+    Tool {
+        id: "journal.replay",
+        version: 1,
+        action: Action::StartBuild,
+        summary: "Run the calls of a journal again and report each one whose status, exit code or result digest differs from its record (AG-13). Outputs of the journal must not exist yet.",
+        legacy_name: None,
+        outputs: &[],
+        input_schema: || {
+            schemas::input(
+                json!({"script": schemas::path(), "keep_going": {"type": "boolean"}}),
+                &["keep_going"],
+            )
+        },
+        output_schema: || json!({"type": "object", "description": "`koflcraft.replay`"}),
+        run: journal::replay,
+    },
 ];
 
 /// The tool with this id (or legacy `mesh-mcp` name).
@@ -368,7 +386,14 @@ pub fn call(id: &str, input: Value, ctx: &Context) -> Envelope {
             diagnostics: Vec::new(),
             seconds: 0.0,
         },
-        Err(d) => Envelope::error(tool.id, tool.version, d),
+        Err(mut d) => {
+            let report = d.report.take();
+            let mut e = Envelope::error(tool.id, tool.version, d);
+            if let Some(r) = report {
+                e.result = *r;
+            }
+            e
+        }
     };
     envelope.seconds = start.elapsed().as_secs_f64();
     envelope

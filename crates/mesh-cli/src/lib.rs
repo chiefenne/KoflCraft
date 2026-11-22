@@ -12,12 +12,13 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-use mesh_tools::{Context, Diagnostic, Envelope};
+use mesh_tools::{Context, Diagnostic, Envelope, Journal, call_journaled};
 use serde_json::{Value, json};
 
-const USAGE: &str = "Usage:
+const USAGE: &str = "Usage: kofl [--journal FILE] COMMAND
   kofl commands [--markdown]
   kofl call TOOL_ID [--input FILE|-]
+  kofl run --script JOURNAL [--keep-going]
   kofl diag codes
   kofl info
   kofl inspect CONFIG.json
@@ -32,7 +33,9 @@ const USAGE: &str = "Usage:
   kofl export ARTIFACT.json vtu|gmsh|gmsh-2.2|foehncraft OUTPUT
   kofl export ARTIFACT.json openfoam NEW_OUTPUT_DIR
 
-`mesh-cli` accepts the same commands.";
+`--journal FILE` (or `KOFL_JOURNAL`) appends every tool call to a
+journal that `kofl run --script` replays. `mesh-cli` accepts the same
+commands.";
 
 /// What a command line asks for.
 enum Request {
@@ -45,12 +48,23 @@ enum Request {
 }
 
 pub fn main(program: &str) -> ExitCode {
-    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let mut args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let mut journal_flag = None;
+    if args.len() >= 2 && args[0] == "--journal" {
+        journal_flag = Some(std::path::PathBuf::from(args.remove(1)));
+        args.remove(0);
+    }
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
         println!("{}", USAGE.replace("kofl ", &format!("{program} ")));
         return ExitCode::SUCCESS;
     }
     let ctx = Context::cli();
+    let journal = match Journal::from_env(journal_flag.as_deref()) {
+        None => None,
+        Some(Ok(j)) => Some(j),
+        Some(Err(e)) => return fail(&Diagnostic::new("journal_failed", e)),
+    };
+    let journal = journal.as_ref();
     match parse(&args) {
         Err(d) => fail(&d),
         Ok(Request::Text(text)) => {
@@ -58,7 +72,7 @@ pub fn main(program: &str) -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(Request::Call(id, input)) => {
-            let envelope = mesh_tools::call(&id, input, &ctx);
+            let envelope = call_journaled(&id, input, &ctx, journal);
             if let Err(e) = print_json(&envelope) {
                 return fail(&Diagnostic::new("io_error", e));
             }
@@ -68,16 +82,16 @@ pub fn main(program: &str) -> ExitCode {
                 ExitCode::from(envelope.exit_code.clamp(1, 255) as u8)
             }
         }
-        Ok(Request::Classic(id, input)) => {
-            let envelope = mesh_tools::call(id, input, &ctx);
-            classic(envelope)
-        }
+        Ok(Request::Classic(id, input)) => classic(call_journaled(id, input, &ctx, journal)),
     }
 }
 
 fn classic(envelope: Envelope) -> ExitCode {
     if let Some(d) = envelope.diagnostics.first().filter(|_| !envelope.ok()) {
         return fail(d);
+    }
+    for d in &envelope.diagnostics {
+        eprintln!("warning: {d}");
     }
     match print_json(&envelope.result) {
         Ok(()) => ExitCode::SUCCESS,
@@ -145,6 +159,15 @@ fn parse(args: &[OsString]) -> Result<Request, Diagnostic> {
                 read_json(file)?
             };
             Request::Call(text(id)?.into(), input)
+        }
+        ("run", [flag, script]) if flag == "--script" => {
+            Request::Call("journal.replay".into(), json!({ "script": text(script)? }))
+        }
+        ("run", [flag, script, keep]) if flag == "--script" && keep == "--keep-going" => {
+            Request::Call(
+                "journal.replay".into(),
+                json!({ "script": text(script)?, "keep_going": true }),
+            )
         }
         ("inspect", [config]) => C("domain.inspect", json!({ "config": read_json(config)? })),
         ("generate", [config, artifact]) => C(

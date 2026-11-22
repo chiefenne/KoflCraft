@@ -207,6 +207,10 @@ pub struct Diagnostic {
     pub fix: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// A result that goes with the error (a replay report); `call` moves
+    /// it into the envelope's `result`.
+    #[serde(skip)]
+    pub report: Option<Box<serde_json::Value>>,
 }
 
 impl Diagnostic {
@@ -220,11 +224,17 @@ impl Diagnostic {
             message: message.to_string(),
             fix: c.fix,
             path: None,
+            report: None,
         }
     }
 
     pub fn with_path(mut self, path: impl std::fmt::Display) -> Self {
         self.path = Some(path.to_string());
+        self
+    }
+
+    pub fn with_report(mut self, report: serde_json::Value) -> Self {
+        self.report = Some(Box::new(report));
         self
     }
 }

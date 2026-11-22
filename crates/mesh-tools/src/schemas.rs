@@ -196,7 +196,10 @@ pub(crate) fn output_schema(name: &str) -> Value {
                 "faces": { "type": "array", "items": face }
             }))
         }
-        "export_mesh" => object_schema(json!({ "schema_version": version, "output": string })),
+        "export_mesh" => object_schema(json!({
+            "schema_version": version, "output": string, "format": string,
+            "files": { "type": "array", "items": object_schema(json!({ "path": string, "sha256": digest })) }
+        })),
         _ => json!({ "type": "object" }),
     }
 }
