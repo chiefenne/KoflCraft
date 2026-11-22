@@ -8,7 +8,7 @@ This review applies to the versions selected in [Cargo.lock](../Cargo.lock). Reg
 | `serde_json` | 1.0.154 for JSON and binary64 round trips | [serde-rs/json](https://github.com/serde-rs/json) |
 | `sha2` | 0.11.1 for SHA-256 artifact and evidence digests | [RustCrypto/hashes](https://github.com/RustCrypto/hashes) |
 | `cap-std` | 4.0.3 for directory-scoped filesystem access | [Bytecode Alliance cap-std](https://github.com/bytecodealliance/cap-std) |
-| `toml` | 1.2.1, only in `xtask`, to read `docs/features.toml` (AG-17); later the MCP policy file (AG-15). Added 2026-11-22 by the maintainer's decision; it and its new dependencies `toml_datetime`, `toml_parser`, `toml_writer`, `serde_spanned`, `indexmap`, `hashbrown`, `equivalent` are MIT OR Apache-2.0, `winnow` is MIT (checked in each crate's `Cargo.toml`) | [toml-rs/toml](https://github.com/toml-rs/toml) |
+| `toml` | 1.2.1, in `xtask`, to read `docs/features.toml` (AG-17), and in `mesh-mcp`, to read the `--policy` file (AG-15). Added 2026-11-22 by the maintainer's decision; it and its new dependencies `toml_datetime`, `toml_parser`, `toml_writer`, `serde_spanned`, `indexmap`, `hashbrown`, `equivalent` are MIT OR Apache-2.0, `winnow` is MIT (checked in each crate's `Cargo.toml`) | [toml-rs/toml](https://github.com/toml-rs/toml) |
 
 The lockfile dependencies offer MIT except the Windows-only `winx` platform helper, which uses Apache-2.0 with the LLVM exception. The `unicode-ident` package also applies Unicode-3.0 to its Unicode-derived tables. These permissive terms are accepted for this dependency set. The project-wide allowlist in LIC-07 remains open. [winx upstream repository](https://github.com/sunfishcode/winx), [unicode-ident licensing](https://docs.rs/crate/unicode-ident/1.0.27)
 

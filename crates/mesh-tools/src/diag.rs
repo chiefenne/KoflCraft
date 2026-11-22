@@ -102,6 +102,31 @@ pub const CODES: &[Code] = &[
         Some("Run the tool from the command line, which has no limits, or reduce the input."),
     ),
     code(
+        "TOOL009",
+        "approval_required",
+        Error,
+        "The build needs approval under the MCP policy (`ask`), but the MCP client cannot ask (it has no elicitation capability).",
+        Some(
+            "Use an MCP client with elicitation, set the rule to `allow` in the policy file, or run the build from the command line.",
+        ),
+    ),
+    code(
+        "TOOL010",
+        "approval_declined",
+        Error,
+        "The person declined or cancelled the approval of this build.",
+        None,
+    ),
+    code(
+        "TOOL011",
+        "policy_refused",
+        Error,
+        "The MCP policy refuses this action (`refuse`).",
+        Some(
+            "Change the rule in the policy file given with `--policy`, or run the build from the command line.",
+        ),
+    ),
+    code(
         "IN001",
         "unsupported_schema",
         Error,

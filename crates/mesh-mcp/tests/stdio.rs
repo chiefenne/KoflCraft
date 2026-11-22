@@ -433,3 +433,142 @@ impl Drop for WorkDirectory {
         let _ = fs::remove_dir_all(self.path());
     }
 }
+
+fn init_with(elicitation: bool) -> [Value; 2] {
+    let capabilities = if elicitation {
+        json!({ "elicitation": {} })
+    } else {
+        json!({})
+    };
+    [
+        rpc(
+            0,
+            "initialize",
+            json!({
+                "protocolVersion": "2025-11-25",
+                "capabilities": capabilities,
+                "clientInfo": { "name": "test", "version": "1" }
+            }),
+        ),
+        json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+    ]
+}
+
+fn approval(n: u32, approve: bool) -> Value {
+    json!({ "jsonrpc": "2.0", "id": format!("koflcraft-approval-{n}"),
+            "result": { "action": "accept", "content": { "approve": approve } } })
+}
+
+/// Invariant (AG-15): with the decided defaults a build within the limits
+/// runs without a prompt; a build over them (by estimate, or by an input
+/// limit) asks through MCP elicitation and runs only on an explicit
+/// approval; without elicitation it fails with TOOL009, a decline with
+/// TOOL010, a `refuse` rule with TOOL011, and nothing is written in those
+/// cases. A policy file inside a write root is refused at start.
+/// Dropping the estimate check, or treating a missing answer as approval,
+/// breaks it; no other test drives the approval path.
+#[test]
+fn builds_over_the_limits_need_approval() {
+    let work = WorkDirectory::new();
+    let policies = WorkDirectory::new();
+    let config: Value =
+        serde_json::from_slice(include_bytes!("../../../test-fixtures/box-4.json")).unwrap();
+    let policy = |name: &str, text: &str| {
+        let path = policies.path().join(name);
+        fs::write(&path, text).unwrap();
+        path
+    };
+    let small = policy("small.toml", "[limits]\nmax_build_cells = 2\n");
+    let sites = policy("sites.toml", "[limits]\nmax_sites = 2\n");
+    let refuse = policy("refuse.toml", "[policy]\nstart_build = \"refuse\"\n");
+    let generate = |id: u32, artifact: &str| {
+        call(
+            id,
+            "mesh.generate",
+            json!({ "config": config, "artifact": artifact }),
+        )
+    };
+    let serve = |policy: Option<&Path>, requests: &[Value]| {
+        let mut args: Vec<&std::ffi::OsStr> = vec![
+            "--read-root".as_ref(),
+            work.path().as_os_str(),
+            "--write-root".as_ref(),
+            work.path().as_os_str(),
+        ];
+        if let Some(p) = policy {
+            args.extend(["--policy".as_ref(), p.as_os_str()]);
+        }
+        run_with(&args, requests)
+    };
+    let envelope = |r: &Value| r["result"]["structuredContent"].clone();
+
+    // defaults: four cells are within the limits, no prompt
+    let mut requests = init_with(true).to_vec();
+    requests.push(generate(1, "a.json"));
+    let r = serve(None, &requests);
+    assert_eq!(r.len(), 2, "no elicitation request expected: {r:?}");
+    assert_eq!(envelope(&r[1])["status"], "finished");
+
+    // over max_build_cells, client cannot ask: TOOL009
+    let mut requests = init_with(false).to_vec();
+    requests.push(generate(1, "b.json"));
+    let r = serve(Some(&small), &requests);
+    assert_eq!(envelope(&r[1])["diagnostics"][0]["code"], "TOOL009");
+    assert!(!work.path().join("b.json").exists());
+
+    // over max_build_cells, the person approves: built, with a limitation
+    let mut requests = init_with(true).to_vec();
+    requests.extend([generate(1, "c.json"), approval(1, true)]);
+    let r = serve(Some(&small), &requests);
+    assert_eq!(r[1]["method"], "elicitation/create");
+    assert!(
+        r[1]["params"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("4 cells")
+    );
+    assert_eq!(envelope(&r[2])["status"], "finished", "{}", r[2]);
+    assert!(work.path().join("c.json").is_file());
+    assert!(
+        envelope(&r[2])["limitations"]
+            .to_string()
+            .contains("with approval")
+    );
+
+    // the person declines: TOOL010, nothing written
+    let mut requests = init_with(true).to_vec();
+    requests.extend([generate(1, "d.json"), approval(1, false)]);
+    let r = serve(Some(&small), &requests);
+    assert_eq!(envelope(&r[2])["diagnostics"][0]["code"], "TOOL010");
+    assert!(!work.path().join("d.json").exists());
+
+    // an input limit (sites) counts as over the limits too
+    let mut requests = init_with(false).to_vec();
+    requests.push(generate(1, "e.json"));
+    let r = serve(Some(&sites), &requests);
+    assert_eq!(envelope(&r[1])["diagnostics"][0]["code"], "TOOL009");
+    assert!(!work.path().join("e.json").exists());
+
+    // a refuse rule
+    let mut requests = init_with(true).to_vec();
+    requests.push(generate(1, "f.json"));
+    let r = serve(Some(&refuse), &requests);
+    assert_eq!(envelope(&r[1])["diagnostics"][0]["code"], "TOOL011");
+    assert!(!work.path().join("f.json").exists());
+
+    // a policy file inside the write root is refused at start
+    fs::write(work.path().join("kofl-mcp.toml"), "").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_mesh-mcp"))
+        .args([
+            "--read-root".as_ref(),
+            work.path().as_os_str(),
+            "--write-root".as_ref(),
+            work.path().as_os_str(),
+            "--policy".as_ref(),
+        ])
+        .arg(work.path().join("kofl-mcp.toml"))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}

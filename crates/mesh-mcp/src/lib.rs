@@ -4,6 +4,7 @@
 //! below the write roots (AG-14), with the MCP limits (AG-15). Every
 //! result is the registry's envelope (`koflcraft.tool-result`).
 
+mod policy;
 mod protocol;
 
 use std::ffi::OsString;
@@ -11,15 +12,20 @@ use std::io::{self, BufRead, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use mesh_tools::{Context, Journal, Limits};
+use mesh_tools::{Context, Journal};
+use serde_json::Value;
 
-use crate::protocol::{Session, rpc_error};
+pub use crate::policy::{Policy, Rule};
+use crate::protocol::{Peer, Session, rpc_error};
 
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
-pub const USAGE: &str = "Usage: kofl mcp --read-root DIR [--read-root DIR …] --write-root DIR [--write-root DIR …] [--journal FILE]
+pub const USAGE: &str = "Usage: kofl mcp --read-root DIR [--read-root DIR …] --write-root DIR [--write-root DIR …] [--policy FILE] [--journal FILE]
        mesh-mcp --output-dir DIR   (the same as --read-root DIR --write-root DIR)
 
-Relative paths in tool inputs resolve from the first write root.";
+Relative paths in tool inputs resolve from the first write root. The
+policy file (TOML, outside the write roots) sets `allow`, `ask` or
+`refuse` for builds and changes the limits; without it, builds within
+the limits run and larger ones ask through the client (AG-15).";
 
 /// The server's options.
 #[derive(Debug, Default, PartialEq)]
@@ -27,6 +33,7 @@ pub struct Options {
     pub read_roots: Vec<PathBuf>,
     pub write_roots: Vec<PathBuf>,
     pub journal: Option<PathBuf>,
+    pub policy: Option<PathBuf>,
 }
 
 /// Parse the arguments; the server refuses to start without both a read
@@ -48,6 +55,7 @@ pub fn parse(args: &[OsString]) -> Result<Options, String> {
                 o.write_roots.push(d);
             }
             Some("--journal") => o.journal = Some(next()?),
+            Some("--policy") => o.policy = Some(next()?),
             _ => return Err(format!("unknown argument {}", flag.to_string_lossy())),
         }
     }
@@ -70,10 +78,20 @@ pub fn main(args: Vec<OsString>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let policy = match &options.policy {
+        None => Policy::default(),
+        Some(path) => match Policy::load(path, &options.write_roots) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("mcp: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+    };
     let ctx = match Context::confined(
         options.read_roots,
         options.write_roots,
-        Some(Limits::mcp()),
+        Some(policy.limits.clone()),
         "mcp",
     ) {
         Ok(c) => c,
@@ -91,7 +109,7 @@ pub fn main(args: Vec<OsString>) -> ExitCode {
         }
     };
     match serve(
-        Session::new(ctx, journal),
+        Session::new(ctx, journal, policy),
         io::stdin().lock(),
         io::stdout().lock(),
     ) {
@@ -103,32 +121,96 @@ pub fn main(args: Vec<OsString>) -> ExitCode {
     }
 }
 
-fn serve(mut session: Session, mut input: impl BufRead, mut output: impl Write) -> io::Result<()> {
-    let mut frame = Vec::new();
-    loop {
-        frame.clear();
-        let bytes = (&mut input)
+/// Standard input and output as the transport, with the client as a peer
+/// for requests the server sends while a call waits.
+struct Transport<R, W> {
+    input: R,
+    output: W,
+    frame: Vec<u8>,
+}
+
+impl<R: BufRead, W: Write> Transport<R, W> {
+    /// The next frame, or `None` at the end of the input.
+    fn read(&mut self) -> io::Result<Option<Result<Vec<u8>, ()>>> {
+        self.frame.clear();
+        let bytes = (&mut self.input)
             .take(MAX_REQUEST_BYTES as u64 + 1)
-            .read_until(b'\n', &mut frame)?;
+            .read_until(b'\n', &mut self.frame)?;
         if bytes == 0 {
-            return Ok(());
+            return Ok(None);
         }
-        let response = if bytes > MAX_REQUEST_BYTES {
-            if frame.last() != Some(&b'\n') {
-                input.skip_until(b'\n')?;
+        if bytes > MAX_REQUEST_BYTES {
+            if self.frame.last() != Some(&b'\n') {
+                self.input.skip_until(b'\n')?;
             }
-            Some(rpc_error(
-                serde_json::Value::Null,
+            return Ok(Some(Err(())));
+        }
+        Ok(Some(Ok(std::mem::take(&mut self.frame))))
+    }
+
+    fn write(&mut self, value: &Value) -> io::Result<()> {
+        serde_json::to_writer(&mut self.output, value)?;
+        self.output.write_all(b"\n")?;
+        self.output.flush()
+    }
+}
+
+impl<R: BufRead, W: Write> Peer for Transport<R, W> {
+    fn request(&mut self, request: Value) -> io::Result<Value> {
+        self.write(&request)?;
+        loop {
+            let Some(frame) = self.read()? else {
+                return Err(io::Error::other("the client closed the connection"));
+            };
+            let Ok(frame) = frame else {
+                self.write(&rpc_error(
+                    Value::Null,
+                    -32600,
+                    "request exceeds the size limit",
+                ))?;
+                continue;
+            };
+            let Ok(message) = serde_json::from_slice::<Value>(&frame) else {
+                self.write(&rpc_error(Value::Null, -32700, "invalid JSON"))?;
+                continue;
+            };
+            if message.get("method").is_none() && message["id"] == request["id"] {
+                return Ok(message);
+            }
+            // another request while the approval is open: one call at a time
+            if message.get("method").is_some()
+                && let Some(id) = message.get("id")
+            {
+                self.write(&rpc_error(
+                    id.clone(),
+                    -32000,
+                    "busy: waiting for the person to approve a build",
+                ))?;
+            }
+        }
+    }
+}
+
+fn serve(mut session: Session, input: impl BufRead, output: impl Write) -> io::Result<()> {
+    let mut t = Transport {
+        input,
+        output,
+        frame: Vec::new(),
+    };
+    loop {
+        let Some(frame) = t.read()? else {
+            return Ok(());
+        };
+        let response = match frame {
+            Err(()) => Some(rpc_error(
+                Value::Null,
                 -32600,
                 "request exceeds the size limit",
-            ))
-        } else {
-            session.handle(&frame)
+            )),
+            Ok(frame) => session.handle(&frame, &mut t),
         };
         if let Some(response) = response {
-            serde_json::to_writer(&mut output, &response)?;
-            output.write_all(b"\n")?;
-            output.flush()?;
+            t.write(&response)?;
         }
     }
 }

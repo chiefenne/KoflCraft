@@ -9,8 +9,10 @@ use mesh_engine::MeshDirectory;
 use crate::diag::Diagnostic;
 
 /// Limits a front end puts on tool inputs. The command line has none; the
-/// MCP server uses [`Limits::mcp`] (the limits `mesh-mcp` had).
-#[derive(Clone, Debug, PartialEq)]
+/// MCP server uses [`Limits::mcp`] (the limits `mesh-mcp` had), which a
+/// policy file can change field by field (AG-15).
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Limits {
     pub max_sites: usize,
     pub max_surface_facets: usize,
@@ -23,6 +25,16 @@ pub struct Limits {
     pub max_duct_regions: usize,
     /// Rows per page of per-cell and per-face detail (AG-16).
     pub max_page_rows: usize,
+    /// Cells one build may make without approval (AG-15).
+    pub max_build_cells: usize,
+    /// Estimated output bytes one build may write without approval.
+    pub max_output_bytes: u64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self::mcp()
+    }
 }
 
 impl Limits {
@@ -38,6 +50,8 @@ impl Limits {
             max_duct_layers: 4,
             max_duct_regions: 64,
             max_page_rows: 500,
+            max_build_cells: 500_000,
+            max_output_bytes: 1 << 30,
         }
     }
 }
