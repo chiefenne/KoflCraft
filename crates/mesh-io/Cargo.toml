@@ -9,3 +9,4 @@ cap-std.workspace = true
 mesh-core.workspace = true
 mesh-quality.workspace = true
 mesh-algorithms.workspace = true
+serde.workspace = true

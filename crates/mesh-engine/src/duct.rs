@@ -291,18 +291,24 @@ pub fn generate(
     for (i, out) in faces.iter_mut().enumerate() {
         mesh_io::duct::patch(&mesh, i + 1, out).map_err(io)?;
     }
-    dir.write_bundle(
-        name,
-        &[
-            ("volume.vtu", &volume),
-            ("mesh.msh", &gmsh),
-            ("mesh.vtm", mesh_io::channel::MULTIBLOCK),
-            ("inlet.vtu", &faces[0]),
-            ("outlet.vtu", &faces[1]),
-            ("walls.vtu", &faces[2]),
-            ("report.json", &serde_json::to_vec_pretty(&report).unwrap()),
-        ],
-    )
-    .map_err(|e| EngineError::new(ErrorCode::IoError, e))?;
+    let report_json = serde_json::to_vec_pretty(&report)
+        .map_err(|e| EngineError::new(ErrorCode::SerializationFailed, e))?;
+    let handoff = mesh_io::duct::handoff(&mesh).map_err(crate::handoff::export_error)?;
+    let foehn = crate::handoff::foehncraft_vtu(&handoff, &[])?;
+    let mut files: Vec<(&str, &[u8])> = vec![
+        ("volume.vtu", &volume),
+        ("mesh.msh", &gmsh),
+        ("mesh.vtm", mesh_io::channel::MULTIBLOCK),
+        ("inlet.vtu", &faces[0]),
+        ("outlet.vtu", &faces[1]),
+        ("walls.vtu", &faces[2]),
+        ("report.json", &report_json),
+        (crate::handoff::FOEHNCRAFT_VTU, &foehn),
+    ];
+    let generator = report["algorithm"].as_str().unwrap_or("duct").to_string();
+    let evidence = crate::handoff::evidence(&handoff, &generator, &files)?;
+    files.push((crate::handoff::MESH_EVIDENCE, &evidence));
+    dir.write_bundle(name, &files)
+        .map_err(|e| EngineError::new(ErrorCode::IoError, e))?;
     Ok(report)
 }
