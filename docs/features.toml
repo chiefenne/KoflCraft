@@ -1,0 +1,204 @@
+# Verification grades of KoflCraft features (AG-17).
+#
+# `cargo xtask status` writes docs/status.md from this file; a test and the
+# CI `checks` job fail when the page is out of date or a listed test does
+# not exist.
+#
+# Grades:
+#   verified   — checked against an exact or independent reference by a named test
+#   partial    — works on the named fixtures, known gaps
+#   unverified — built, not yet checked
+#   open       — not built
+#
+# `tests` name test functions as "path/to/file.rs::function". A verified or
+# partial feature lists at least one. `commands` are further checks that run
+# in CI (for example the acceptance runner).
+
+[[feature]]
+id = "m1-box"
+title = "M1 box clipped Voronoi, validation, VTU and Gmsh export, CLI and MCP"
+requirements = ["M1-01", "M1-11"]
+grade = "verified"
+how = "16/64/256-site lattice and clustered fixtures read back by independent VTU and MSH 4.1 readers and by Gmsh; CLI and MCP builds give equal topology digests and identical files; analytic two-cell metrics"
+tests = [
+  "tests/box_voronoi.rs::deterministic_lattices_and_nonuniform_sites_partition_the_cube",
+  "tests/box_voronoi.rs::box_clipping_handles_crossings_coplanar_edges_and_tangency",
+  "tests/export_roundtrip.rs::two_cell_box_has_analytic_metrics",
+  "tests/export_roundtrip.rs::vtu_contains_complete_outward_polyhedron_faces",
+  "crates/mesh-cli/tests/workflow.rs::generate_check_report_and_export_round_trip",
+  "crates/mesh-mcp/tests/stdio.rs::stdio_tools_run_the_shared_engine_and_bound_writes",
+]
+commands = ["cargo m1 --require-gmsh"]
+gaps = "All-pairs clipping only (ALG-04 open)"
+
+[[feature]]
+id = "m2-stl"
+title = "M2 STL import and convex STL meshing"
+requirements = ["M2", "GEO-02"]
+grade = "partial"
+how = "Unit and skewed boxes against the analytic box; malformed, inward, nonconvex and non-manifold shells rejected"
+tests = [
+  "tests/stl_workflow.rs::triangulated_box_matches_the_analytic_box",
+  "tests/stl_workflow.rs::skewed_box_clips_against_the_surface_and_exports",
+  "tests/stl_workflow.rs::invalid_stl_shells_are_rejected",
+  "crates/mesh-mcp/tests/stdio.rs::stl_tools_reuse_check_and_export_for_a_skewed_surface",
+]
+commands = []
+gaps = "Convex surfaces only; size control (ALG-05) open"
+
+[[feature]]
+id = "sweep"
+title = "Swept block and pipe with prism layers"
+requirements = ["BL-01", "BL-03"]
+grade = "partial"
+how = "Exact block volume; pipe volume 0.0564 % below the cylinder; refinement and grading checks (docs/analytic-development.md)"
+tests = [
+  "crates/mesh-cli/tests/workflow.rs::analytic_benchmarks_have_fine_graded_cores_and_named_openings",
+  "crates/mesh-cli/tests/workflow.rs::sweep_refinement_reduces_cell_size_and_rejects_abrupt_grading",
+]
+commands = []
+gaps = "Analytic shapes only"
+
+[[feature]]
+id = "channel"
+title = "Straight channel with port-terminated layers (M3, BL-10)"
+requirements = ["BL-10"]
+grade = "partial"
+how = "Native prisms and the Gmsh core subdivision share the tagged boundary; both full ports exported; colliding layers rejected (research/open-port-layers.md)"
+tests = [
+  "tests/channel_gmsh.rs::native_channel_prisms_and_core_subdivision_share_the_tagged_boundary",
+  "crates/mesh-cli/tests/workflow.rs::channel_exports_both_full_ports_and_rejects_colliding_layers",
+]
+commands = []
+gaps = "Planar walls only"
+
+[[feature]]
+id = "duct"
+title = "Nonconvex duct, bulk, layered and polyhedral (M4/M5 prototype)"
+requirements = ["M4", "M5"]
+grade = "partial"
+how = "Elbow volume and patch areas to 1e-9; every layer reaches both ports"
+tests = [
+  "crates/mesh-cli/tests/workflow.rs::nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer",
+  "crates/mesh-algorithms/src/duct/intersection.rs::rejects_transverse_coplanar_and_shared_vertex_overlaps",
+]
+commands = []
+gaps = "Needs a Gmsh scaffold and a Python preparation script (OPEN-07); fitted volume 0.183 % below the STL; the polyhedral dual has 10 faces with S·d ≤ 0; flow accuracy untested"
+
+[[feature]]
+id = "foehncraft-handoff"
+title = "FoehnCraft hand-off: MSH 4.1, single-file VTU, names, evidence (FC-01, FC-02, FC-04 to FC-06)"
+requirements = ["FC-01", "FC-02", "FC-04", "FC-05", "FC-06"]
+grade = "partial"
+how = "CI reads 26 exports back with `foehn mesh`: counts, volume, closure and patch areas agree to 1e-12"
+tests = [
+  "crates/mesh-io/src/handoff.rs::foehncraft_vtu_holds_cells_faces_and_names",
+  "crates/mesh-io/src/handoff.rs::two_faces_between_one_pair_merge_into_one",
+  "crates/mesh-io/src/handoff.rs::handoff_names_are_bare_keys_and_unique",
+  "crates/mesh-io/src/msh.rs::both_versions_carry_the_same_model",
+]
+commands = ["cargo m1 --require-gmsh --require-foehn"]
+gaps = "FoehnCraft reports the polyhedral elbow invalid (inverted faces, see duct); binary MSH open"
+
+[[feature]]
+id = "openfoam"
+title = "OpenFOAM polyMesh export (FC-03)"
+requirements = ["FC-03"]
+grade = "unverified"
+how = "Written for every mesh type from the hand-off mesh, with patch types and cellZones; boundary ranges tile the faces"
+tests = [
+  "crates/mesh-io/src/handoff.rs::polymesh_boundary_tiles_the_faces",
+  "tests/export_roundtrip.rs::openfoam_files_parse_as_a_conforming_partition",
+]
+commands = []
+gaps = "No independent reader in tests or CI; the box round trip is an ignored test"
+
+[[feature]]
+id = "registry"
+title = "Tool registry, result envelope and diagnostic codes (AG-12, AG-18, FC-07)"
+requirements = ["AG-12", "AG-18", "FC-07"]
+grade = "verified"
+how = "Ids unique and dotted, schemas closed, docs/tools.md regenerated and compared, `kofl commands` and `kofl call` agree, codes unique and every engine code registered"
+tests = [
+  "crates/mesh-tools/src/lib.rs::ids_are_unique_and_dotted",
+  "crates/mesh-tools/src/lib.rs::schemas_are_closed_objects",
+  "crates/mesh-tools/src/diag.rs::codes_and_names_are_unique",
+  "crates/mesh-tools/src/diag.rs::every_engine_code_is_registered",
+  "crates/mesh-cli/tests/kofl.rs::tools_md_is_generated_from_the_registry",
+  "crates/mesh-cli/tests/kofl.rs::commands_and_call_agree",
+]
+commands = []
+gaps = ""
+
+[[feature]]
+id = "journal"
+title = "Journal and replay (AG-13)"
+requirements = ["AG-13"]
+grade = "verified"
+how = "A recorded session replays in a fresh directory with equal status, exit code and result digests; a changed call is reported as TOOL005; MCP calls are journaled"
+tests = [
+  "crates/mesh-cli/tests/kofl.rs::journal_replays_and_detects_a_changed_call",
+  "crates/mesh-cli/tests/kofl.rs::kofl_mcp_serves_the_registry_and_journals",
+]
+commands = []
+gaps = ""
+
+[[feature]]
+id = "roots"
+title = "Mandatory read and write roots for MCP (AG-14)"
+requirements = ["AG-14"]
+grade = "verified"
+how = "Reads outside the read roots and writes outside the write roots fail with TOOL006; symbolic links out of a root are refused; the server does not start without both roots"
+tests = [
+  "crates/mesh-mcp/tests/stdio.rs::read_and_write_roots_confine_every_call",
+  "crates/mesh-mcp/tests/stdio.rs::external_symlinks_cannot_be_used_as_artifacts_or_outputs",
+  "crates/mesh-mcp/src/lib.rs::roots_are_required",
+]
+commands = []
+gaps = ""
+
+[[feature]]
+id = "estimates"
+title = "Estimates, action kinds and approval policies (AG-15)"
+requirements = ["AG-15"]
+grade = "open"
+how = ""
+tests = []
+commands = []
+gaps = "Decided 2026-11-22: builds over MCP run without a prompt within the estimate and limits, otherwise ask; policies in kofl-mcp.toml"
+
+[[feature]]
+id = "paging"
+title = "Summary first, paged detail over MCP (AG-16)"
+requirements = ["AG-16"]
+grade = "open"
+how = ""
+tests = []
+commands = []
+gaps = "Decided 2026-11-22: only MCP pages mesh.report; the CLI keeps the full report"
+
+[[feature]]
+id = "grades"
+title = "Verification grades and limitations (AG-17)"
+requirements = ["AG-17"]
+grade = "verified"
+how = "docs/status.md is regenerated from this file and compared; every listed test must exist; every result envelope carries `limitations`"
+tests = [
+  "crates/xtask/src/main.rs::status_page_is_generated_and_tests_exist",
+  "crates/mesh-tools/src/lib.rs::unknown_tools_and_bad_inputs_are_diagnosed",
+]
+commands = ["cargo xtask status --check"]
+gaps = ""
+
+[[feature]]
+id = "layering"
+title = "Crate layering check (SW-19)"
+requirements = ["SW-19"]
+grade = "verified"
+how = "Every workspace dependency points to a lower layer or an allowed same-layer use; front ends name no crate below mesh-tools"
+tests = [
+  "crates/xtask/src/main.rs::the_workspace_is_layered",
+  "crates/xtask/src/main.rs::reads_only_the_dependencies_table",
+]
+commands = ["cargo xtask layering"]
+gaps = ""

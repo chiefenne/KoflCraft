@@ -20,6 +20,8 @@ jobs:
         run: cargo fmt --all --check
       - name: Layering (SW-19)
         run: cargo xtask layering
+      - name: Status page (AG-17)
+        run: cargo xtask status --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Tests

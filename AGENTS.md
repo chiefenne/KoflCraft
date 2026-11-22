@@ -68,6 +68,10 @@ in the same form as the companion solver
 
 ## Tests
 
+- **MUST** update the feature's grade in `docs/features.toml` when a change
+  adds, verifies or breaks a feature, and regenerate `docs/status.md` with
+  `cargo xtask status` (AG-17).
+
 - **MUST** follow the keep rule (SW-18): name the invariant, a change that
   breaks it, and why no other test catches it.
 - **MUST** add a failing test with every bug fix, and the input of every
@@ -100,6 +104,7 @@ Checks to run before a pull request:
 ```sh
 cargo fmt --all --check
 cargo xtask layering           # crate layers and front ends (SW-19)
+cargo xtask status --check     # docs/status.md from docs/features.toml (AG-17)
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --release --locked --workspace --all-targets
 cargo m1 --require-gmsh        # needs gmsh on PATH; without it: cargo m1
