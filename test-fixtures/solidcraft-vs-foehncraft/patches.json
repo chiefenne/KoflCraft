@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "source_sha256": "e3f1ac5f0be7e6a2042e514da7e683c186b1efd2f6e2ae2c3469dbfad2bd2be0",
+  "facet_count": 90894,
+  "vertex_count": 45449,
+  "bounds": {
+    "min": [-120.0, 0.0, -40.0],
+    "max": [380.0, 400.0, 80.0]
+  },
+  "volume": 5290738.125459458,
+  "default_patch": {
+    "name": "walls",
+    "role": "wall"
+  },
+  "ports": [
+    {
+      "name": "inlet",
+      "role": "inlet",
+      "facet_range": [90374, 90884],
+      "center": [0.0, 0.0, 0.0],
+      "outward_normal": [0.0, -1.0, 0.0],
+      "radius": 25.0,
+      "area": 1963.2400669472445,
+      "rim_edges": 240
+    },
+    {
+      "name": "outlet",
+      "role": "outlet",
+      "facet_range": [21168, 21680],
+      "center": [-120.0, 360.0, 40.0],
+      "outward_normal": [-1.0, 0.0, 0.0],
+      "radius": 25.0,
+      "area": 1963.2401020872057,
+      "rim_edges": 240
+    }
+  ]
+}

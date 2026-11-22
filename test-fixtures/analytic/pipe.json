@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "geometry": {"kind": "pipe", "diameter_mm": 50, "length_mm": 150},
+  "core_spacing_mm": 1.25,
+  "wall_layers": 5,
+  "first_layer_mm": 0.48,
+  "layer_growth": 1.2,
+  "max_neighbour_size_ratio": 1.15
+}
