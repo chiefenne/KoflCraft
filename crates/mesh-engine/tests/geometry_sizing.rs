@@ -100,7 +100,9 @@ fn feature_edges_refine_the_box_edges() {
     );
     assert!(source.cells > 20, "{source:?}");
     let achieved = source.achieved.as_ref().unwrap();
-    assert!((achieved.median / 0.05 - 1.0).abs() < 0.1, "{achieved:?}");
+    // Cells count within one cell size of the edge zone, where the field
+    // has grown by up to (gradation - 1) times that size: 15 %, not 10 %.
+    assert!((achieved.median / 0.05 - 1.0).abs() < 0.15, "{achieved:?}");
 }
 
 #[test]

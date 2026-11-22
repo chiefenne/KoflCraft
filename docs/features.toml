@@ -82,7 +82,7 @@ id = "m2-geometry-sizing"
 title = "M2 geometry-derived sizes: wall curvature, gaps between opposite walls, feature edges (GRD-04)"
 requirements = ["GRD-04", "GRD-08"]
 grade = "partial"
-how = "Normal-cycle curvature within 2.5 % of 1/R on an icosphere and 0.1 % on a CAD-style strip cylinder, zero on flat facets, and cube edges found as the twelve features, by unit tests; medial-ball and ray thickness exact on a slab; the pruned size envelope equals brute force; built and validated meshes put at least 3 cells across a thin slab (counted along the wall normals), reach angle·R on a strip cylinder's wall and the edge size along a box's edges within 10 % (median); benchmark of the normal-cycle tensor against cotangent and normal-deviation curvature, and of the medial ball against the ray cast, in research/grd-04-geometry-sizing.md"
+how = "Normal-cycle curvature within 2.5 % of 1/R on an icosphere and 0.1 % on a CAD-style strip cylinder, zero on flat facets, and cube edges found as the twelve features, by unit tests; medial-ball and ray thickness exact on a slab; the pruned size envelope equals brute force; built and validated meshes put at least 3 cells across a thin slab (counted along the wall normals), reach angle·R on a strip cylinder's wall within 10 % and the edge size along a box's edges within 15 % (median); benchmark of the normal-cycle tensor against cotangent and normal-deviation curvature, and of the medial ball against the ray cast, in research/grd-04-geometry-sizing.md"
 tests = [
   "crates/mesh-algorithms/src/sizing/surface.rs::distances_and_envelope_equal_brute_force",
   "crates/mesh-algorithms/src/sizing/surface.rs::normal_cycle_curvature_recovers_known_radii",

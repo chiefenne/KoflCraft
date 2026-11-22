@@ -455,7 +455,7 @@ impl SizeFieldConfig {
 /// What the seeding did and the sizes the mesh achieved (GRD-08). Sizes are
 /// equivalent-cube edges, cbrt(cell volume); a cell belongs to a source when
 /// its centroid lies within the source's influence distance and the source
-/// sets h there (for curvature, gap and feature-edge sources: within half a
+/// sets h there (for curvature, gap and feature-edge sources: within one
 /// cell size beyond the distance, since they lie on the wall).
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -570,11 +570,11 @@ pub(crate) fn evidence(
                 .collect();
             let governs = governed.iter().filter(|&&g| g).count();
             // A surface-derived source sits on the wall, where no centroid
-            // lies: its cells are those within half a cell size of its reach.
+            // lies: its cells are those within one cell size of its reach.
             let derived = matches!(source.shape, Shape::Weighted(_));
             let near: Vec<usize> = (0..centroids.len())
                 .filter(|&c| {
-                    let slack = if derived { 0.5 * size(c) } else { 0.0 };
+                    let slack = if derived { size(c) } else { 0.0 };
                     governed[c]
                         && field.source_distance(index, centroids[c]) <= source.distance + slack
                 })

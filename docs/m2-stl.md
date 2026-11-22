@@ -55,7 +55,7 @@ Three sources are derived from the STL itself (GRD-04, [note](../research/grd-04
 {"kind": "gap", "name": "slot", "cells_across": 4}
 ```
 
-Per derived source the `sizing` block adds `derived`: the method, the number of facets, facet pieces or edges that ask for a size, how many of them are held at `min_size`, and for a gap the cells crossed along the inward wall normal at up to 2,000 wall samples (quantiles), the samples counted and those below `cells_across`. A source's `cells` are the cells within half their size of the wall (plus `distance`). The result lists held pieces and samples below the target as limitations.
+Per derived source the `sizing` block adds `derived`: the method, the number of facets, facet pieces or edges that ask for a size, how many of them are held at `min_size`, and for a gap the cells crossed along the inward wall normal at up to 2,000 wall samples (quantiles), the samples counted and those below `cells_across`. A source's `cells` are the cells within one cell size of the wall (plus `distance`). The result lists held pieces and samples below the target as limitations.
 
 The field is the minimum over all sources, clamped to `[min_size, max_size]`. The seed count is the volume integral of h⁻³; `kofl --check` and `mesh.estimate` report it exactly. Seeds are drawn from the field with the config's `seed` (default 0) and relaxed into a density-weighted centroidal Voronoi tessellation; the choice and its benchmark are in [research/m2-size-control.md](../research/m2-size-control.md). The artifact stores the placed sites, so checks and exports work as with explicit sites.
 
