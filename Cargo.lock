@@ -216,7 +216,7 @@ dependencies = [
 name = "mesh-cli"
 version = "0.1.0"
 dependencies = [
- "mesh-engine",
+ "mesh-tools",
  "serde",
  "serde_json",
 ]
@@ -275,6 +275,15 @@ version = "0.1.0"
 dependencies = [
  "mesh-core",
  "mesh-geometry",
+]
+
+[[package]]
+name = "mesh-tools"
+version = "0.1.0"
+dependencies = [
+ "mesh-engine",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

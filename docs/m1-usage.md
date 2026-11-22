@@ -1,6 +1,6 @@
 # M1 box meshing
 
-Build both interfaces with `cargo build --locked -p mesh-cli -p mesh-mcp`. Run the test suite with `cargo test --locked --workspace --all-targets`.
+Build both interfaces with `cargo build --locked -p mesh-cli -p mesh-mcp`; this builds `kofl` too, the command line of the tool registry (`kofl commands` lists every tool, `kofl call ID --input FILE` runs one and prints its result envelope, see [tools.md](tools.md)). `mesh-cli` accepts the same commands as `kofl`. Run the test suite with `cargo test --locked --workspace --all-targets`.
 
 For the primary block and pipe development cases, see [Analytic development meshes](analytic-development.md).
 

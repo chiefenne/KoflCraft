@@ -330,7 +330,7 @@ fn nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer() {
         for mode in ["bulk", "layered", "polyhedral"] {
             let name = format!("{dir}-{mode}");
             let args = [cmd.as_slice(), &[mode, name.as_str()]].concat();
-            let report = work.run(&args);
+            let report = work.run(&args)["report"].clone();
             assert!((report["source_volume"].as_f64().unwrap() / volume - 1.).abs() < 1e-10);
             let fitted_volume = report["scaffold_volume"].as_f64().unwrap_or(volume);
             let mesh_volume = report["volume"].as_f64().unwrap();

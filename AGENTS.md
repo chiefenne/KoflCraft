@@ -18,10 +18,10 @@ in the same form as the companion solver
 - **MUST** keep every function reachable without a window: scriptable, with
   JSON inputs and outputs, no interactive-only paths.
 - **MUST** add every engine operation a front end calls as a tool of the
-  registry (AG-12) once `mesh-tools` exists, and call it from the CLI and
-  the MCP server only through the registry. Until then, a new operation
-  is added to both `mesh-cli` and `mesh-mcp` with the same behaviour and a
-  test that compares their outputs.
+  registry (AG-12, crate `mesh-tools`) and call it from the CLI and the MCP
+  server only through the registry; regenerate `docs/tools.md` with
+  `kofl commands --markdown > docs/tools.md` (a test fails when it is out
+  of date).
 - **MUST** give a tool that writes files or starts a build its effects (the
   files it writes, the expected cell count), so the MCP approval table
   (AG-15) can judge the call before it runs.
@@ -91,6 +91,7 @@ Layout: see section 6 of [docs/requirements.md](docs/requirements.md).
 Usage: [docs/m1-usage.md](docs/m1-usage.md),
 [docs/m2-stl.md](docs/m2-stl.md),
 [docs/foehncraft.md](docs/foehncraft.md),
+[docs/tools.md](docs/tools.md),
 [docs/analytic-development.md](docs/analytic-development.md),
 [docs/nonconvex-duct.md](docs/nonconvex-duct.md).
 
