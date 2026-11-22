@@ -20,7 +20,7 @@ target/debug/mesh-cli export mesh-output/box.mesh.json vtu mesh-output/box.vtu
 target/debug/mesh-cli export mesh-output/box.mesh.json gmsh mesh-output/box.msh
 ```
 
-Open `mesh-output/box.vtu` in ParaView or `mesh-output/box.msh` in Gmsh. The VTU file preserves the polyhedral cells. The MSH 2.2 ASCII file uses a conforming tetrahedral subdivision with six named surface groups and a `fluid` volume group. A tetrahedron’s elementary entity tag is the original zero-based cell ID plus one. Each generate or export destination must be new, with an existing parent directory. [Gmsh MSH 2.2 format](https://gmsh.info/doc/texinfo/gmsh.html#MSH-file-format-version-2-_0028Legacy_0029)
+Open `mesh-output/box.vtu` in ParaView or `mesh-output/box.msh` in Gmsh. The VTU file preserves the polyhedral cells. The MSH 4.1 ASCII file (the format FoehnCraft reads) uses a conforming tetrahedral subdivision with six named surface groups and a `fluid` volume group. A tetrahedron’s elementary entity tag is the original zero-based cell ID plus one. `export ARTIFACT.json gmsh-2.2 OUT.msh` writes the older MSH 2.2 instead. Each generate or export destination must be new, with an existing parent directory. [Gmsh MSH format](https://gmsh.info/doc/texinfo/gmsh.html#MSH-file-format)
 
 ## JSON contract
 

@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use mesh_algorithms::channel::straight_channel;
 use mesh_core::geometry::Vec3;
+use mesh_io::GmshVersion;
 use mesh_io::channel::write_gmsh;
 use mesh_quality::validate_mesh;
 
@@ -14,7 +15,7 @@ fn native_channel_prisms_and_core_subdivision_share_the_tagged_boundary() {
             straight_channel(Vec3::new(3.0, 2.0, 1.0), stations, layers, 0.05, growth).unwrap();
         let metrics = validate_mesh(channel.bounds(), channel.mesh()).unwrap();
         let mut output = Vec::new();
-        write_gmsh(&channel, &mut output).unwrap();
+        write_gmsh(&channel, GmshVersion::V2_2, &mut output).unwrap();
         let file = std::str::from_utf8(&output).unwrap();
         assert!(file.contains("2 1 \"inlet\"\n2 2 \"outlet\"\n2 3 \"walls\"\n3 4 \"fluid\""));
         let mut points = vec![Vec3::ZERO]; // MSH uses one-based node IDs.

@@ -1,7 +1,7 @@
 use koflcraft::certification::{MeshDomain, validate_domain};
 use koflcraft::geometry::{AxisAlignedBox, Vec3};
 use koflcraft::mesh::FaceAdjacency;
-use koflcraft::mesh_export::{write_gmsh_domain, write_vtu_domain};
+use koflcraft::mesh_export::{GmshVersion, write_gmsh_domain, write_vtu_domain};
 use koflcraft::surface_geometry::{ConvexSurface, StlOptions, SurfaceError, import_stl};
 use koflcraft::voronoi::VoronoiError;
 use koflcraft::{GenerationError, generate_mesh, generate_surface_mesh};
@@ -87,7 +87,13 @@ fn binary_detection_and_explicit_patches_preserve_coplanar_labels() {
     }
     assert!(areas.iter().all(|area| (area - 0.5).abs() < 1e-12));
     let mut msh = Vec::new();
-    write_gmsh_domain(MeshDomain::Surface(&surface), mesh.mesh(), &mut msh).unwrap();
+    write_gmsh_domain(
+        MeshDomain::Surface(&surface),
+        mesh.mesh(),
+        GmshVersion::V4_1,
+        &mut msh,
+    )
+    .unwrap();
     let text = String::from_utf8(msh).unwrap();
     assert!(text.contains("2 1 \"lower inlet\""));
     assert!(text.contains("2 2 \"upper inlet\""));
@@ -118,7 +124,13 @@ fn skewed_box_clips_against_the_surface_and_exports() {
             .unwrap()
             .contains("NumberOfCells=\"4\"")
     );
-    write_gmsh_domain(domain, result.mesh(), &mut std::io::sink()).unwrap();
+    write_gmsh_domain(
+        domain,
+        result.mesh(),
+        GmshVersion::V4_1,
+        &mut std::io::sink(),
+    )
+    .unwrap();
 }
 
 #[test]

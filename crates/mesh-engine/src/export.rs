@@ -1,7 +1,9 @@
 use std::ffi::OsStr;
 use std::str::FromStr;
 
-use mesh_io::{ExportError, PolyMeshWriters, write_gmsh_domain, write_openfoam, write_vtu_domain};
+use mesh_io::{
+    ExportError, GmshVersion, PolyMeshWriters, write_gmsh_domain, write_openfoam, write_vtu_domain,
+};
 use mesh_quality::MeshDomain;
 
 use crate::{EngineError, ErrorCode, MeshArtifact, MeshDirectory};
@@ -9,7 +11,9 @@ use crate::{EngineError, ErrorCode, MeshArtifact, MeshDirectory};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExportFormat {
     Vtu,
-    Gmsh,
+    /// Gmsh MSH in the given version: `gmsh` is 4.1 (FC-01), `gmsh-2.2` the
+    /// older version kept as an option (OPEN-11).
+    Gmsh(GmshVersion),
     OpenFoam,
 }
 
@@ -19,10 +23,11 @@ impl FromStr for ExportFormat {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "vtu" => Ok(Self::Vtu),
-            "gmsh" => Ok(Self::Gmsh),
+            "gmsh" | "gmsh-4.1" => Ok(Self::Gmsh(GmshVersion::V4_1)),
+            "gmsh-2.2" => Ok(Self::Gmsh(GmshVersion::V2_2)),
             _ => Err(EngineError::new(
                 ErrorCode::UnsupportedFormat,
-                "format must be vtu or gmsh",
+                "format must be vtu, gmsh (MSH 4.1) or gmsh-2.2",
             )),
         }
     }
@@ -78,9 +83,9 @@ pub fn export_mesh(
             write_vtu_domain(domain, &mesh, &mut vtu).map_err(export_error)?;
             ExportData::Vtu(vtu)
         }
-        ExportFormat::Gmsh => {
+        ExportFormat::Gmsh(version) => {
             let mut msh = Vec::new();
-            write_gmsh_domain(domain, &mesh, &mut msh).map_err(export_error)?;
+            write_gmsh_domain(domain, &mesh, version, &mut msh).map_err(export_error)?;
             ExportData::Gmsh(msh)
         }
         ExportFormat::OpenFoam => {

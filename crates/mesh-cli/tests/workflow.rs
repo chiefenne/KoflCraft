@@ -48,7 +48,7 @@ fn generate_check_report_and_export_round_trip() {
     );
     work.run(&["export", "mesh.json", "gmsh", "mesh.msh"]);
     let msh = fs::read_to_string(work.path().join("mesh.msh")).unwrap();
-    assert!(msh.starts_with("$MeshFormat\n2.2 0 8\n"));
+    assert!(msh.starts_with("$MeshFormat\n4.1 0 8\n"));
     assert!(msh.contains("3 7 \"fluid\""));
 }
 

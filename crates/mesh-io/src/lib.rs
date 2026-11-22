@@ -3,9 +3,11 @@
 pub mod channel;
 mod directory;
 mod gmsh;
+mod msh;
 
 pub use directory::MeshDirectory;
 pub use gmsh::{write_gmsh, write_gmsh_domain};
+pub use msh::GmshVersion;
 
 use std::collections::BTreeSet;
 use std::fmt;

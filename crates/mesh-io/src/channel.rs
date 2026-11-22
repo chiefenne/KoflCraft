@@ -5,6 +5,7 @@ use std::io::{self, Write};
 
 use mesh_algorithms::channel::{ChannelCell, ChannelMesh, ChannelPatch};
 
+use crate::msh::{GmshVersion, Model};
 use crate::{end_vtu, serialize_vtu, vtu_points, write_array};
 
 pub fn write_volume(channel: &ChannelMesh, out: &mut dyn Write) -> io::Result<()> {
@@ -90,45 +91,35 @@ pub const MULTIBLOCK: &[u8] = br#"<?xml version="1.0"?>
 
 /// A core cell is coned to its centre, retaining its original triangular and
 /// quadrilateral faces. All pieces use the same elementary volume tag as their parent.
-pub fn write_gmsh(channel: &ChannelMesh, out: &mut dyn Write) -> io::Result<()> {
+pub fn write_gmsh(
+    channel: &ChannelMesh,
+    version: GmshVersion,
+    out: &mut dyn Write,
+) -> io::Result<()> {
     let mesh = channel.mesh();
     let mut points = mesh.vertices().to_vec();
-    let mut count = channel.boundary().count();
-    for (id, cell) in channel.cells().iter().enumerate() {
-        match cell {
-            ChannelCell::Prism { .. } => count += 1,
-            ChannelCell::Core { nodes } => {
-                let a = points[nodes[0]];
-                points.push(a + (points[nodes[6]] - a) * 0.5);
-                count += mesh.cell_faces(id).unwrap().len();
-            }
+    for cell in channel.cells() {
+        if let ChannelCell::Core { nodes } = cell {
+            let a = points[nodes[0]];
+            points.push(a + (points[nodes[6]] - a) * 0.5);
         }
     }
     let names = ChannelPatch::ALL.map(ChannelPatch::name);
-    crate::gmsh::write_header(out, &points, &names, count)?;
-    let mut id = 0;
-    let mut element = |kind: u8, physical, entity, nodes: &[usize]| -> io::Result<()> {
-        id += 1;
-        write!(out, "{id} {kind} 2 {physical} {entity}")?;
-        for node in nodes {
-            write!(out, " {}", node + 1)?;
-        }
-        writeln!(out)
-    };
+    let fluid = names.len() + 1;
+    let mut model = Model::new(points);
+    for (patch, name) in names.iter().enumerate() {
+        model.group(2, patch + 1, name);
+    }
+    model.group(3, fluid, "fluid");
     for (face, _, patch) in channel.boundary() {
         let ring = mesh.face_vertices(face).unwrap();
-        element(
-            if ring.len() == 3 { 2 } else { 3 },
-            patch as usize,
-            patch as usize,
-            ring,
-        )?;
+        let kind = if ring.len() == 3 { 2 } else { 3 };
+        model.element(kind, patch as usize, patch as usize, ring)?;
     }
-    let fluid = names.len() + 1;
     let mut centre = mesh.vertices().len();
     for (cell, shape) in channel.cells().iter().enumerate() {
         match shape {
-            ChannelCell::Prism { nodes, .. } => element(6, fluid, cell + 1, nodes)?,
+            ChannelCell::Prism { nodes, .. } => model.element(6, fluid, cell + 1, nodes)?,
             ChannelCell::Core { .. } => {
                 for &face in mesh.cell_faces(cell).unwrap() {
                     let mut base = mesh.face_vertices(face).unwrap().to_vec();
@@ -137,11 +128,11 @@ pub fn write_gmsh(channel: &ChannelMesh, out: &mut dyn Write) -> io::Result<()> 
                     }
                     let kind = if base.len() == 3 { 4 } else { 7 };
                     base.push(centre);
-                    element(kind, fluid, cell + 1, &base)?;
+                    model.element(kind, fluid, cell + 1, &base)?;
                 }
                 centre += 1;
             }
         }
     }
-    writeln!(out, "$EndElements")
+    model.write(version, out)
 }

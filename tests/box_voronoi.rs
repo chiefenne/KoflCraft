@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use koflcraft::certification::validate_mesh;
 use koflcraft::clipping::{ClipError, ConvexPolyhedron, FaceSource};
 use koflcraft::geometry::{AxisAlignedBox, Plane, Vec3};
-use koflcraft::mesh_export::write_gmsh;
+use koflcraft::mesh_export::{GmshVersion, write_gmsh};
 use koflcraft::voronoi::{RELATIVE_CLIP_TOLERANCE, VoronoiError, clipped_voronoi};
 use koflcraft::{GenerationError, generate_mesh};
 
@@ -240,7 +240,13 @@ fn seeded_near_wall_and_nearly_coincident_sites_remain_resolvable() {
                 assert!((metrics.cells[0].volume - (clearance + 0.5 * gap)).abs() < 2e-14);
                 assert!(metrics.cells.iter().all(|cell| cell.volume > 0.0));
                 assert!((metrics.total_volume - 1.0).abs() < 1e-12);
-                write_gmsh(unit_box(), mesh.mesh(), &mut std::io::sink()).unwrap();
+                write_gmsh(
+                    unit_box(),
+                    mesh.mesh(),
+                    GmshVersion::V4_1,
+                    &mut std::io::sink(),
+                )
+                .unwrap();
             }
         }
     }

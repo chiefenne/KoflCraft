@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mesh_engine::{ExportData, ExportFormat, build_mesh, export_mesh};
+use mesh_engine::{ExportData, ExportFormat, GmshVersion, build_mesh, export_mesh};
 use serde_json::{Value, json};
 
 #[test]
@@ -152,7 +152,9 @@ fn stdio_tools_run_the_shared_engine_and_bound_writes() {
         panic!("expected VTU data");
     };
     assert_eq!(fs::read(work.path().join("mesh.vtu")).unwrap(), expected);
-    let ExportData::Gmsh(expected) = export_mesh(&local, ExportFormat::Gmsh).unwrap() else {
+    let ExportData::Gmsh(expected) =
+        export_mesh(&local, ExportFormat::Gmsh(GmshVersion::V4_1)).unwrap()
+    else {
         panic!("expected Gmsh data");
     };
     assert_eq!(fs::read(work.path().join("mesh.msh")).unwrap(), expected);
@@ -251,7 +253,9 @@ fn stl_tools_reuse_check_and_export_for_a_skewed_surface() {
     assert_eq!(actual["artifact_schema_version"], 2);
     assert_eq!(actual["build"]["mesh_digest"], local.build().mesh_digest);
     assert_eq!(responses[3]["result"]["structuredContent"]["valid"], true);
-    let ExportData::Gmsh(expected) = export_mesh(&local, ExportFormat::Gmsh).unwrap() else {
+    let ExportData::Gmsh(expected) =
+        export_mesh(&local, ExportFormat::Gmsh(GmshVersion::V4_1)).unwrap()
+    else {
         panic!("expected Gmsh data");
     };
     assert_eq!(fs::read(work.path().join("stl.msh")).unwrap(), expected);

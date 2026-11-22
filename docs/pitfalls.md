@@ -36,9 +36,12 @@ the fitted mesh "volume conserving" with respect to the STL.
 
 ## Gmsh format versions
 
-KoflCraft writes MSH 2.2; FoehnCraft reads only MSH 4.1. A file that Gmsh
-itself opens is not proof that FoehnCraft will. Test the hand-off with
-FoehnCraft's reader (FC-06).
+FoehnCraft reads only MSH 4.1, so KoflCraft writes 4.1 by default and 2.2
+only on request (`gmsh-2.2`). A file that Gmsh itself opens is not proof
+that FoehnCraft will. Test the hand-off with FoehnCraft's reader (FC-06).
+In 4.1 every element belongs to an entity and each entity names one
+physical group; a writer that gives one entity elements of two groups
+gets an error, not a silently regrouped file.
 
 ## Counts a file declares
 

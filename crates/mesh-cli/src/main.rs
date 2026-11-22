@@ -24,7 +24,7 @@ const USAGE: &str = "Usage:
   mesh-cli check ARTIFACT.json
   mesh-cli report ARTIFACT.json
   mesh-cli export ARTIFACT.json vtu OUTPUT.vtu
-  mesh-cli export ARTIFACT.json gmsh OUTPUT.msh";
+  mesh-cli export ARTIFACT.json gmsh|gmsh-2.2 OUTPUT.msh";
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();

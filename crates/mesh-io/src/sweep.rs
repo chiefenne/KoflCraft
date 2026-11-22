@@ -1,4 +1,5 @@
 //! Mixed polygonal prisms on a section swept along a straight axis.
+use crate::msh::{GmshVersion, Model};
 use crate::{channel::write_boundary_vtu, end_array, end_vtu, start_array, vtu_points, write_ids};
 use mesh_algorithms::sweep::Sweep;
 use mesh_core::geometry::Vec3;
@@ -185,62 +186,46 @@ fn pieces(ring: &[usize]) -> Vec<Vec<usize>> {
         .collect()
 }
 
-pub fn gmsh(s: &Sweep, points: &[Vec3], out: &mut dyn Write) -> io::Result<()> {
+pub fn gmsh(
+    s: &Sweep,
+    points: &[Vec3],
+    version: GmshVersion,
+    out: &mut dyn Write,
+) -> io::Result<()> {
     let pieces: Vec<_> = s.tiles.iter().map(|t| pieces(&t.ring)).collect();
-    let per_section: usize = pieces.iter().map(Vec::len).sum();
     let last = s.axial_layers.len();
-    let volume_count = per_section * last;
-    let surface_count = 2 * per_section + s.outside.len() * last;
-    let tags: &[(usize, &str)] = if s.profile.blind() {
-        &[(1, "inlet"), (3, "walls")]
-    } else {
-        &[(1, "inlet"), (2, "outlet"), (3, "walls")]
-    };
-    crate::gmsh::write_tagged_header(out, points, tags, 4, surface_count + volume_count)?;
-    let mut id = 0;
-    let mut element = |kind: usize, tag: usize, nodes: &[usize]| -> io::Result<()> {
-        id += 1;
-        write!(out, "{id} {kind} 2 {tag} {tag}")?;
-        for &n in nodes {
-            write!(out, " {}", n + 1)?;
-        }
-        writeln!(out)
-    };
+    let mut model = Model::new(points.to_vec());
+    model.group(2, 1, "inlet");
+    if !s.profile.blind() {
+        model.group(2, 2, "outlet");
+    }
+    model.group(2, 3, "walls");
+    model.group(3, 4, "fluid");
     for (k, tag) in [(0, 1), (last, if s.profile.blind() { 3 } else { 2 })] {
         for base in pieces.iter().flatten() {
             let mut nodes: Vec<_> = base.iter().map(|&v| s.point_id(k, v)).collect();
             if k == 0 {
                 nodes.reverse();
             }
-            element(if base.len() == 4 { 3 } else { 2 }, tag, &nodes)?;
+            model.element(if base.len() == 4 { 3 } else { 2 }, tag, tag, &nodes)?;
         }
     }
     for k in 0..last {
         for &(edge, _) in &s.outside {
-            element(3, 3, &side(s, k, edge))?;
+            model.element(3, 3, 3, &side(s, k, edge))?;
         }
     }
-    for k in 0..last {
-        for base in pieces.iter().flatten() {
-            let nodes: Vec<_> = [k, k + 1]
-                .into_iter()
-                .flat_map(|z| base.iter().map(move |&v| s.point_id(z, v)))
-                .collect();
-            element(if base.len() == 4 { 5 } else { 6 }, 4, &nodes)?;
-        }
-    }
-    writeln!(
-        out,
-        "$EndElements\n$ElementData\n1\n\"ParentCellId\"\n1\n0\n3\n0\n1\n{volume_count}"
-    )?;
-    let mut id = surface_count;
     for k in 0..last {
         for (t, p) in pieces.iter().enumerate() {
-            for _ in p {
-                id += 1;
-                writeln!(out, "{id} {}", k * s.tiles.len() + t)?;
+            for base in p {
+                let nodes: Vec<_> = [k, k + 1]
+                    .into_iter()
+                    .flat_map(|z| base.iter().map(move |&v| s.point_id(z, v)))
+                    .collect();
+                let kind = if base.len() == 4 { 5 } else { 6 };
+                model.element_of(kind, 4, 4, &nodes, Some(k * s.tiles.len() + t))?;
             }
         }
     }
-    writeln!(out, "$EndElementData")
+    model.write(version, out)
 }

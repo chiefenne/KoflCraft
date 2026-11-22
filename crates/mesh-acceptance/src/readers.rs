@@ -129,9 +129,10 @@ pub fn vtu(text: &str, expected: &[f64]) -> RunResult<usize> {
 }
 
 pub fn gmsh(text: &str, expected: &[f64]) -> RunResult<usize> {
+    let format = between(text, "$MeshFormat", "$EndMeshFormat")?.trim();
     require(
-        between(text, "$MeshFormat", "$EndMeshFormat")?.trim() == "2.2 0 8",
-        "expected Gmsh MSH 2.2 ASCII",
+        format == "4.1 0 8" || format == "2.2 0 8",
+        "expected Gmsh MSH 4.1 or 2.2 ASCII",
     )?;
     let names = rows(text, "$PhysicalNames", "$EndPhysicalNames")?;
     require(names.len() == 7, "unexpected Gmsh physical group count")?;
@@ -147,29 +148,17 @@ pub fn gmsh(text: &str, expected: &[f64]) -> RunResult<usize> {
         names.iter().any(|line| line.trim() == "3 7 \"fluid\""),
         "missing Gmsh fluid group",
     )?;
-    let mut points = vec![Vec3::ZERO]; // MSH tags start at one.
-    for (index, line) in rows(text, "$Nodes", "$EndNodes")?.into_iter().enumerate() {
-        let (tag, coordinates) = line
-            .split_once(' ')
-            .ok_or("missing Gmsh node coordinates")?;
-        require(
-            tag.parse::<usize>()? == index + 1,
-            "unexpected Gmsh node tag",
-        )?;
-        let coordinates = read_points(coordinates)?;
-        require(coordinates.len() == 1, "invalid Gmsh node record")?;
-        points.push(coordinates[0]);
-    }
+    let (points, records) = if format.starts_with("4.1") {
+        msh41_records(text)?
+    } else {
+        msh22_records(text)?
+    };
     let mut volumes = vec![0.0; expected.len()];
     let mut boundary = BTreeMap::new();
     let mut faces = BTreeMap::<[usize; 3], [u32; 2]>::new();
     let mut tetrahedra = 0;
     let mut patch_areas = [0.0; 6];
-    for (index, line) in rows(text, "$Elements", "$EndElements")?
-        .into_iter()
-        .enumerate()
-    {
-        let record = numbers::<usize>(line)?;
+    for (index, record) in records.into_iter().enumerate() {
         require(
             record.first() == Some(&(index + 1)),
             "unexpected Gmsh element tag",
@@ -238,6 +227,116 @@ pub fn gmsh(text: &str, expected: &[f64]) -> RunResult<usize> {
         )?;
     }
     Ok(tetrahedra)
+}
+
+/// MSH 2.2: the points (index 0 unused, tags start at one) and the element
+/// records `tag type 2 physical entity nodes…`.
+fn msh22_records(text: &str) -> RunResult<(Vec<Vec3>, Vec<Vec<usize>>)> {
+    let mut points = vec![Vec3::ZERO];
+    for (index, line) in rows(text, "$Nodes", "$EndNodes")?.into_iter().enumerate() {
+        let (tag, coordinates) = line
+            .split_once(' ')
+            .ok_or("missing Gmsh node coordinates")?;
+        require(
+            tag.parse::<usize>()? == index + 1,
+            "unexpected Gmsh node tag",
+        )?;
+        let coordinates = read_points(coordinates)?;
+        require(coordinates.len() == 1, "invalid Gmsh node record")?;
+        points.push(coordinates[0]);
+    }
+    let records = rows(text, "$Elements", "$EndElements")?
+        .into_iter()
+        .map(numbers::<usize>)
+        .collect::<RunResult<_>>()?;
+    Ok((points, records))
+}
+
+/// MSH 4.1, read independently of the writer from the Gmsh reference manual:
+/// the physical group of each entity from `$Entities`, the node blocks and
+/// the element blocks, turned into the records of [`msh22_records`].
+fn msh41_records(text: &str) -> RunResult<(Vec<Vec3>, Vec<Vec<usize>>)> {
+    let mut lines = between(text, "$Entities", "$EndEntities")?.trim().lines();
+    let head = numbers::<usize>(lines.next().ok_or("missing Gmsh entity counts")?)?;
+    let [points_n, curves_n, surfaces_n, volumes_n] = head[..] else {
+        return Err("invalid Gmsh entity counts".into());
+    };
+    require(
+        points_n == 0 && curves_n == 0,
+        "unexpected Gmsh point or curve entities",
+    )?;
+    let mut physical = BTreeMap::new();
+    for (index, line) in lines.enumerate() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        require(words.len() >= 9, "invalid Gmsh entity record")?;
+        let dim = if index < surfaces_n { 2 } else { 3 };
+        require(words[7] == "1", "a Gmsh entity needs one physical group")?;
+        physical.insert(
+            (dim, words[0].parse::<usize>()?),
+            words[8].parse::<usize>()?,
+        );
+    }
+    require(
+        physical.len() == surfaces_n + volumes_n,
+        "Gmsh entity count mismatch",
+    )?;
+
+    let mut lines = between(text, "$Nodes", "$EndNodes")?.trim().lines();
+    let head = numbers::<usize>(lines.next().ok_or("missing Gmsh node counts")?)?;
+    let [blocks, total, ..] = head[..] else {
+        return Err("invalid Gmsh node counts".into());
+    };
+    let mut points = vec![Vec3::ZERO; total + 1];
+    let mut seen = 0;
+    for _ in 0..blocks {
+        let block = numbers::<usize>(lines.next().ok_or("missing Gmsh node block")?)?;
+        let [_, _, 0, count] = block[..] else {
+            return Err("invalid Gmsh node block".into());
+        };
+        let mut tags = Vec::with_capacity(count);
+        for _ in 0..count {
+            tags.push(
+                lines
+                    .next()
+                    .ok_or("missing Gmsh node tag")?
+                    .trim()
+                    .parse::<usize>()?,
+            );
+        }
+        for tag in tags {
+            let coordinates = read_points(lines.next().ok_or("missing Gmsh node")?)?;
+            require(coordinates.len() == 1, "invalid Gmsh node record")?;
+            *points.get_mut(tag).ok_or("Gmsh node tag out of range")? = coordinates[0];
+            seen += 1;
+        }
+    }
+    require(seen == total, "Gmsh node count mismatch")?;
+
+    let mut lines = between(text, "$Elements", "$EndElements")?.trim().lines();
+    let head = numbers::<usize>(lines.next().ok_or("missing Gmsh element counts")?)?;
+    let [blocks, total, ..] = head[..] else {
+        return Err("invalid Gmsh element counts".into());
+    };
+    let mut records = Vec::with_capacity(total);
+    for _ in 0..blocks {
+        let block = numbers::<usize>(lines.next().ok_or("missing Gmsh element block")?)?;
+        let [dim, entity, kind, count] = block[..] else {
+            return Err("invalid Gmsh element block".into());
+        };
+        let group = *physical
+            .get(&(dim, entity))
+            .ok_or("Gmsh element block of an unknown entity")?;
+        for _ in 0..count {
+            let element = numbers::<usize>(lines.next().ok_or("missing Gmsh element")?)?;
+            let (&tag, nodes) = element.split_first().ok_or("empty Gmsh element")?;
+            let mut record = vec![tag, kind, 2, group, entity];
+            record.extend_from_slice(nodes);
+            records.push(record);
+        }
+    }
+    require(records.len() == total, "Gmsh element count mismatch")?;
+    records.sort_by_key(|r| r[0]);
+    Ok((points, records))
 }
 
 fn opposite_rings(a: &[usize], b: &[usize]) -> bool {
