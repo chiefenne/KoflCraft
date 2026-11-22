@@ -1,5 +1,6 @@
 #[path = "../../../test-fixtures/sites.rs"]
 mod fixtures;
+mod foehn;
 mod readers;
 
 use std::error::Error;
@@ -42,16 +43,28 @@ fn main() -> ExitCode {
 
 fn run() -> RunResult<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    const USAGE: &str = "usage: cargo m1 [--require-gmsh] [--require-foehn]";
     if args == ["--help"] {
-        println!("Usage: cargo m1 [--require-gmsh]");
+        println!(
+            "Usage: cargo m1 [--require-gmsh] [--require-foehn]\n\nFoehnCraft is `$FOEHN` or `foehn` on PATH."
+        );
         return Ok(());
     }
     require(
-        args.is_empty() || args == ["--require-gmsh"],
-        "usage: cargo m1 [--require-gmsh]",
+        args.iter()
+            .all(|a| a == "--require-gmsh" || a == "--require-foehn"),
+        USAGE,
     )?;
     let gmsh = gmsh_version()?;
-    require(args.is_empty() || gmsh.is_some(), "gmsh must be on PATH")?;
+    require(
+        !args.iter().any(|a| a == "--require-gmsh") || gmsh.is_some(),
+        "gmsh must be on PATH",
+    )?;
+    let foehncraft = foehn::find()?;
+    require(
+        !args.iter().any(|a| a == "--require-foehn") || foehncraft.is_some(),
+        "foehn must be on PATH or in $FOEHN",
+    )?;
 
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -137,7 +150,17 @@ fn run() -> RunResult<()> {
             runs.push(evidence);
         }
     }
-    let summary = json!({ "schema_version": SCHEMA_VERSION, "profile": "release", "gmsh_version": gmsh, "fixtures": runs });
+    let foehncraft_evidence = match &foehncraft {
+        Some((path, version)) => {
+            let checks = round_trip(&cli, path, &root, &workspace)?;
+            json!({ "status": "passed", "version": version, "tolerance": foehn::TOLERANCE, "checks": checks })
+        }
+        None => {
+            println!("FoehnCraft round trip (FC-06) not run: no foehn on PATH or in $FOEHN");
+            json!({ "status": "not run", "reason": "no foehn on PATH or in $FOEHN" })
+        }
+    };
+    let summary = json!({ "schema_version": SCHEMA_VERSION, "profile": "release", "gmsh_version": gmsh, "fixtures": runs, "foehncraft": foehncraft_evidence });
     let evidence = root.join("evidence.json");
     write_json(&evidence, &summary)?;
     println!("M1 acceptance passed. Evidence at {}", evidence.display());
@@ -272,6 +295,110 @@ fn check_fixture(
         cli_build: cli_build.clone(),
         mcp_build: mcp_build.clone(),
     })
+}
+
+/// FC-06: the box fixtures as `foehncraft.vtu`, `polyMesh` and MSH 4.1, and
+/// the channel and duct bundles as `foehncraft.vtu` and MSH 4.1, each read
+/// by FoehnCraft and compared with KoflCraft's summary.
+fn round_trip(cli: &Path, foehn: &Path, root: &Path, workspace: &Path) -> RunResult<Vec<Value>> {
+    let mut checks = Vec::new();
+    let mut run = |dir: &Path, file: &str, evidence: &Path, kind: foehn::Kind| -> RunResult<()> {
+        let expected: Value = serde_json::from_slice(&fs::read(evidence)?)?;
+        let out = dir.join(format!("foehn-{}", file.replace('/', "-")));
+        let check = foehn::check(foehn, &dir.join(file), &expected["summary"], kind, &out)?;
+        let limitation = (check["foehncraft_valid"] == false).then(|| {
+            format!(
+                "FoehnCraft calls {} invalid: {} faces with S·d <= 0, as KoflCraft predicted",
+                dir.join(file).display(),
+                check["inverted_faces"]
+            )
+        });
+        let mut check = check;
+        if let Some(l) = limitation {
+            println!("limitation: {l}");
+            check["limitation"] = json!(l);
+        }
+        checks.push(check);
+        Ok(())
+    };
+    for entry in fs::read_dir(root)? {
+        let dir = entry?.path();
+        if !dir.join("cli.mesh.json").is_file() {
+            continue;
+        }
+        run_cli(
+            cli,
+            &dir,
+            &["export", "cli.mesh.json", "foehncraft", "cli.foehn.vtu"],
+        )?;
+        run_cli(
+            cli,
+            &dir,
+            &["export", "cli.mesh.json", "openfoam", "cli.foam"],
+        )?;
+        let evidence = dir.join("cli.foam/mesh-evidence.json");
+        run(&dir, "cli.foehn.vtu", &evidence, foehn::Kind::Faces)?;
+        run(&dir, "cli.foam", &evidence, foehn::Kind::Faces)?;
+        run(&dir, "cli.msh", &evidence, foehn::Kind::Subdivision)?;
+    }
+    let bundles = root.join("foehncraft");
+    fs::create_dir(&bundles)?;
+    let fixtures = workspace.join("test-fixtures");
+    let path = |p: &str| fixtures.join(p).display().to_string();
+    run_cli(
+        cli,
+        &bundles,
+        &[
+            "generate-channel",
+            &path("straight-channel.json"),
+            "channel",
+        ],
+    )?;
+    run(
+        &bundles,
+        "channel/foehncraft.vtu",
+        &bundles.join("channel/mesh-evidence.json"),
+        foehn::Kind::Faces,
+    )?;
+    run(
+        &bundles,
+        "channel/channel.msh",
+        &bundles.join("channel/mesh-evidence.json"),
+        foehn::Kind::Subdivision,
+    )?;
+    for mode in ["bulk", "layered", "polyhedral"] {
+        let name = format!("elbow-{mode}");
+        run_cli(
+            cli,
+            &bundles,
+            &[
+                "generate-duct",
+                &path("elbow/elbow.stl"),
+                &path("elbow/patches.json"),
+                &path("elbow/partition.json"),
+                mode,
+                &name,
+            ],
+        )?;
+        let evidence = bundles.join(&name).join("mesh-evidence.json");
+        run(
+            &bundles,
+            &format!("{name}/foehncraft.vtu"),
+            &evidence,
+            foehn::Kind::Faces,
+        )?;
+        run(
+            &bundles,
+            &format!("{name}/mesh.msh"),
+            &evidence,
+            foehn::Kind::Subdivision,
+        )?;
+    }
+    println!(
+        "FoehnCraft round trip (FC-06): {} files read and matched",
+        checks.len()
+    );
+    Ok(checks)
 }
 
 fn run_cli(cli: &Path, directory: &Path, args: &[&str]) -> RunResult<Value> {
