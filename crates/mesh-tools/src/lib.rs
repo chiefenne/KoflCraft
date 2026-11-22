@@ -374,7 +374,7 @@ pub struct Envelope {
 }
 
 impl Envelope {
-    fn error(tool: &str, version: u32, d: Diagnostic) -> Self {
+    pub fn error(tool: &str, version: u32, d: Diagnostic) -> Self {
         Self {
             format: RESULT_FORMAT.into(),
             format_version: FORMAT_VERSION.into(),

@@ -380,6 +380,9 @@ No fields.
 | `TOOL006` | `invalid_path` | error | A path is outside the read or write roots, or not a plain file name where one is needed. | Use a path inside the roots given to `kofl mcp`. |
 | `TOOL007` | `usage` | error | The command line is not one of the documented forms. | Run `kofl --help`. |
 | `TOOL008` | `limit_exceeded` | error | The input exceeds a limit of this front end (sites, facets, layers, cells, file size). | Run the tool from the command line, which has no limits, or reduce the input. |
+| `TOOL009` | `approval_required` | error | The build needs approval under the MCP policy (`ask`), but the MCP client cannot ask (it has no elicitation capability). | Use an MCP client with elicitation, set the rule to `allow` in the policy file, or run the build from the command line. |
+| `TOOL010` | `approval_declined` | error | The person declined or cancelled the approval of this build. |  |
+| `TOOL011` | `policy_refused` | error | The MCP policy refuses this action (`refuse`). | Change the rule in the policy file given with `--policy`, or run the build from the command line. |
 | `IN001` | `unsupported_schema` | error | The `schema_version` of an input or artifact is not supported. | Set `schema_version` to 1. |
 | `IN002` | `invalid_json` | error | An input file is not valid JSON of the expected shape. |  |
 | `MESH001` | `invalid_domain` | error | The domain (box, STL surface, patch map or partition) is invalid. |  |

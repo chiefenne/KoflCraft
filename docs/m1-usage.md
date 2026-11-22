@@ -66,3 +66,22 @@ Configure the MCP client to launch `target/debug/kofl mcp --read-root /abs/input
 `mesh.report` returns a summary over MCP (AG-16): build evidence, validation, counts and extremes of the cell and face metrics (`summary`), and one page of rows (`page`: `rows` is `cells` or `faces`, then `offset`, `count`, `items` and `next_cursor`). Pass `next_cursor` back as `cursor` to get the next page, until it is null; the cells come first, then the faces. `page_size` sets the rows per page, at most 500. A cursor carries the start of the mesh digest and is refused (TOOL002) for another or a changed artifact. `kofl report` on the command line prints the full report; `kofl call mesh.report` pages only when given `cursor` or `page_size`.
 
 The server bounds each request to 256 KiB, file reads to 8 MiB, and reference workloads (256 sites, 2048 STL facets, 8 channel layers and 32 axial cells, 500 000 sweep cells, duct facets, layers and regions); a larger input fails with TOOL008. Path errors are TOOL006.
+
+### Approvals (AG-15)
+
+Before a build tool (`start-build`) runs over MCP, the server estimates it with `mesh.estimate`. A build within the limits (`max_build_cells`, 500 000 cells, and `max_output_bytes`, 1 GiB, besides the input limits above) runs. A build over them, or one that hits an input limit (TOOL008), asks the user: the server sends `elicitation/create` with a yes/no field `approve`, and runs the build once without limits only on accept with `approve` true; the result then carries the limitation "built over the MCP limits with approval". A decline or cancel gives TOOL010. A client that did not declare the `elicitation` capability cannot be asked, and the build is refused with TOOL009. A policy rule `refuse` gives TOOL011 (or TOOL008 for a build over the limits).
+
+`--policy FILE` reads a TOML policy, which must lie outside every write root so that a tool cannot rewrite it:
+
+```toml
+[policy]
+start_build = "allow"     # allow, ask, refuse or default
+exceed_limits = "ask"
+write_outside_roots = "refuse"  # only refuse or default (AG-14)
+overwrite = "refuse"            # only refuse or default: outputs are always new
+
+[limits]                  # any MCP limit, for example
+max_build_cells = 2000000
+```
+
+An approval holds for one call; approvals that persist ("always") and wall-time limits are not built yet.

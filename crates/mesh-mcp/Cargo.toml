@@ -13,7 +13,9 @@ path = "src/main.rs"
 
 [dependencies]
 mesh-tools.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 mesh-engine.workspace = true
