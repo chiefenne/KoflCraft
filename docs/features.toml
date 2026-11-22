@@ -161,11 +161,13 @@ gaps = ""
 id = "estimates"
 title = "Estimates, action kinds and approval policies (AG-15)"
 requirements = ["AG-15"]
-grade = "open"
-how = ""
-tests = []
+grade = "partial"
+how = "`mesh.estimate` and `kofl --check` predict exactly the cells that every generator then builds (box, channel, sweep, duct bulk, layered and polyhedral); memory and output bytes are rough per-cell figures"
+tests = [
+  "crates/mesh-cli/tests/kofl.rs::estimates_match_the_built_cell_counts",
+]
 commands = []
-gaps = "Decided 2026-11-22: builds over MCP run without a prompt within the estimate and limits, otherwise ask; policies in kofl-mcp.toml"
+gaps = "Approval policies (kofl-mcp.toml, ask above the estimate limits) not built yet; wall-time limits need cancellable builds; byte figures are rough"
 
 [[feature]]
 id = "paging"

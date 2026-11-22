@@ -193,11 +193,10 @@ pub struct ReplayInput {
     pub keep_going: bool,
 }
 
-/// `journal.replay`.
-pub(crate) fn replay(input: Value, ctx: &Context) -> Result<Value, Diagnostic> {
-    let i: ReplayInput = crate::mesh::decode(input)?;
-    let text = String::from_utf8(ctx.read(&i.script)?)
-        .map_err(|e| Diagnostic::new("invalid_script", e).with_path(&i.script))?;
+/// The call rows of a journal file.
+pub(crate) fn calls(ctx: &Context, script: &str) -> Result<Vec<Row>, Diagnostic> {
+    let text = String::from_utf8(ctx.read(script)?)
+        .map_err(|e| Diagnostic::new("invalid_script", e).with_path(script))?;
     let mut rows = Vec::new();
     for (n, line) in text
         .lines()
@@ -205,21 +204,34 @@ pub(crate) fn replay(input: Value, ctx: &Context) -> Result<Value, Diagnostic> {
         .filter(|(_, l)| !l.trim().is_empty())
     {
         let v: Value = serde_json::from_str(line).map_err(|e| {
-            Diagnostic::new("invalid_script", format!("line {}: {e}", n + 1)).with_path(&i.script)
+            Diagnostic::new("invalid_script", format!("line {}: {e}", n + 1)).with_path(script)
         })?;
         if v["type"] == "call" {
             let row: Row = serde_json::from_value(v).map_err(|e| {
-                Diagnostic::new("invalid_script", format!("line {}: {e}", n + 1))
-                    .with_path(&i.script)
+                Diagnostic::new("invalid_script", format!("line {}: {e}", n + 1)).with_path(script)
             })?;
             rows.push(row);
         }
     }
     if rows.is_empty() {
-        return Err(
-            Diagnostic::new("invalid_script", "the script has no calls").with_path(&i.script)
-        );
+        return Err(Diagnostic::new("invalid_script", "the script has no calls").with_path(script));
     }
+    Ok(rows)
+}
+
+/// A replay skips earlier replays and calls that never reached a tool.
+pub(crate) fn skipped(row: &Row) -> bool {
+    row.tool == "journal.replay"
+        || row
+            .diagnostic
+            .as_ref()
+            .is_some_and(|d| matches!(d["code"].as_str(), Some("TOOL001" | "TOOL002")))
+}
+
+/// `journal.replay`.
+pub(crate) fn replay(input: Value, ctx: &Context) -> Result<Value, Diagnostic> {
+    let i: ReplayInput = crate::mesh::decode(input)?;
+    let rows = calls(ctx, &i.script)?;
     let inner = Context {
         via: "replay",
         ..ctx.clone()

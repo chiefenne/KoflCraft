@@ -48,36 +48,7 @@ pub fn generate(
             "unsupported sweep configuration version",
         ));
     }
-    let (profile, length, axis) = match config.geometry {
-        Geometry::Block {
-            dimensions_mm: [x, y, z],
-            inlet,
-        } => {
-            let (width, height, depth, axis) = match inlet {
-                Opening::XMin => (y, z, x, Axis::X),
-                Opening::YMin => (z, x, y, Axis::Y),
-                Opening::ZMin => (x, y, z, Axis::Z),
-            };
-            (Profile::BlindBlock { width, height }, depth, axis)
-        }
-        Geometry::Pipe {
-            diameter_mm,
-            length_mm,
-        } => (
-            Profile::Pipe {
-                diameter: diameter_mm,
-            },
-            length_mm,
-            Axis::X,
-        ),
-    };
-    let size = Sizing {
-        core: config.core_spacing_mm,
-        layers: config.wall_layers,
-        first: config.first_layer_mm,
-        growth: config.layer_growth,
-        ratio_limit: config.max_neighbour_size_ratio,
-    };
+    let (profile, length, axis, size) = plan(config);
     let mesh = build(profile, length, &size, cell_budget)
         .map_err(|e| EngineError::new(ErrorCode::InvalidDomain, e))?;
     let mut core_sizes = Vec::new();
@@ -168,4 +139,54 @@ pub fn generate(
     dir.write_bundle(name, &files)
         .map_err(|e| EngineError::new(ErrorCode::IoError, e))?;
     Ok(report)
+}
+
+/// The section profile, swept length, axis and sizing of a configuration.
+fn plan(config: &SweepConfig) -> (Profile, f64, Axis, Sizing) {
+    let (profile, length, axis) = match config.geometry {
+        Geometry::Block {
+            dimensions_mm: [x, y, z],
+            inlet,
+        } => {
+            let (width, height, depth, axis) = match inlet {
+                Opening::XMin => (y, z, x, Axis::X),
+                Opening::YMin => (z, x, y, Axis::Y),
+                Opening::ZMin => (x, y, z, Axis::Z),
+            };
+            (Profile::BlindBlock { width, height }, depth, axis)
+        }
+        Geometry::Pipe {
+            diameter_mm,
+            length_mm,
+        } => (
+            Profile::Pipe {
+                diameter: diameter_mm,
+            },
+            length_mm,
+            Axis::X,
+        ),
+    };
+    let size = Sizing {
+        core: config.core_spacing_mm,
+        layers: config.wall_layers,
+        first: config.first_layer_mm,
+        growth: config.layer_growth,
+        ratio_limit: config.max_neighbour_size_ratio,
+    };
+    (profile, length, axis, size)
+}
+
+/// The number of cells `generate` builds for `config`, from the 2D section
+/// and the axial stations only (AG-15). It fails where `generate` would.
+pub fn cell_count(config: &SweepConfig, cell_budget: usize) -> Result<usize, EngineError> {
+    if config.schema_version != SCHEMA_VERSION {
+        return Err(EngineError::new(
+            ErrorCode::UnsupportedSchema,
+            "unsupported sweep configuration version",
+        ));
+    }
+    let (profile, length, _, size) = plan(config);
+    build(profile, length, &size, cell_budget)
+        .map(|mesh| mesh.cells())
+        .map_err(|e| EngineError::new(ErrorCode::InvalidDomain, e))
 }

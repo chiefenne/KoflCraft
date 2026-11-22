@@ -91,6 +91,24 @@ fn check_port(
 
 /// Write a new self-contained directory only after topology, volume and both
 /// port area partitions have passed. The destination follows the CLI's create-new semantics.
+/// The number of cells `generate_channel` builds (AG-15): an
+/// (2 layers + 1)² grid of columns per axial cell, every column but the
+/// core split into two prisms.
+pub fn cell_count(config: &ChannelConfig) -> Result<usize, EngineError> {
+    let overflow = || EngineError::new(ErrorCode::InvalidDomain, "grid size overflow");
+    let columns = config
+        .layers
+        .checked_mul(2)
+        .and_then(|v| v.checked_add(1))
+        .and_then(|v| v.checked_pow(2))
+        .ok_or_else(overflow)?;
+    columns
+        .checked_mul(2)
+        .and_then(|v| v.checked_sub(1))
+        .and_then(|v| v.checked_mul(config.axial_cells))
+        .ok_or_else(overflow)
+}
+
 pub fn generate_channel(
     config: &ChannelConfig,
     dir: &MeshDirectory,

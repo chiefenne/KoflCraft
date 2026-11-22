@@ -10,6 +10,7 @@
 
 pub mod context;
 pub mod diag;
+mod estimate;
 pub mod journal;
 mod markdown;
 mod mesh;
@@ -23,6 +24,7 @@ use serde_json::{Value, json};
 
 pub use context::{Context, Limits};
 pub use diag::{CODES, Diagnostic};
+pub use estimate::{ESTIMATE_FORMAT, EstimateInput};
 pub use journal::{Journal, ReplayInput, call_journaled};
 pub use markdown::markdown;
 pub use mesh::{
@@ -287,6 +289,30 @@ pub static TOOLS: &[Tool] = &[
         },
         output_schema: out!("export_mesh"),
         run: mesh::export,
+    },
+    Tool {
+        id: "mesh.estimate",
+        version: 1,
+        action: Action::Read,
+        summary: "Estimate a build before it runs (AG-15): the exact cell count of a start-build tool's input, rough memory and output bytes, and the files it would write. `kofl --check COMMAND` prints it instead of running the build.",
+        legacy_name: None,
+        outputs: &[],
+        input_schema: || {
+            schemas::input(
+                json!({"tool": {"type": "string"}, "input": {"type": "object"}}),
+                &[],
+            )
+        },
+        output_schema: || {
+            schemas::object_schema(json!({
+                "format": {"const": "koflcraft.estimate"}, "format_version": {"type": "string"},
+                "tool": {"type": "string"}, "cells": {"type": "integer", "minimum": 0},
+                "cells_basis": {"type": "string"}, "memory_bytes": {"type": "integer", "minimum": 0},
+                "output_bytes": {"type": "integer", "minimum": 0}, "bytes_basis": {"type": "string"},
+                "files": {"type": "array", "items": {"type": "string"}}
+            }))
+        },
+        run: estimate::estimate,
     },
     Tool {
         id: "journal.replay",

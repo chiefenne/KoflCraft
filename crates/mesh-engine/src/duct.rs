@@ -85,53 +85,9 @@ pub fn generate(
     name: &OsStr,
 ) -> Result<Value, EngineError> {
     let invalid = |s: &str| EngineError::new(ErrorCode::InvalidDomain, s);
-    require_schema(patch_map.schema_version)?;
-    require_schema(plan.schema_version)?;
-    let source_digest = sha256(data);
-    if source_digest != patch_map.source_sha256 || source_digest != plan.source_sha256 {
-        return Err(invalid(
-            "patch map or partition digest differs from input STL",
-        ));
-    }
     let start = Instant::now();
-    let surface = import_closed_stl(
-        data,
-        StlOptions {
-            facet_limit: Some(patch_map.facet_count),
-            facet_patches: None,
-        },
-    )
-    .map_err(|e| EngineError::new(ErrorCode::InvalidDomain, e))?;
-    if surface.facets().len() != patch_map.facet_count
-        || patch_map.default_patch.role != "wall"
-        || patch_map.default_patch.name != "walls"
-    {
-        return Err(invalid(
-            "expected a matching facet count and a walls default patch",
-        ));
-    }
-    let mut patches = vec![3; surface.facets().len()];
-    for port in &patch_map.ports {
-        let id = match (port.name.as_str(), port.role.as_str()) {
-            ("inlet", "inlet") => 1,
-            ("outlet", "outlet") => 2,
-            _ => return Err(invalid("expected inlet and outlet roles")),
-        };
-        let [a, b] = port.facet_range;
-        let range = patches
-            .get_mut(a..b)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| invalid("invalid port range"))?;
-        for tag in range {
-            if *tag != 3 {
-                return Err(invalid("overlapping ports"));
-            }
-            *tag = id;
-        }
-    }
-    if !patches.contains(&1) || !patches.contains(&2) || !patches.contains(&3) {
-        return Err(invalid("expected distinct inlet, outlet and wall patches"));
-    }
+    let (surface, patches) = prepare(data, patch_map, plan)?;
+    let source_digest = sha256(data);
     let mut steps = Vec::new();
     if matches!(mode, Mode::Layered | Mode::Polyhedral) {
         if plan.layers == 0
@@ -311,4 +267,130 @@ pub fn generate(
     dir.write_bundle(name, &files)
         .map_err(|e| EngineError::new(ErrorCode::IoError, e))?;
     Ok(report)
+}
+
+/// The surface and per-facet patch ids (1 inlet, 2 outlet, 3 wall) of a
+/// checked STL, patch map and partition.
+fn prepare(
+    data: &[u8],
+    patch_map: &PatchMap,
+    plan: &Partition,
+) -> Result<(mesh_geometry::ClosedSurface, Vec<usize>), EngineError> {
+    let invalid = |s: &str| EngineError::new(ErrorCode::InvalidDomain, s);
+    require_schema(patch_map.schema_version)?;
+    require_schema(plan.schema_version)?;
+    let source_digest = sha256(data);
+    if source_digest != patch_map.source_sha256 || source_digest != plan.source_sha256 {
+        return Err(invalid(
+            "patch map or partition digest differs from input STL",
+        ));
+    }
+    let surface = import_closed_stl(
+        data,
+        StlOptions {
+            facet_limit: Some(patch_map.facet_count),
+            facet_patches: None,
+        },
+    )
+    .map_err(|e| EngineError::new(ErrorCode::InvalidDomain, e))?;
+    if surface.facets().len() != patch_map.facet_count
+        || patch_map.default_patch.role != "wall"
+        || patch_map.default_patch.name != "walls"
+    {
+        return Err(invalid(
+            "expected a matching facet count and a walls default patch",
+        ));
+    }
+    let mut patches = vec![3; surface.facets().len()];
+    for port in &patch_map.ports {
+        let id = match (port.name.as_str(), port.role.as_str()) {
+            ("inlet", "inlet") => 1,
+            ("outlet", "outlet") => 2,
+            _ => return Err(invalid("expected inlet and outlet roles")),
+        };
+        let [a, b] = port.facet_range;
+        let range = patches
+            .get_mut(a..b)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| invalid("invalid port range"))?;
+        for tag in range {
+            if *tag != 3 {
+                return Err(invalid("overlapping ports"));
+            }
+            *tag = id;
+        }
+    }
+    if !patches.contains(&1) || !patches.contains(&2) || !patches.contains(&3) {
+        return Err(invalid("expected distinct inlet, outlet and wall patches"));
+    }
+    Ok((surface, patches))
+}
+
+/// The number of cells `generate` builds (AG-15), counted from the inputs:
+/// bulk: one tetrahedron per facet and two per edge of a region interface;
+/// layered: plus one prism per wall facet and layer; polyhedral: one
+/// polyhedron per scaffold node plus six prisms per wall triangle of the
+/// scaffold and layer. Inputs `generate` refuses are refused here too.
+pub fn cell_count(
+    data: &[u8],
+    patch_map: &PatchMap,
+    plan: &Partition,
+    mode: Mode,
+    scaffold_data: Option<&[u8]>,
+) -> Result<usize, EngineError> {
+    let invalid = |s: &str| EngineError::new(ErrorCode::InvalidDomain, s);
+    let (surface, patches) = prepare(data, patch_map, plan)?;
+    let layers = if matches!(mode, Mode::Bulk) {
+        0
+    } else {
+        plan.layers
+    };
+    if layers == 0 && !matches!(mode, Mode::Bulk) {
+        return Err(invalid(
+            "layer count, growth and thickness must be positive",
+        ));
+    }
+    if let (Mode::Polyhedral, Some(_)) = (mode, &plan.volume_scaffold) {
+        let bytes = scaffold_data.ok_or_else(|| invalid("missing configured volume scaffold"))?;
+        let scaffold =
+            scaffold::read(bytes).map_err(|e| EngineError::new(ErrorCode::ValidationFailed, e))?;
+        let walls = scaffold.boundary.iter().filter(|(_, p)| *p == 3).count();
+        return walls
+            .checked_mul(6 * layers)
+            .and_then(|v| v.checked_add(scaffold.points.len()))
+            .ok_or_else(|| invalid("cell count overflow"));
+    }
+    // region of each facet, from the partition's facet ranges
+    let mut region = vec![usize::MAX; surface.facets().len()];
+    for (r, config) in plan.regions.iter().enumerate() {
+        for &[a, b] in &config.facets {
+            for slot in region
+                .get_mut(a..b)
+                .ok_or_else(|| invalid("invalid region range"))?
+            {
+                *slot = r;
+            }
+        }
+    }
+    let mut edges = std::collections::HashMap::new();
+    for (i, f) in surface.facets().iter().enumerate() {
+        let v = f.triangle.vertices;
+        for (a, b) in [(v[0], v[1]), (v[1], v[2]), (v[2], v[0])] {
+            edges
+                .entry((a.min(b), a.max(b)))
+                .or_insert_with(Vec::new)
+                .push(region[i]);
+        }
+    }
+    let seam = edges
+        .values()
+        .filter(|r| r.len() == 2 && r[0] != r[1])
+        .count();
+    let walls = patches.iter().filter(|&&p| p == 3).count();
+    surface
+        .facets()
+        .len()
+        .checked_add(2 * seam)
+        .and_then(|v| v.checked_add(walls.checked_mul(layers)?))
+        .ok_or_else(|| invalid("cell count overflow"))
 }

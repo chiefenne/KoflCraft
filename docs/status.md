@@ -5,9 +5,9 @@
 The verification grade of every feature (AG-17), how it was checked and what is still missing. A partial result is never presented as success; every tool result also carries a `limitations` list.
 
 - **verified** (7): checked against an exact or independent reference by a named test
-- **partial** (5): works on the named fixtures, with known gaps
+- **partial** (6): works on the named fixtures, with known gaps
 - **unverified** (1): built, not yet checked
-- **open** (1): not built
+- **open** (0): not built
 
 | Feature | Grade | How it was checked | Gaps | Requirements |
 |---|---|---|---|---|
@@ -21,7 +21,7 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 | Tool registry, result envelope and diagnostic codes (AG-12, AG-18, FC-07) | verified | Ids unique and dotted, schemas closed, docs/tools.md regenerated and compared, `kofl commands` and `kofl call` agree, codes unique and every engine code registered | — | AG-12, AG-18, FC-07 |
 | Journal and replay (AG-13) | verified | A recorded session replays in a fresh directory with equal status, exit code and result digests; a changed call is reported as TOOL005; MCP calls are journaled | — | AG-13 |
 | Mandatory read and write roots for MCP (AG-14) | verified | Reads outside the read roots and writes outside the write roots fail with TOOL006; symbolic links out of a root are refused; the server does not start without both roots | — | AG-14 |
-| Estimates, action kinds and approval policies (AG-15) | open | — | Decided 2026-11-22: builds over MCP run without a prompt within the estimate and limits, otherwise ask; policies in kofl-mcp.toml | AG-15 |
+| Estimates, action kinds and approval policies (AG-15) | partial | `mesh.estimate` and `kofl --check` predict exactly the cells that every generator then builds (box, channel, sweep, duct bulk, layered and polyhedral); memory and output bytes are rough per-cell figures | Approval policies (kofl-mcp.toml, ask above the estimate limits) not built yet; wall-time limits need cancellable builds; byte figures are rough | AG-15 |
 | Summary first, paged detail over MCP (AG-16) | verified | Following `next_cursor` returns every cell and face exactly once at every page and kind boundary; foreign and malformed cursors are refused; the acceptance runner reassembles the MCP pages and compares them with the CLI's full report on all six fixtures | Only mesh.report has per-row detail today; the CLI keeps the full report (decided 2026-11-22) | AG-16 |
 | Verification grades and limitations (AG-17) | verified | docs/status.md is regenerated from this file and compared; every listed test must exist; every result envelope carries `limitations` | — | AG-17 |
 | Crate layering check (SW-19) | verified | Every workspace dependency points to a lower layer or an allowed same-layer use; front ends name no crate below mesh-tools | — | SW-19 |
@@ -92,6 +92,10 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 - `read_and_write_roots_confine_every_call` in [crates/mesh-mcp/tests/stdio.rs](../crates/mesh-mcp/tests/stdio.rs)
 - `external_symlinks_cannot_be_used_as_artifacts_or_outputs` in [crates/mesh-mcp/tests/stdio.rs](../crates/mesh-mcp/tests/stdio.rs)
 - `roots_are_required` in [crates/mesh-mcp/src/lib.rs](../crates/mesh-mcp/src/lib.rs)
+
+### Estimates, action kinds and approval policies (AG-15)
+
+- `estimates_match_the_built_cell_counts` in [crates/mesh-cli/tests/kofl.rs](../crates/mesh-cli/tests/kofl.rs)
 
 ### Summary first, paged detail over MCP (AG-16)
 
