@@ -115,6 +115,33 @@ pub(crate) fn size_field() -> Value {
         }),
         &["frame"],
     );
+    let distance = json!({"type": "number", "minimum": 0, "description": "The size holds this far beyond the source; default 0"});
+    let growth = json!({"type": "number", "exclusiveMinimum": 1, "description": "Size growth per unit distance is growth - 1, capped at gradation - 1; default gradation"});
+    let feature_angle = json!({"type": "number", "exclusiveMinimum": 0, "maximum": 180, "description": "Degrees; edges whose facet normals turn more are feature edges, not curvature; default 30"});
+    let curvature = input(
+        json!({
+            "kind": {"const": "curvature"}, "name": name,
+            "angle": {"type": "number", "exclusiveMinimum": 0, "maximum": 90, "description": "Degrees of wall-normal turn one cell may span: size = angle / largest principal curvature (GRD-04)"},
+            "distance": distance, "growth": growth, "feature_angle": feature_angle
+        }),
+        &["distance", "growth", "feature_angle"],
+    );
+    let gap = input(
+        json!({
+            "kind": {"const": "gap"}, "name": name,
+            "cells_across": {"type": "number", "minimum": 1, "description": "Cells across the gap between opposite walls: size = local thickness / cells_across, held across the gap (GRD-04)"},
+            "distance": distance, "growth": growth,
+            "wedge_angle": {"type": "number", "exclusiveMinimum": 0, "maximum": 90, "description": "Degrees; walls meeting at a smaller interior angle form a gap; default 45"}
+        }),
+        &["distance", "growth", "wedge_angle"],
+    );
+    let features = input(
+        json!({
+            "kind": {"const": "feature_edges"}, "name": name, "size": positive,
+            "distance": distance, "growth": growth, "feature_angle": feature_angle
+        }),
+        &["distance", "growth", "feature_angle"],
+    );
     let frame_def = object_schema(json!({"name": name, "origin": p, "x_axis": p, "y_axis": p}));
     input(
         json!({
@@ -123,7 +150,7 @@ pub(crate) fn size_field() -> Value {
             "gradation": {"type": "number", "exclusiveMinimum": 1, "description": "Largest neighbour size ratio; bounds the field slope by gradation - 1"},
             "relaxation_iterations": {"type": "integer", "minimum": 0, "description": "Lloyd (CVT) iterations; default 20"},
             "frames": {"type": "array", "items": frame_def},
-            "sources": {"type": "array", "items": {"oneOf": [datum, region]}}
+            "sources": {"type": "array", "items": {"oneOf": [datum, region, curvature, gap, features]}}
         }),
         &["relaxation_iterations", "frames", "sources"],
     )

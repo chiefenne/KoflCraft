@@ -17,6 +17,10 @@
 //!    the convex domain.
 
 mod field;
+#[cfg(test)]
+#[path = "../../../../test-fixtures/shapes.rs"]
+mod shapes;
+pub mod surface;
 
 pub use field::{Frame, Shape, SizeField, SizeSource, SizingError, SourceKind};
 

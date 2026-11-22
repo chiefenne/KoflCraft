@@ -39,15 +39,29 @@ target/debug/kofl generate-stl test-fixtures/unit-box.stl test-fixtures/stl-size
 | `gradation` | Largest neighbour size ratio; the field's slope is capped at `gradation - 1` |
 | `relaxation_iterations` | Lloyd (CVT) iterations, default 20 |
 | `frames` | Named coordinate systems: `name`, `origin`, `x_axis`, `y_axis` (`z = x × y`); `global` is predefined |
-| `sources` | Datum objects and coordinate regions, each with a unique `name` |
+| `sources` | Datum objects, coordinate regions and geometry-derived sources, each with a unique `name` |
 
 A **datum** (`"kind": "datum"`, GRD-02) has a `shape`, a `size`, an optional `distance` within which the size holds (default 0), an optional `growth` ratio beyond it (default and cap: the gradation) and an optional `frame`. Shapes: `point` (`point`), `segment` (`start`, `end`), `plane` (`point`, `normal`; two-sided), `box` (`min`, `max`), `slab` (`axis` x/y/z, `min`, `max`), `sphere` (`centre`, `radius`), `cylinder` (`start`, `end`, `radius`) and `cone` (`start`, `end`, `start_radius`, `end_radius`). Bodies are solid. A **region** (`"kind": "region"`, GRD-03) is a `box`, `slab` or `cylinder` in a frame with a `size` inside it.
+
+Three sources are derived from the STL itself (GRD-04, [note](../research/grd-04-geometry-sizing.md)). Each takes the optional `distance` and `growth` of a datum; sizes below `min_size` are held at it and reported.
+
+| Kind | Fields | Size near the wall |
+|---|---|---|
+| `curvature` | `angle` (degrees, at most 90), optional `feature_angle` (default 30) | `angle` / κ_max: one cell spans at most `angle` of the wall normal's turn. κ_max is the largest principal curvature of each facet from the normal-cycle tensor over its smooth vertex ring; edges sharper than `feature_angle` are features and do not count |
+| `gap` | `cells_across` (at least 1), optional `wedge_angle` (degrees, default 45, at most 90) | local thickness / `cells_across`, held across the whole gap. The thickness at a wall point is the diameter of the largest ball touching the wall there that the opposite walls leave free; walls count as opposite when they face each other or meet at an interior angle below `wedge_angle`, so a box's 90° edges are not gaps |
+| `feature_edges` | `size`, optional `feature_angle` (default 30) | `size` along every edge whose facet normals turn more than `feature_angle` |
+
+```json
+{"kind": "gap", "name": "slot", "cells_across": 4}
+```
+
+Per derived source the `sizing` block adds `derived`: the method, the number of facets, facet pieces or edges that ask for a size, how many of them are held at `min_size`, and for a gap the cells crossed along the inward wall normal at up to 2,000 wall samples (quantiles), the samples counted and those below `cells_across`. A source's `cells` are the cells within half their size of the wall (plus `distance`). The result lists held pieces and samples below the target as limitations.
 
 The field is the minimum over all sources, clamped to `[min_size, max_size]`. The seed count is the volume integral of h⁻³; `kofl --check` and `mesh.estimate` report it exactly. Seeds are drawn from the field with the config's `seed` (default 0) and relaxed into a density-weighted centroidal Voronoi tessellation; the choice and its benchmark are in [research/m2-size-control.md](../research/m2-size-control.md). The artifact stores the placed sites, so checks and exports work as with explicit sites.
 
 The result and the artifact carry a `sizing` block: the field as given, the seed count, the iterations, the size ratio cbrt(V)/h and the neighbour size ratio (quantiles), the interior faces whose neighbour ratio exceeds the gradation, and per source the target, the achieved sizes and the number of cells it governs (GRD-08). The gradation bounds the field, not each pair of cells: about one face in ten exceeds it on the fixture, and the result lists that as a limitation.
 
-Limits: datum objects from STL surfaces, and curvature, gap and feature-edge sizes (GRD-04), are open. Each cell is clipped by its nearest sites only (ALG-04, [note](../research/alg-04-neighbour-clipping.md)), so a relaxation iteration costs about O(N log N); a field may ask for at most 200,000 seeds, and the MCP site limit applies to the seed count.
+Limits: datum objects from STL surfaces are open. The derived sources use Euclidean distances and a closed-form thickness, exact for the convex domains of M2; nonconvex domains (M4) need distances through the domain. On a tapering gap a few per cent of the wall samples get one cell fewer than asked, because cells are discrete. Each cell is clipped by its nearest sites only (ALG-04, [note](../research/alg-04-neighbour-clipping.md)), so a relaxation iteration costs about O(N log N); a field may ask for at most 200,000 seeds, and the MCP site limit applies to the seed count.
 
 ## Boundary patches
 

@@ -318,8 +318,28 @@ pub(crate) fn limitations(id: &str, output: &Value) -> Vec<String> {
             l.push("convex STL surfaces only".into());
             if let Some(sizing) = output.get("sizing") {
                 l.push(
-                    "size field: datum objects and coordinate regions only; curvature, gap and STL datum sources (GRD-04) are open".into(),
+                    "size field: STL surface and closed-body datum objects (GRD-02) are open; curvature, gap and feature-edge sources use Euclidean distances, exact in the convex domains meshed so far".into(),
                 );
+                for source in sizing["sources"].as_array().into_iter().flatten() {
+                    let derived = &source["derived"];
+                    let name = source["name"].as_str().unwrap_or("?");
+                    if let Some(n) = derived["at_min_size"].as_u64()
+                        && n > 0
+                    {
+                        l.push(format!(
+                            "source {name}: {n} surface pieces ask for less than min_size and are held at it, so their target is not met there"
+                        ));
+                    }
+                    if let (Some(below), Some(samples)) = (
+                        derived["samples_below_target"].as_u64(),
+                        derived["samples"].as_u64(),
+                    ) && below > 0
+                    {
+                        l.push(format!(
+                            "source {name}: {below} of {samples} wall samples have fewer cells across the gap than asked"
+                        ));
+                    }
+                }
                 if let (Some(over), Some(total)) = (
                     sizing["faces_over_gradation"].as_u64(),
                     sizing["interior_faces"].as_u64(),

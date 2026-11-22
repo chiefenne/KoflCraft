@@ -135,6 +135,43 @@ impl KdTree {
     }
 }
 
+impl KdTree {
+    /// The point nearest to `q`, ties by index; `None` for an empty tree.
+    pub fn closest(&self, q: Vec3) -> Option<usize> {
+        let mut best: Option<(f64, usize)> = None;
+        if self.nodes.is_empty() {
+            return None;
+        }
+        let mut stack = vec![0usize];
+        while let Some(n) = stack.pop() {
+            let node = self.nodes[n];
+            if best.is_some_and(|b| box_distance(q, node.min, node.max) > b.0) {
+                continue;
+            }
+            match node.split {
+                None => {
+                    for &i in &self.order[node.start..node.end] {
+                        let d = (self.points[i] - q).dot(self.points[i] - q);
+                        if best.is_none_or(|b| less((d, i), b)) {
+                            best = Some((d, i));
+                        }
+                    }
+                }
+                Some((a, value, left, right)) => {
+                    if axis(q, a) < value {
+                        stack.push(right);
+                        stack.push(left);
+                    } else {
+                        stack.push(left);
+                        stack.push(right);
+                    }
+                }
+            }
+        }
+        best.map(|b| b.1)
+    }
+}
+
 fn less(a: (f64, usize), b: (f64, usize)) -> bool {
     a.0 < b.0 || (a.0 == b.0 && a.1 < b.1)
 }
@@ -197,6 +234,23 @@ mod tests {
                 let want: Vec<_> = all.iter().take(k).copied().collect();
                 assert_eq!(tree.nearest(of, k), want, "point {of}, k {k}");
             }
+            // A query point equal to a lattice point finds it (distance 0).
+            assert_eq!(
+                tree.closest(points[of]),
+                Some(
+                    of.min(
+                        (0..points.len())
+                            .find(|&i| points[i] == points[of])
+                            .unwrap_or(of)
+                    )
+                )
+            );
+            let q = points[of] + Vec3::new(0.31, -0.17, 0.05);
+            let want = (0..points.len())
+                .map(|i| ((points[i] - q).dot(points[i] - q), i))
+                .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+                .map(|b| b.1);
+            assert_eq!(tree.closest(q), want);
         }
     }
 }

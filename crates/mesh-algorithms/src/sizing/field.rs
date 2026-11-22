@@ -16,8 +16,11 @@
 //! domains of M2.
 
 use std::fmt;
+use std::sync::Arc;
 
 use mesh_core::geometry::Vec3;
+
+use super::surface::WeightedSet;
 
 /// A right-handed orthonormal coordinate system (GRD-03).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -72,7 +75,7 @@ fn unit(v: Vec3) -> Option<Vec3> {
 
 /// The shape of a size source, in its frame's coordinates. Bodies are solid:
 /// the distance is zero inside them.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Shape {
     Point(Vec3),
     Segment {
@@ -107,12 +110,16 @@ pub enum Shape {
         start_radius: f64,
         end_radius: f64,
     },
+    /// Primitives with their own sizes and reaches, derived from the
+    /// surface (GRD-04); the distance is the reach distance.
+    Weighted(Arc<WeightedSet>),
 }
 
 impl Shape {
     fn check(&self) -> Result<(), &'static str> {
         let finite = |v: Vec3| v.is_finite();
         let ok = match *self {
+            Self::Weighted(ref set) => set.is_valid(),
             Self::Point(p) => finite(p),
             Self::Segment { start, end } => {
                 finite(start) && finite(end) && (end - start).length() > 0.0
@@ -153,6 +160,7 @@ impl Shape {
     /// The Euclidean distance from `p` to the shape (zero inside a body).
     pub fn distance(&self, p: Vec3) -> f64 {
         match *self {
+            Self::Weighted(ref set) => set.reach_distance(p),
             Self::Point(q) => (p - q).length(),
             Self::Segment { start, end } => segment_distance(p, start, end),
             Self::Plane { point, normal } => ((p - point).dot(normal) / normal.length()).abs(),
@@ -216,11 +224,27 @@ fn frustum_distance(t: f64, rho: f64, length: f64, ra: f64, rb: f64) -> f64 {
     best.sqrt()
 }
 
-/// Whether a source is a datum object (GRD-02) or a coordinate region (GRD-03).
+/// Whether a source is a datum object (GRD-02), a coordinate region
+/// (GRD-03) or derived from the surface (GRD-04).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceKind {
     Datum,
     Region,
+    Curvature,
+    Gap,
+    FeatureEdges,
+}
+
+impl SourceKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Datum => "datum",
+            Self::Region => "region",
+            Self::Curvature => "curvature",
+            Self::Gap => "gap",
+            Self::FeatureEdges => "feature_edges",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -229,7 +253,8 @@ pub struct SizeSource {
     pub kind: SourceKind,
     pub shape: Shape,
     pub frame: Frame,
-    /// Target size within `distance` of the shape.
+    /// Target size within `distance` of the shape; for weighted primitives
+    /// the smallest of their sizes (`max_size` when there are none).
     pub size: f64,
     /// Influence distance; zero for regions.
     pub distance: f64,
@@ -289,6 +314,18 @@ impl SizeField {
             source.shape.check().map_err(fail)?;
             if !(source.size.is_finite() && min_size <= source.size && source.size <= max_size) {
                 return Err(fail("size must lie between min_size and max_size"));
+            }
+            if let Shape::Weighted(set) = &source.shape {
+                let items = set.items();
+                if items
+                    .iter()
+                    .any(|w| !(min_size <= w.size && w.size <= max_size))
+                    || set.smallest().unwrap_or(max_size) != source.size
+                {
+                    return Err(fail(
+                        "derived sizes must lie between min_size and max_size, the smallest being the size",
+                    ));
+                }
             }
             if !(source.distance.is_finite() && source.distance >= 0.0) {
                 return Err(fail("distance must be finite and not negative"));
@@ -350,16 +387,32 @@ impl SizeField {
     /// The size source `index` alone asks for at `p`.
     pub fn source_size(&self, index: usize, p: Vec3) -> f64 {
         let source = &self.sources[index];
+        if let Shape::Weighted(set) = &source.shape {
+            return set.envelope(
+                source.frame.local(p),
+                self.rates[index],
+                source.distance,
+                f64::INFINITY,
+            );
+        }
         let beyond = (self.source_distance(index, p) - source.distance).max(0.0);
         source.size + self.rates[index] * beyond
     }
 
     /// h(p).
     pub fn size(&self, p: Vec3) -> f64 {
-        (0..self.sources.len())
-            .map(|i| self.source_size(i, p))
-            .fold(self.max_size, f64::min)
-            .clamp(self.min_size, self.max_size)
+        let mut best = self.max_size;
+        for (i, source) in self.sources.iter().enumerate() {
+            let size = match &source.shape {
+                // The current minimum bounds the search of the hierarchy.
+                Shape::Weighted(set) => {
+                    set.envelope(source.frame.local(p), self.rates[i], source.distance, best)
+                }
+                _ => self.source_size(i, p),
+            };
+            best = best.min(size);
+        }
+        best.clamp(self.min_size, self.max_size)
     }
 }
 
