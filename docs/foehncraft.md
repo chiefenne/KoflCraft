@@ -68,9 +68,11 @@ node average and an edge), so `foehn mesh` must report the same counts and
 the same volume and areas to round-off, and calls a mesh invalid exactly
 when `inverted_faces` is not zero.
 
-`cargo m1 --require-foehn` checks this for every acceptance fixture (26 files) and records each in `evidence.json` under `foehncraft`; CI runs it. First checked on 2026-11-22 with FoehnCraft main: box (4 sites, OpenFOAM),
+`cargo m1 --require-foehn` checks this for every acceptance fixture (35 files) and records each in `evidence.json` under `foehncraft`; CI runs it. First checked on 2026-11-22 with FoehnCraft main: box (4 sites, OpenFOAM),
 straight channel, analytic block and pipe sweeps, elbow duct bulk and
 layered all load valid with equal counts and volume and areas within
-1.7e-12. The polyhedral elbow loads with equal counts but 10 faces with
-S·d ≤ 0, which FoehnCraft (and KoflCraft's prediction) flag as invalid; that
-is a quality gap of the polyhedral dual prototype (M4), not of the files.
+1.7e-12. The polyhedral elbow then loaded with equal counts but 10 faces with
+S·d ≤ 0 (SolidCraft: 18), which FoehnCraft flagged as invalid. Since the
+split of dual cells at reentrant wall edges (2026-11-22,
+[note](../research/m4-reentrant-dual-split.md)) both load valid, and the
+round trip fails on any export FoehnCraft calls invalid.

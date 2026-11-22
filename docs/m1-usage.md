@@ -24,7 +24,7 @@ Open `mesh-output/box.vtu` in ParaView or `mesh-output/box.msh` in Gmsh. The VTU
 
 ## Estimates
 
-`kofl --check COMMAND` prints what a build command would make instead of running it (`mesh.estimate`, AG-15): the exact cell count, rough memory and output bytes and the files it would write. The count comes from the inputs without building the volume mesh: the sites of a box or STL mesh, the channel grid, the swept 2D section, and for a duct the STL facets, region interfaces and wall facets, or the scaffold nodes and wall triangles. `kofl call mesh.estimate --input FILE` takes `{"tool": ID, "input": {...}}`. Only build tools have an estimate; the order of global flags is `kofl [--journal FILE] [--check] COMMAND`.
+`kofl --check COMMAND` prints what a build command would make instead of running it (`mesh.estimate`, AG-15): the exact cell count, rough memory and output bytes and the files it would write. The count comes from the inputs without building the volume mesh: the sites of a box or STL mesh, the channel grid, the swept 2D section, and for a duct the STL facets, region interfaces and wall facets, or the scaffold nodes and wall triangles. A polyhedral duct then splits a few dual cells at reentrant wall edges, which only the built wall layers decide (10 on the elbow, 3 on SolidCraft); its `cells_basis` says so instead of `exact`. `kofl call mesh.estimate --input FILE` takes `{"tool": ID, "input": {...}}`. Only build tools have an estimate; the order of global flags is `kofl [--journal FILE] [--check] COMMAND`.
 
 ## Journal and replay
 

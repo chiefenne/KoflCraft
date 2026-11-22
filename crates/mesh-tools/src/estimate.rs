@@ -1,7 +1,9 @@
 //! `mesh.estimate` and `--check` (AG-15): what a build would make, before
 //! it runs. The cell count is exact: each generator counts its cells from
 //! the inputs (sites, the channel grid, the swept 2D section, the duct
-//! surface or scaffold) without building the volume mesh. Memory and
+//! surface or scaffold) without building the volume mesh. The one exception
+//! is labelled in `cells_basis`: a polyhedral duct splits a few dual cells
+//! at reentrant wall edges, which only the built wall layers decide. Memory and
 //! output bytes are rough per-cell figures, labelled as such.
 
 use std::path::Path;
@@ -33,8 +35,18 @@ pub struct EstimateInput {
     pub input: Value,
 }
 
-/// The cell count of one build call.
-pub(crate) fn cells(id: &str, input: Value, ctx: &Context) -> Result<usize, Diagnostic> {
+/// `cells_basis` of a count that is exact.
+const EXACT: &str = "exact";
+/// `cells_basis` of a polyhedral duct with a volume scaffold.
+const SPLIT_BASIS: &str = "exact before the split of dual cells at reentrant wall edges, \
+    which adds a few cells (10 on the elbow fixture, 3 on SolidCraft) and needs the built layers";
+
+/// The cell count of one build call and its basis.
+pub(crate) fn cells(
+    id: &str,
+    input: Value,
+    ctx: &Context,
+) -> Result<(usize, &'static str), Diagnostic> {
     let tool = find(id).ok_or_else(|| Diagnostic::new("unknown_tool", format!("no tool {id}")))?;
     if tool.action != Action::StartBuild {
         return Err(Diagnostic::new(
@@ -45,7 +57,8 @@ pub(crate) fn cells(id: &str, input: Value, ctx: &Context) -> Result<usize, Diag
             ),
         ));
     }
-    Ok(match tool.id {
+    let mut basis = EXACT;
+    let n = match tool.id {
         "mesh.generate" => decode::<GenerateInput>(input)?.config.sites.len(),
         "mesh.generate_stl" => {
             let i: GenerateStlInput = decode(input)?;
@@ -73,6 +86,9 @@ pub(crate) fn cells(id: &str, input: Value, ctx: &Context) -> Result<usize, Diag
                     ctx.read(&path.to_string_lossy())
                 })
                 .transpose()?;
+            if scaffold.is_some() {
+                basis = SPLIT_BASIS;
+            }
             duct::cell_count(
                 &ctx.read(&i.surface)?,
                 &patches,
@@ -81,30 +97,40 @@ pub(crate) fn cells(id: &str, input: Value, ctx: &Context) -> Result<usize, Diag
                 scaffold.as_deref(),
             )?
         }
-        "journal.replay" => replay_cells(input, ctx)?,
+        "journal.replay" => {
+            let (n, b) = replay_cells(input, ctx)?;
+            basis = b;
+            n
+        }
         other => {
             return Err(Diagnostic::new(
                 "invalid_arguments",
                 format!("no estimate for {other}"),
             ));
         }
-    })
+    };
+    Ok((n, basis))
 }
 
 /// The cells of every build call a journal would replay.
-fn replay_cells(input: Value, ctx: &Context) -> Result<usize, Diagnostic> {
+fn replay_cells(input: Value, ctx: &Context) -> Result<(usize, &'static str), Diagnostic> {
     let i: crate::ReplayInput = decode(input)?;
     let rows = crate::journal::calls(ctx, &i.script)?;
     let mut total = 0usize;
+    let mut basis = EXACT;
     for row in rows {
         if crate::journal::skipped(&row) {
             continue;
         }
         if find(&row.tool).is_some_and(|t| t.action == Action::StartBuild) {
-            total = total.saturating_add(cells(&row.tool, row.input, ctx)?);
+            let (n, b) = cells(&row.tool, row.input, ctx)?;
+            total = total.saturating_add(n);
+            if b != EXACT {
+                basis = b;
+            }
         }
     }
-    Ok(total)
+    Ok((total, basis))
 }
 
 /// `mesh.estimate`.
@@ -113,14 +139,14 @@ pub(crate) fn estimate(input: Value, ctx: &Context) -> Result<Value, Diagnostic>
     let tool = find(&i.tool)
         .ok_or_else(|| Diagnostic::new("unknown_tool", format!("no tool {}", i.tool)))?;
     let files = tool.effects(&i.input);
-    let n = cells(tool.id, i.input, ctx)?;
+    let (n, basis) = cells(tool.id, i.input, ctx)?;
     let n64 = n as u64;
     Ok(json!({
         "format": ESTIMATE_FORMAT,
         "format_version": FORMAT_VERSION,
         "tool": tool.id,
         "cells": n,
-        "cells_basis": "exact",
+        "cells_basis": basis,
         "memory_bytes": n64.saturating_mul(MEMORY_BYTES_PER_CELL),
         "output_bytes": n64.saturating_mul(OUTPUT_BYTES_PER_CELL),
         "bytes_basis": "rough: per-cell figures measured on the fixtures",

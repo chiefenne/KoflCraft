@@ -113,13 +113,247 @@ fn split_layers(front: &mut front::Front, cuts: &mut Subdivision) -> Result<(), 
     Ok(())
 }
 
+/// The part of one scaffold tetrahedron nearest one of its vertices: the
+/// vertex, three edge midpoints, three face centroids and the centroid.
+#[derive(Default)]
+struct Corner {
+    /// The three median-dual quadrilaterals towards the other vertices.
+    faces: Vec<Vec<usize>>,
+    /// The tetrahedron faces through the vertex (sorted scaffold ids) with
+    /// the quadrilateral of the corner piece on each, oriented outward.
+    sides: Vec<([usize; 3], Vec<usize>)>,
+    volume: f64,
+    /// Mean of the eight corner points, used only to group pieces.
+    centre: Vec3,
+}
+
 #[derive(Default)]
 struct Dual {
-    faces: Vec<Vec<usize>>,
+    corners: Vec<Corner>,
+    /// Fine boundary triangles, their patch and the scaffold face they lie on.
+    boundary: Vec<([usize; 3], usize, [usize; 3])>,
+}
+
+/// The faces of the cell made of the corner pieces in `group`: their dual
+/// quadrilaterals, the boundary triangles on their tetrahedra, and the corner
+/// quadrilaterals on tetrahedron faces shared with a piece outside the group.
+/// Also returns the faces through the vertex and the boundary triangles used.
+fn part_faces(cell: &Dual, group: &[usize]) -> (Vec<Vec<usize>>, Vec<[usize; 3]>, Vec<usize>) {
+    let owns = |key: &[usize; 3]| {
+        group
+            .iter()
+            .any(|&c| cell.corners[c].sides.iter().any(|(k, _)| k == key))
+    };
+    let mut faces = Vec::new();
+    let mut planes = Vec::new();
+    for &c in group {
+        let corner = &cell.corners[c];
+        faces.extend(corner.faces.iter().cloned());
+        for (key, quad) in &corner.sides {
+            let inside = group
+                .iter()
+                .any(|&o| o != c && cell.corners[o].sides.iter().any(|(k, _)| k == key));
+            let on_boundary = cell.boundary.iter().any(|(_, _, k)| k == key);
+            if !inside && !on_boundary {
+                faces.push(quad.clone());
+                planes.push([quad[0], quad[1], quad[3]]);
+            }
+        }
+    }
+    let mut used = Vec::new();
+    for (i, (nodes, _, key)) in cell.boundary.iter().enumerate() {
+        if owns(key) {
+            faces.push(nodes.to_vec());
+            planes.push(*nodes);
+            used.push(i);
+        }
+    }
+    (faces, planes, used)
+}
+
+/// Centroid of a closed shell, integrated over a fan from each face's vertex
+/// mean as FoehnCraft and the hand-off checks do.
+fn shell_centroid(points: &[Vec3], faces: &[Vec<usize>]) -> Vec3 {
+    let Some(&first) = faces.first().and_then(|f| f.first()) else {
+        return Vec3::ZERO;
+    };
+    let origin = points[first];
+    let mut v6 = 0.;
+    let mut moment = Vec3::ZERO;
+    for ring in faces {
+        let c = mean(points, ring) - origin;
+        for (k, &a) in ring.iter().enumerate() {
+            let b = ring[(k + 1) % ring.len()];
+            let (pa, pb) = (points[a] - origin, points[b] - origin);
+            let t6 = c.dot(pa.cross(pb));
+            v6 += t6;
+            moment = moment + (c + pa + pb) * (t6 / 4.);
+        }
+    }
+    origin + moment * (1. / v6)
+}
+
+/// Faces between a part and a wall prism whose area vector does not point
+/// from the part's centroid towards the prism's (S·d ≤ 0).
+fn wall_inversions(
+    p: &[Vec3],
+    cell: &Dual,
+    group: &[usize],
+    wall: &dyn Fn(&[usize; 3]) -> Option<Vec3>,
+) -> usize {
+    let (faces, _, used) = part_faces(cell, group);
+    let centre = shell_centroid(p, &faces);
+    used.iter()
+        .filter(|&&i| {
+            let nodes = cell.boundary[i].0;
+            wall(&nodes).is_some_and(|prism| {
+                let [a, b, c] = nodes.map(|n| p[n]);
+                (b - a).cross(c - a).dot(prism - centre) <= 0.
+            })
+        })
+        .count()
+}
+
+/// Feature angle that separates the wall planes of a split dual cell.
+const SPLIT_FEATURE_COS: f64 = 0.866_025_403_784_438_6; // cos 30°
+
+/// A median-dual cell around a vertex on a reentrant wall edge is L-shaped:
+/// its centroid lies behind the wall planes next to the vertex, so the faces
+/// to the wall prisms there point the wrong way (S·d ≤ 0, FoehnCraft calls
+/// them inverted). Split such a cell along scaffold faces through the vertex,
+/// one part per wall plane: each corner piece joins the plane it stands
+/// farthest in front of. The split is kept only where it removes inversions
+/// and every part is a connected, manifold shell.
+fn split_reentrant(
+    p: &[Vec3],
+    site: usize,
+    cell: &Dual,
+    wall: &dyn Fn(&[usize; 3]) -> Option<Vec3>,
+) -> Vec<Vec<usize>> {
+    let all: Vec<usize> = (0..cell.corners.len()).collect();
+    let before = wall_inversions(p, cell, &all, wall);
+    if before == 0 {
+        return vec![all];
+    }
+    let mut planes: Vec<Vec3> = Vec::new();
+    for (nodes, _, _) in &cell.boundary {
+        let [a, b, c] = nodes.map(|n| p[n]);
+        let normal = (b - a).cross(c - a);
+        let inward = normal * (-1. / normal.length());
+        if !planes.iter().any(|n| n.dot(inward) > SPLIT_FEATURE_COS) {
+            planes.push(inward);
+        }
+    }
+    if planes.len() < 2 {
+        return vec![all];
+    }
+    let mut groups = vec![Vec::new(); planes.len()];
+    for (c, corner) in cell.corners.iter().enumerate() {
+        let r = corner.centre - p[site];
+        let mut best = 0;
+        for (k, n) in planes.iter().enumerate() {
+            if r.dot(*n) > r.dot(planes[best]) {
+                best = k;
+            }
+        }
+        groups[best].push(c);
+    }
+    // Pieces join through shared tetrahedron faces; each connected set is
+    // its own part.
+    let mut parts = Vec::new();
+    for group in groups {
+        let mut left = group;
+        while let Some(seed) = left.pop() {
+            let mut part = vec![seed];
+            let mut i = 0;
+            while i < part.len() {
+                let keys: Vec<[usize; 3]> = cell.corners[part[i]]
+                    .sides
+                    .iter()
+                    .map(|(k, _)| *k)
+                    .collect();
+                let (join, rest): (Vec<usize>, Vec<usize>) = left
+                    .iter()
+                    .partition(|&&o| cell.corners[o].sides.iter().any(|(k, _)| keys.contains(k)));
+                part.extend(join);
+                left = rest;
+                i += 1;
+            }
+            part.sort_unstable();
+            parts.push(part);
+        }
+    }
+    parts.sort();
+    if parts.len() < 2 {
+        return vec![all];
+    }
+    for part in &parts {
+        let (faces, _, _) = part_faces(cell, part);
+        let mut edges = HashMap::<(usize, usize), i32>::new();
+        for f in &faces {
+            for (k, &a) in f.iter().enumerate() {
+                let b = f[(k + 1) % f.len()];
+                *edges.entry((a.min(b), a.max(b))).or_default() += if a < b { 1 } else { -1 };
+            }
+        }
+        let mut uses = HashMap::<(usize, usize), usize>::new();
+        for f in &faces {
+            for (k, &a) in f.iter().enumerate() {
+                let b = f[(k + 1) % f.len()];
+                *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        if edges.values().any(|&s| s != 0) || uses.values().any(|&u| u != 2) {
+            return vec![all];
+        }
+    }
+    let after: usize = parts
+        .iter()
+        .map(|part| wall_inversions(p, cell, part, wall))
+        .sum();
+    if after < before { parts } else { vec![all] }
+}
+
+/// A point strictly inside a boundary cell that sees every face: a short
+/// step from the vertex into the cell, in front of every face through the
+/// vertex (`planes`, oriented outward), and halfway to the nearest other face.
+fn strict_witness(
+    p: &[Vec3],
+    site: Vec3,
+    faces: &[Vec<usize>],
+    planes: &[[usize; 3]],
     volume: f64,
-    // Sum of inward unit normals to find a strict witness at the boundary.
-    inward: Vec3,
-    boundary_faces: Vec<[usize; 3]>,
+) -> Vec3 {
+    let unit = |[a, b, c]: [usize; 3]| {
+        let n = (p[b] - p[a]).cross(p[c] - p[a]);
+        n / n.length()
+    };
+    let mut direction = planes.iter().fold(Vec3::ZERO, |s, &f| s - unit(f));
+    // A sufficiently short inward step preserves strict visibility of every
+    // internal dual face, even in a slender boundary tetrahedron.
+    for _ in 0..32 {
+        let mut valid = true;
+        for &face in planes {
+            let n = unit(face);
+            if direction.dot(n) > -0.01 {
+                direction = direction - n * (direction.dot(n) + 0.02);
+                valid = false;
+            }
+        }
+        if valid {
+            break;
+        }
+    }
+    let mut distance = volume.cbrt() * 0.1;
+    let direction = direction / direction.length();
+    for face in faces {
+        let a = p[face[0]];
+        let n = (p[face[1]] - a).cross(p[face[2]] - a);
+        if n.dot(direction) > 0. {
+            distance = distance.min(n.dot(a - site) / n.dot(direction) * 0.5);
+        }
+    }
+    site + direction * distance
 }
 
 /// Extend the prescribed wall displacement through the scaffold. Weighting by
@@ -308,25 +542,6 @@ pub fn build_volume_dual(
     }
     let p = &mut front.points;
     let mut dual: Vec<Dual> = (0..mapped.len()).map(|_| Dual::default()).collect();
-    let owner_offset = front.cells.len();
-    for &(t, patch) in &scaffold.boundary {
-        let fine = cuts.split(p, t.map(|n| mapped[n]));
-        for (j, nodes) in fine.into_iter().enumerate() {
-            let id = t[j / 2];
-            let [a, b, c] = nodes.map(|n| p[n]);
-            let normal = (b - a).cross(c - a);
-            dual[id].inward = dual[id].inward - normal / normal.length();
-            dual[id].boundary_faces.push(nodes);
-            dual[id].faces.push(nodes.to_vec());
-            if patch <= 2 || steps.is_empty() {
-                front.boundary.push(BoundaryFace {
-                    nodes: nodes.to_vec(),
-                    patch,
-                    owner: owner_offset + id,
-                });
-            }
-        }
-    }
     for (index, t) in scaffold.tetrahedra.iter().enumerate() {
         let q = t.map(|n| mapped[n]);
         let [a, b, c, d] = q.map(|n| p[n]);
@@ -337,9 +552,14 @@ pub fn build_volume_dual(
             ));
         }
         let centroid = center(p, &q);
-        for &n in t {
-            dual[n].volume += six / 24.;
-        }
+        let corners: [usize; 4] = std::array::from_fn(|i| {
+            let corner = dual[t[i]].corners.len();
+            dual[t[i]].corners.push(Corner {
+                volume: six / 24.,
+                ..Corner::default()
+            });
+            corner
+        });
         // Each four-point face lies in the affine plane where the two
         // endpoint barycentric coordinates are equal.
         for [i, j, k, l] in [
@@ -354,56 +574,93 @@ pub fn build_volume_dual(
             let f = cuts.face(p, [q[i], q[j], q[k]]);
             let g = cuts.face(p, [q[i], q[j], q[l]]);
             let face = [edge, f, centroid, g];
-            dual[t[i]].faces.push(face.to_vec());
-            dual[t[j]].faces.push(face.into_iter().rev().collect());
+            dual[t[i]].corners[corners[i]].faces.push(face.to_vec());
+            dual[t[j]].corners[corners[j]]
+                .faces
+                .push(face.into_iter().rev().collect());
+        }
+        // The three tetrahedron faces through each vertex bound its corner
+        // piece. They become cell faces only where a dual cell is split.
+        for i in 0..4 {
+            let v = q[i];
+            let others: Vec<usize> = (0..4).filter(|&k| k != i).collect();
+            let mut hint = p[v] + p[centroid];
+            for (x, y, z) in [
+                (others[0], others[1], others[2]),
+                (others[1], others[2], others[0]),
+                (others[2], others[0], others[1]),
+            ] {
+                let (mut ma, mut mb) = (cuts.mid(p, v, q[x]), cuts.mid(p, v, q[y]));
+                let f = cuts.face(p, [v, q[x], q[y]]);
+                if (p[ma] - p[v]).cross(p[mb] - p[v]).dot(p[q[z]] - p[v]) > 0. {
+                    std::mem::swap(&mut ma, &mut mb);
+                }
+                hint = hint + p[ma] + p[f];
+                dual[t[i]].corners[corners[i]]
+                    .sides
+                    .push((sorted([t[i], t[x], t[y]]), vec![v, ma, f, mb]));
+            }
+            dual[t[i]].corners[corners[i]].centre = hint / 8.;
         }
     }
+    for &(t, patch) in &scaffold.boundary {
+        let fine = cuts.split(p, t.map(|n| mapped[n]));
+        for (j, nodes) in fine.into_iter().enumerate() {
+            dual[t[j / 2]].boundary.push((nodes, patch, sorted(t)));
+        }
+    }
+    // Wall prisms of the innermost layer by their inner end triangle.
+    let mut prisms = HashMap::new();
+    for (index, cell) in front.cells.iter().enumerate() {
+        for face in cell.element.faces() {
+            if let [a, b, c] = face[..] {
+                prisms.insert(sorted([a, b, c]), index);
+            }
+        }
+    }
+    let prism_centres: Vec<Vec3> = front
+        .cells
+        .iter()
+        .map(|c| shell_centroid(p, &c.element.faces()))
+        .collect();
     for (id, cell) in dual.into_iter().enumerate() {
-        if cell.volume <= 0. {
+        let volume: f64 = cell.corners.iter().map(|c| c.volume).sum();
+        if volume <= 0. {
             return Err(format!("unused volume node {id}"));
         }
-        let site = p[mapped[id]];
-        let mut witness = site;
-        if !cell.boundary_faces.is_empty() {
-            // A sufficiently short inward step preserves strict visibility of
-            // every internal dual face, even in a slender boundary tetrahedron.
-            let mut direction = cell.inward;
-            for _ in 0..32 {
-                let mut valid = true;
-                for face in &cell.boundary_faces {
-                    let [a, b, c] = face.map(|i| p[i]);
-                    let normal = (b - a).cross(c - a);
-                    let n = normal / normal.length();
-                    if direction.dot(n) > -0.01 {
-                        direction = direction - n * (direction.dot(n) + 0.02);
-                        valid = false;
-                    }
-                }
-                if valid {
-                    break;
+        let site = mapped[id];
+        let owner_offset = front.cells.len();
+        let wall = |nodes: &[usize; 3]| prisms.get(&sorted(*nodes)).map(|&c| prism_centres[c]);
+        let parts = split_reentrant(p, site, &cell, &wall);
+        for (part, group) in parts.iter().enumerate() {
+            let (faces, planes, used) = part_faces(&cell, group);
+            let part_volume: f64 = group.iter().map(|&c| cell.corners[c].volume).sum();
+            for i in used {
+                let (nodes, patch, _) = cell.boundary[i];
+                if patch <= 2 || steps.is_empty() {
+                    front.boundary.push(BoundaryFace {
+                        nodes: nodes.to_vec(),
+                        patch,
+                        owner: owner_offset + part,
+                    });
                 }
             }
-            let mut distance = cell.volume.cbrt() * 0.1;
-            let direction = direction / direction.length();
-            for face in &cell.faces {
-                let a = p[face[0]];
-                let n = (p[face[1]] - a).cross(p[face[2]] - a);
-                if n.dot(direction) > 0. {
-                    distance = distance.min(n.dot(a - site) / n.dot(direction) * 0.5);
-                }
-            }
-            witness = site + direction * distance;
+            let witness = if planes.is_empty() {
+                p[site]
+            } else {
+                strict_witness(p, p[site], &faces, &planes, part_volume)
+            };
+            front.cells.push(Cell {
+                element: Element::Polyhedron(Box::new(Polyhedron::new(
+                    faces,
+                    witness,
+                    None,
+                    part_volume,
+                ))),
+                layer: 0,
+                region: 0,
+            });
         }
-        front.cells.push(Cell {
-            element: Element::Polyhedron(Box::new(Polyhedron::new(
-                cell.faces,
-                witness,
-                None,
-                cell.volume,
-            ))),
-            layer: 0,
-            region: 0,
-        });
     }
     compact_points(p, &mut front.cells, &mut front.boundary);
     let measurements = verify::check_with_interface_count(

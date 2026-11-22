@@ -211,7 +211,7 @@ pub fn generate(
     }
     let report = json!({
         "schema_version": 1,
-        "algorithm": if scaffold_volume.is_some() {"volume_median_dual_v1"} else if polyhedra > 0 {"stl_partitioned_dual_v1"} else {"stl_partitioned_star_v1"},
+        "algorithm": if scaffold_volume.is_some() {"volume_median_dual_v2"} else if polyhedra > 0 {"stl_partitioned_dual_v1"} else {"stl_partitioned_star_v1"},
         "mode": mode,
         "source_sha256": source_digest,
         "config_sha256": digest(&(patch_map, plan, mode))?,
