@@ -29,7 +29,20 @@ tests = [
   "crates/mesh-mcp/tests/stdio.rs::stdio_tools_run_the_shared_engine_and_bound_writes",
 ]
 commands = ["cargo m1 --require-gmsh"]
-gaps = "All-pairs clipping only (ALG-04 open)"
+gaps = "—"
+
+[[feature]]
+id = "alg-04"
+title = "Nearest-site Voronoi clipping with a security-radius completeness test (ALG-04, ALG-13)"
+requirements = ["ALG-04", "ALG-13"]
+grade = "verified"
+how = "On lattices (cospherical sites), clustered sites and 2,000 graded sites, every cell has the same bisector neighbours, boundary faces, face areas and volume as the exhaustive all-pairs reference, which stays in the code; the k-d tree equals a brute-force sort; shortening the security radius makes the comparison fail; benchmark to 64,000 sites in research/alg-04-neighbour-clipping.md (26-28x faster at 16,000 sites, same cells in every case run both ways)"
+tests = [
+  "crates/mesh-algorithms/src/neighbours.rs::nearest_equals_brute_force",
+  "tests/box_voronoi.rs::nearest_site_clipping_equals_the_all_pairs_reference",
+]
+commands = ["cargo run --release -p mesh-engine --example clipping_benchmark"]
+gaps = "Serial; the CPU cost per cell grows with the number of neighbours within twice its radius, so cells next to large empty regions are slow; a cell inside a large STL starts from all facets"
 
 [[feature]]
 id = "m2-stl"
@@ -62,7 +75,7 @@ tests = [
   "crates/mesh-cli/tests/kofl.rs::estimates_match_the_built_cell_counts",
 ]
 commands = []
-gaps = "The gradation bounds the field; about 10 % of neighbour pairs exceed it on the cells and are reported. STL datum objects and curvature, gap and feature sizes (GRD-04) open; convex domains only; all-pairs clipping limits fields to 20,000 seeds (ALG-04)"
+gaps = "The gradation bounds the field; about 10 % of neighbour pairs exceed it on the cells and are reported. STL datum objects and curvature, gap and feature sizes (GRD-04) open; convex domains only; fields may ask for at most 200,000 seeds"
 
 [[feature]]
 id = "m2-patches"

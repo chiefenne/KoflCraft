@@ -4,16 +4,17 @@
 
 The verification grade of every feature (AG-17), how it was checked and what is still missing. A partial result is never presented as success; every tool result also carries a `limitations` list.
 
-- **verified** (8): checked against an exact or independent reference by a named test
+- **verified** (9): checked against an exact or independent reference by a named test
 - **partial** (7): works on the named fixtures, with known gaps
 - **unverified** (1): built, not yet checked
 - **open** (0): not built
 
 | Feature | Grade | How it was checked | Gaps | Requirements |
 |---|---|---|---|---|
-| M1 box clipped Voronoi, validation, VTU and Gmsh export, CLI and MCP | verified | 16/64/256-site lattice and clustered fixtures read back by independent VTU and MSH 4.1 readers and by Gmsh; CLI and MCP builds give equal topology digests and identical files; analytic two-cell metrics | All-pairs clipping only (ALG-04 open) | M1-01, M1-11 |
+| M1 box clipped Voronoi, validation, VTU and Gmsh export, CLI and MCP | verified | 16/64/256-site lattice and clustered fixtures read back by independent VTU and MSH 4.1 readers and by Gmsh; CLI and MCP builds give equal topology digests and identical files; analytic two-cell metrics | — | M1-01, M1-11 |
+| Nearest-site Voronoi clipping with a security-radius completeness test (ALG-04, ALG-13) | verified | On lattices (cospherical sites), clustered sites and 2,000 graded sites, every cell has the same bisector neighbours, boundary faces, face areas and volume as the exhaustive all-pairs reference, which stays in the code; the k-d tree equals a brute-force sort; shortening the security radius makes the comparison fail; benchmark to 64,000 sites in research/alg-04-neighbour-clipping.md (26-28x faster at 16,000 sites, same cells in every case run both ways) | Serial; the CPU cost per cell grows with the number of neighbours within twice its radius, so cells next to large empty regions are slow; a cell inside a large STL starts from all facets | ALG-04, ALG-13 |
 | M2 STL import and convex STL meshing | partial | Unit and skewed boxes against the analytic box; malformed, inward, nonconvex and non-manifold shells rejected | Convex surfaces only; size control: see the next row | M2, GEO-02 |
-| M2 size control: size field from datum objects and coordinate regions, CVT seeding (ALG-05) | partial | Exact distances of every shape and the field's slope bound by unit tests; graded meshes on the unit and skewed boxes validate, the median cbrt(V)/h is within 5 % of 1 with p10 and p90 within 15 %, each source's cells reach its size within 10 % (median), equal inputs give equal meshes, the estimate equals the build, and edited evidence fails the digest; benchmark against DistMesh springs in research/m2-size-control.md | The gradation bounds the field; about 10 % of neighbour pairs exceed it on the cells and are reported. STL datum objects and curvature, gap and feature sizes (GRD-04) open; convex domains only; all-pairs clipping limits fields to 20,000 seeds (ALG-04) | ALG-05, GRD-01, GRD-02, GRD-03, GRD-05, GRD-08 |
+| M2 size control: size field from datum objects and coordinate regions, CVT seeding (ALG-05) | partial | Exact distances of every shape and the field's slope bound by unit tests; graded meshes on the unit and skewed boxes validate, the median cbrt(V)/h is within 5 % of 1 with p10 and p90 within 15 %, each source's cells reach its size within 10 % (median), equal inputs give equal meshes, the estimate equals the build, and edited evidence fails the digest; benchmark against DistMesh springs in research/m2-size-control.md | The gradation bounds the field; about 10 % of neighbour pairs exceed it on the cells and are reported. STL datum objects and curvature, gap and feature sizes (GRD-04) open; convex domains only; fields may ask for at most 200,000 seeds | ALG-05, GRD-01, GRD-02, GRD-03, GRD-05, GRD-08 |
 | M2 boundary patch tools: patch maps, selections and roles through every export (BC-01, BC-02) | verified | Region growing and the inlet plane recover exactly the port caps recorded by hand on the 90,894-facet SolidCraft surface (area to 1e-12); exact areas, normals, regions and neighbours on the unit box; splitting the skewed box at 10° gives its six sides; maps from another STL, with a bad index, an empty or repeated patch or a bad name are refused; the names reach MSH 4.1, the FoehnCraft VTU and OpenFOAM and the roles the VTU, OpenFOAM types and evidence; a session of patch calls replays from its journal; CI reads a patched box in all three formats with `foehn mesh` | Volume meshing with a map is convex STL only; the duct path still reads its own port-range map; proposals (BC-03), the boundary-condition skeleton (BC-05) and the shell role are open; the viewing VTU carries no patch names | BC-01, BC-02, BC-04, BC-06 |
 | Swept block and pipe with prism layers | partial | Exact block volume; pipe volume 0.0564 % below the cylinder; refinement and grading checks (docs/analytic-development.md) | Analytic shapes only | BL-01, BL-03 |
 | Straight channel with port-terminated layers (M3, BL-10) | partial | Native prisms and the Gmsh core subdivision share the tagged boundary; both full ports exported; colliding layers rejected (research/open-port-layers.md) | Planar walls only | BL-10 |
@@ -39,6 +40,12 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 - `generate_check_report_and_export_round_trip` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
 - `stdio_tools_run_the_shared_engine_and_bound_writes` in [crates/mesh-mcp/tests/stdio.rs](../crates/mesh-mcp/tests/stdio.rs)
 - `cargo m1 --require-gmsh` (CI)
+
+### Nearest-site Voronoi clipping with a security-radius completeness test (ALG-04, ALG-13)
+
+- `nearest_equals_brute_force` in [crates/mesh-algorithms/src/neighbours.rs](../crates/mesh-algorithms/src/neighbours.rs)
+- `nearest_site_clipping_equals_the_all_pairs_reference` in [tests/box_voronoi.rs](../tests/box_voronoi.rs)
+- `cargo run --release -p mesh-engine --example clipping_benchmark` (CI)
 
 ### M2 STL import and convex STL meshing
 

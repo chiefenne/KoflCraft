@@ -47,7 +47,7 @@ The field is the minimum over all sources, clamped to `[min_size, max_size]`. Th
 
 The result and the artifact carry a `sizing` block: the field as given, the seed count, the iterations, the size ratio cbrt(V)/h and the neighbour size ratio (quantiles), the interior faces whose neighbour ratio exceeds the gradation, and per source the target, the achieved sizes and the number of cells it governs (GRD-08). The gradation bounds the field, not each pair of cells: about one face in ten exceeds it on the fixture, and the result lists that as a limitation.
 
-Limits: datum objects from STL surfaces, and curvature, gap and feature-edge sizes (GRD-04), are open. Clipping is all-pairs (ALG-04), so each relaxation iteration costs O(N²); a field may ask for at most 20,000 seeds, and the MCP site limit applies to the seed count.
+Limits: datum objects from STL surfaces, and curvature, gap and feature-edge sizes (GRD-04), are open. Each cell is clipped by its nearest sites only (ALG-04, [note](../research/alg-04-neighbour-clipping.md)), so a relaxation iteration costs about O(N log N); a field may ask for at most 200,000 seeds, and the MCP site limit applies to the seed count.
 
 ## Boundary patches
 
@@ -100,7 +100,7 @@ Launch the server with read and write roots as in the [M1 workflow](m1-usage.md)
 | `generate_stl_mesh` | `surface` filename, inline STL `config`, new `artifact` filename, optional `patches` map |
 | `patch.*` | `surface`, `patches` and new `output` filenames and the operation's fields ([tools](tools.md)) |
 
-Reuse `check_mesh`, `mesh_report`, and `export_mesh` with the generated artifact. To chain patch calls over MCP, make the write root a read root too, so a call can read the map the previous one wrote. The MCP server limits this prototype to 2,048 STL facets and 256 sites per job. The CLI uses the same engine and accepts the STL path as an explicit argument.
+Reuse `check_mesh`, `mesh_report`, and `export_mesh` with the generated artifact. To chain patch calls over MCP, make the write root a read root too, so a call can read the map the previous one wrote. The MCP server limits this prototype to 2,048 STL facets and 20,000 sites per job. The CLI uses the same engine and accepts the STL path as an explicit argument.
 
 ## Verification
 

@@ -121,7 +121,7 @@ fn invalid_size_fields_are_diagnosed() {
     assert_eq!(code(parallel), ErrorCode::InvalidSizeField);
     let fine = json!({
         "schema_version": 1,
-        "size_field": {"min_size": 0.02, "max_size": 0.02, "gradation": 1.2}
+        "size_field": {"min_size": 0.01, "max_size": 0.01, "gradation": 1.2}
     });
     assert_eq!(code(fine), ErrorCode::InvalidSizeField);
 }

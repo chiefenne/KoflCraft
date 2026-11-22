@@ -15,9 +15,9 @@ use crate::sizing::SizingEvidence;
 use crate::{EngineError, ErrorCode, GeneratedMesh, GenerationError, MeshDirectory, generate_mesh};
 
 pub const SCHEMA_VERSION: u32 = 1;
-pub const ALGORITHM: &str = "cpu_box_clipped_voronoi_v1";
+pub const ALGORITHM: &str = "cpu_box_clipped_voronoi_v2";
 pub const SURFACE_ARTIFACT_VERSION: u32 = 2;
-pub(crate) const SURFACE_ALGORITHM: &str = "cpu_convex_surface_clipped_voronoi_v1";
+pub(crate) const SURFACE_ALGORITHM: &str = "cpu_convex_surface_clipped_voronoi_v2";
 
 pub(crate) type Point = [f64; 3];
 

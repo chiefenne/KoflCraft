@@ -42,7 +42,7 @@ impl Default for Limits {
 impl Limits {
     pub fn mcp() -> Self {
         Self {
-            max_sites: 256,
+            max_sites: 20_000,
             max_surface_facets: 2048,
             max_file_bytes: 8 * 1024 * 1024,
             max_channel_layers: 8,

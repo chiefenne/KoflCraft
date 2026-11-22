@@ -71,7 +71,7 @@ The field obeys `|∇h| ≤ gradation − 1` exactly, but cells are not the fiel
 | 1.5 | 164 | 1.20 / 1.86 / 2.01 | 2.01 |
 | 2.0 | 96 | 1.07 / 3.19 / 3.51 | 3.30 |
 
-The median neighbour ratio stays below the gradation, the tail does not: the maximum is about 1 + 2.2·(gradation − 1). So the gradation bounds the field, and the build reports the achieved neighbour ratios and the number of faces above the limit in its evidence and limitations (AG-17) instead of claiming the limit holds per cell. Whether to tighten the field or refuse such builds instead was put to the maintainer on 2026-11-22.
+The median neighbour ratio stays below the gradation, the tail does not: the maximum is about 1 + 2.2·(gradation − 1). So the gradation bounds the field, and the build reports the achieved neighbour ratios and the number of faces above the limit in its evidence and limitations (AG-17) instead of claiming the limit holds per cell. The maintainer decided on 2026-11-22 to keep this: the gradation bounds the field, and the faces over it are reported, not enforced.
 
 ## What is reported (GRD-08)
 
@@ -81,7 +81,7 @@ The median neighbour ratio stays below the gradation, the tail does not: the max
 
 - Convex STL domains only, Euclidean distances (exact there).
 - STL surface and closed-body datum objects, curvature, gap and feature-edge sizes (GRD-04) are open.
-- All-pairs clipping (ALG-04) makes each Lloyd iteration O(N²); the engine refuses fields that ask for more than 20,000 seeds, and the MCP limits apply to the seed count.
+- All-pairs clipping (ALG-04) made each Lloyd iteration O(N²). Since the nearest-site clipper ([note](alg-04-neighbour-clipping.md)) an iteration is about O(N log N); the engine refuses fields that ask for more than 200,000 seeds (decided 2026-11-22), and the MCP limits apply to the seed count.
 - Anisotropy (GRD-06) is open; Lp-CVT (Lévy & Liu 2010) is the lead.
 
 ## Clean room
