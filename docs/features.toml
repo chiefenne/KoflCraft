@@ -144,20 +144,20 @@ id = "duct"
 title = "Nonconvex duct, bulk, layered and polyhedral (M4/M5 prototype)"
 requirements = ["M4", "M5"]
 grade = "partial"
-how = "Elbow volume and patch areas to 1e-9; every layer reaches both ports"
+how = "Elbow volume and patch areas to 1e-9; every layer reaches both ports; no face with S·d ≤ 0 in any mode of the elbow or SolidCraft"
 tests = [
   "crates/mesh-cli/tests/workflow.rs::nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer",
   "crates/mesh-algorithms/src/duct/intersection.rs::rejects_transverse_coplanar_and_shared_vertex_overlaps",
 ]
 commands = []
-gaps = "Needs a Gmsh scaffold and a Python preparation script (OPEN-07); fitted volume 0.183 % below the STL; the polyhedral dual has 10 faces with S·d ≤ 0; flow accuracy untested"
+gaps = "Needs a Gmsh scaffold and a Python preparation script (OPEN-07); fitted volume 0.183 % below the STL; `foehn mesh` measures polyhedral non-orthogonality up to 87° (elbow) and 89.6° (SolidCraft), so some faces pass S·d > 0 with little margin; flow accuracy untested"
 
 [[feature]]
 id = "foehncraft-handoff"
 title = "FoehnCraft hand-off: MSH 4.1, single-file VTU, names, evidence (FC-01, FC-02, FC-04 to FC-06)"
 requirements = ["FC-01", "FC-02", "FC-04", "FC-05", "FC-06"]
 grade = "partial"
-how = "CI reads 29 exports back with `foehn mesh`: counts, volume, closure and patch areas agree to 1e-12"
+how = "CI reads 35 exports back with `foehn mesh` (elbow and SolidCraft ducts in all three modes among them): every one valid, counts, volume, closure and patch areas agree to 1e-12"
 tests = [
   "crates/mesh-io/src/handoff.rs::foehncraft_vtu_holds_cells_faces_and_names",
   "crates/mesh-io/src/handoff.rs::two_faces_between_one_pair_merge_into_one",
@@ -165,7 +165,7 @@ tests = [
   "crates/mesh-io/src/msh.rs::both_versions_carry_the_same_model",
 ]
 commands = ["cargo m1 --require-gmsh --require-foehn"]
-gaps = "FoehnCraft reports the polyhedral elbow invalid (inverted faces, see duct); binary MSH open"
+gaps = "Binary MSH open"
 
 [[feature]]
 id = "openfoam"
@@ -229,7 +229,7 @@ id = "estimates"
 title = "Estimates, action kinds and approval policies (AG-15)"
 requirements = ["AG-15"]
 grade = "partial"
-how = "`mesh.estimate` and `kofl --check` predict exactly the cells that every generator then builds (box, channel, sweep, duct bulk, layered and polyhedral); over MCP, builds within the limits run, larger ones ask the user through MCP elicitation, and a TOML policy (`--policy`) sets allow, ask or refuse and the limits"
+how = "`mesh.estimate` and `kofl --check` predict exactly the cells that every generator then builds (box, channel, sweep, duct bulk and layered; polyhedral ducts before the split of reentrant-edge cells, which `cells_basis` states and the test checks); over MCP, builds within the limits run, larger ones ask the user through MCP elicitation, and a TOML policy (`--policy`) sets allow, ask or refuse and the limits"
 tests = [
   "crates/mesh-cli/tests/kofl.rs::estimates_match_the_built_cell_counts",
   "crates/mesh-mcp/tests/stdio.rs::builds_over_the_limits_need_approval",

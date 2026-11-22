@@ -427,7 +427,7 @@ pub static TOOLS: &[Tool] = &[
         id: "mesh.estimate",
         version: 1,
         action: Action::Read,
-        summary: "Estimate a build before it runs (AG-15): the exact cell count of a start-build tool's input, rough memory and output bytes, and the files it would write. `kofl --check COMMAND` prints it instead of running the build.",
+        summary: "Estimate a build before it runs (AG-15): the cell count of a start-build tool's input (exact; `cells_basis` names the one exception), rough memory and output bytes, and the files it would write. `kofl --check COMMAND` prints it instead of running the build.",
         legacy_name: None,
         outputs: &[],
         input_schema: || {

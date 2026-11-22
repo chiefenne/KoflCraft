@@ -306,18 +306,16 @@ fn round_trip(cli: &Path, foehn: &Path, root: &Path, workspace: &Path) -> RunRes
         let expected: Value = serde_json::from_slice(&fs::read(evidence)?)?;
         let out = dir.join(format!("foehn-{}", file.replace('/', "-")));
         let check = foehn::check(foehn, &dir.join(file), &expected["summary"], kind, &out)?;
-        let limitation = (check["foehncraft_valid"] == false).then(|| {
-            format!(
-                "FoehnCraft calls {} invalid: {} faces with S·d <= 0, as KoflCraft predicted",
+        // Every export must be valid for FoehnCraft: no face with S·d <= 0
+        // (the elbow and SolidCraft polyhedral cores once had them).
+        require(
+            check["foehncraft_valid"] == true,
+            &format!(
+                "FoehnCraft calls {} invalid: {} faces with S·d <= 0",
                 dir.join(file).display(),
                 check["inverted_faces"]
-            )
-        });
-        let mut check = check;
-        if let Some(l) = limitation {
-            println!("limitation: {l}");
-            check["limitation"] = json!(l);
-        }
+            ),
+        )?;
         checks.push(check);
         Ok(())
     };
@@ -366,16 +364,20 @@ fn round_trip(cli: &Path, foehn: &Path, root: &Path, workspace: &Path) -> RunRes
         &bundles.join("channel/mesh-evidence.json"),
         foehn::Kind::Subdivision,
     )?;
-    for mode in ["bulk", "layered", "polyhedral"] {
-        let name = format!("elbow-{mode}");
+    for (case, stl, mode) in ["elbow", "solidcraft-vs-foehncraft"]
+        .into_iter()
+        .zip(["elbow.stl", "SolidCraft_vs_FoehnCraft.stl"])
+        .flat_map(|(c, s)| ["bulk", "layered", "polyhedral"].map(|m| (c, s, m)))
+    {
+        let name = format!("{case}-{mode}");
         run_cli(
             cli,
             &bundles,
             &[
                 "generate-duct",
-                &path("elbow/elbow.stl"),
-                &path("elbow/patches.json"),
-                &path("elbow/partition.json"),
+                &path(&format!("{case}/{stl}")),
+                &path(&format!("{case}/patches.json")),
+                &path(&format!("{case}/partition.json")),
                 mode,
                 &name,
             ],

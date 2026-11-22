@@ -293,7 +293,22 @@ fn estimates_match_the_built_cell_counts() {
         let (ok, result) = kofl_in(&dir, args);
         assert!(ok, "{args:?}");
         let actual = fixed.unwrap_or_else(|| built(&result));
-        assert_eq!(estimate["cells"].as_u64(), Some(actual), "{args:?}");
+        let predicted = estimate["cells"].as_u64().unwrap();
+        if estimate["cells_basis"] == "exact" {
+            assert_eq!(predicted, actual, "{args:?}");
+        } else {
+            // Polyhedral duct: the elbow splits 10 dual cells at its
+            // reentrant edge after the estimate (research note
+            // m4-reentrant-dual-split); the basis must say so.
+            assert_eq!(args[4], "polyhedral");
+            assert!(
+                estimate["cells_basis"]
+                    .as_str()
+                    .unwrap()
+                    .contains("reentrant")
+            );
+            assert_eq!(actual, predicted + 10, "{args:?}");
+        }
     }
     let (ok, _) = kofl_in(&dir, &["--check", "check", "m.json"]);
     assert!(!ok, "only build tools have an estimate");

@@ -346,11 +346,13 @@ fn nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer() {
             let expected_tets = if mode == "polyhedral" { 0 } else { tets };
             assert_eq!(report["tetrahedra"], expected_tets);
             if mode == "polyhedral" {
-                assert_eq!(report["algorithm"], "volume_median_dual_v1");
-                let expected = if dir == "elbow" { 227 } else { 26962 };
+                assert_eq!(report["algorithm"], "volume_median_dual_v2");
+                let expected = if dir == "elbow" { 237 } else { 26965 };
                 let shape = &report["core_sphericity"];
+                // The elbow minimum was 0.50 until the split of reentrant-edge
+                // cells (inverted faces): its thinner halves reach 0.476.
                 let thresholds = if dir == "elbow" {
-                    [0.50, 0.55, 0.75]
+                    [0.45, 0.55, 0.75]
                 } else {
                     [0.33, 0.68, 0.82]
                 };
@@ -396,6 +398,17 @@ fn nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer() {
                 }
             }
             assert_eq!(report["prisms"], wall_prisms);
+            // Keep: FoehnCraft rejects a mesh with any interior face whose
+            // area vector points against the owner-to-neighbour centroid
+            // vector (S·d <= 0). Median-dual cells at reentrant wall edges
+            // had 10 such faces on the elbow and 18 on SolidCraft until they
+            // were split; undoing the split brings them back. The shell
+            // checks above do not look at centroids, so only this catches it.
+            let evidence: Value = serde_json::from_slice(
+                &fs::read(work.path().join(&name).join("mesh-evidence.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(evidence["summary"]["inverted_faces"], 0, "{name}");
             for (patch, area) in ["inlet", "outlet"].into_iter().zip(port_areas) {
                 assert!((report["patch_areas"][patch].as_f64().unwrap() / area - 1.).abs() < 1e-10);
                 let layers = report["port_areas_by_layer"][patch].as_array().unwrap();
