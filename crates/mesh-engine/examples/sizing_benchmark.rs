@@ -242,27 +242,27 @@ fn measure(surface: &ConvexSurface, field: &SizeField, sites: &[Vec3]) -> Row {
     let mut nonorth = Vec::new();
     let mut area = vec![0.0; mesh.cell_count()];
     let mut on_boundary = vec![false; mesh.cell_count()];
-    for face in 0..mesh.face_count() {
+    for (face, face_metrics) in metrics.faces.iter().enumerate() {
         let adjacency = mesh.face_adjacency(face).unwrap();
-        area[adjacency.owner()] += metrics.faces[face].area;
+        area[adjacency.owner()] += face_metrics.area;
         if adjacency.neighbour().is_none() {
             on_boundary[adjacency.owner()] = true;
         }
     }
     let mut interior_max: f64 = 1.0;
-    for face in 0..mesh.face_count() {
+    for (face, face_metrics) in metrics.faces.iter().enumerate() {
         if let FaceAdjacency::Interior {
             owner,
             neighbour: other,
         } = mesh.face_adjacency(face).unwrap()
         {
-            area[other] += metrics.faces[face].area;
+            area[other] += face_metrics.area;
             let (a, b) = (size(owner), size(other));
             neighbour.push(a.max(b) / a.min(b));
             if !on_boundary[owner] && !on_boundary[other] {
                 interior_max = interior_max.max(a.max(b) / a.min(b));
             }
-            nonorth.push(metrics.faces[face].non_orthogonality_degrees);
+            nonorth.push(face_metrics.non_orthogonality_degrees);
         }
     }
     neighbour.sort_by(f64::total_cmp);
