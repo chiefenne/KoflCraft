@@ -189,12 +189,28 @@ pub(crate) fn output_schema(name: &str) -> Value {
                 "centroid": point, "normal": point, "area": number,
                 "non_orthogonality_degrees": number, "skewness": number
             }));
-            object_schema(json!({
+            let full = object_schema(json!({
                 "schema_version": version, "fixture_id": fixture, "seed": seed,
                 "build": build, "validation": check,
                 "cells": { "type": "array", "items": cell },
                 "faces": { "type": "array", "items": face }
-            }))
+            }));
+            let maybe = json!({ "type": ["number", "null"] });
+            let paged = object_schema(json!({
+                "schema_version": version, "fixture_id": fixture, "seed": seed,
+                "build": build, "validation": check,
+                "summary": object_schema(json!({
+                    "cells": count, "faces": count,
+                    "min_cell_volume": maybe, "max_cell_volume": maybe,
+                    "max_non_orthogonality_degrees": maybe, "max_skewness": maybe
+                })),
+                "page": object_schema(json!({
+                    "rows": { "enum": ["cells", "faces"] }, "offset": count, "count": count,
+                    "items": { "type": "array", "items": { "anyOf": [cell, face] } },
+                    "next_cursor": { "type": ["string", "null"] }
+                }))
+            }));
+            json!({ "anyOf": [full, paged] })
         }
         "export_mesh" => object_schema(json!({
             "schema_version": version, "output": string, "format": string,

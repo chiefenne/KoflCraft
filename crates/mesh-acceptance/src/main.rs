@@ -418,39 +418,7 @@ fn run_cli(cli: &Path, directory: &Path, args: &[&str]) -> RunResult<Value> {
 }
 
 fn run_mcp(mcp: &Path, directory: &Path, config: &MeshConfig) -> RunResult<Vec<Value>> {
-    let call = |id, name, arguments| {
-        json!({
-            "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": { "name": name, "arguments": arguments }
-        })
-    };
-    let requests = [
-        json!({
-            "jsonrpc": "2.0", "id": 0, "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-11-25", "capabilities": {},
-                "clientInfo": { "name": "mesh-acceptance", "version": "1" }
-            }
-        }),
-        json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
-        call(1, "domain.inspect", json!({ "config": config })),
-        call(
-            2,
-            "mesh.generate",
-            json!({ "config": config, "artifact": "mcp.mesh.json" }),
-        ),
-        call(3, "mesh.check", json!({ "artifact": "cli.mesh.json" })),
-        call(
-            4,
-            "mesh.export",
-            json!({ "artifact": "mcp.mesh.json", "format": "vtu", "output": "mcp.vtu" }),
-        ),
-        call(
-            5,
-            "mesh.export",
-            json!({ "artifact": "mcp.mesh.json", "format": "gmsh", "output": "mcp.msh" }),
-        ),
-        call(6, "mesh.report", json!({ "artifact": "mcp.mesh.json" })),
-    ];
+    use std::io::BufRead;
     let mut server = Command::new(mcp)
         .arg("--read-root")
         .arg(directory)
@@ -460,42 +428,115 @@ fn run_mcp(mcp: &Path, directory: &Path, config: &MeshConfig) -> RunResult<Vec<V
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
-    let mut input = server.stdin.take().unwrap();
-    let writer = std::thread::spawn(move || -> io::Result<()> {
-        for request in requests {
+    let mut input = server.stdin.take().ok_or("no MCP stdin")?;
+    let mut output = io::BufReader::new(server.stdout.take().ok_or("no MCP stdout")?);
+    let mut next_id = 0;
+    let mut send = |method: &str, params: Value, notify: bool| -> RunResult<Value> {
+        let mut request = json!({ "jsonrpc": "2.0", "method": method, "params": params });
+        if notify {
             writeln!(input, "{request}")?;
+            input.flush()?;
+            return Ok(Value::Null);
         }
-        Ok(())
-    });
+        request["id"] = json!(next_id);
+        next_id += 1;
+        writeln!(input, "{request}")?;
+        input.flush()?;
+        let mut line = String::new();
+        output.read_line(&mut line)?;
+        let response: Value = serde_json::from_str(&line)?;
+        require(response["id"] == request["id"], "MCP response out of order")?;
+        Ok(response)
+    };
+    let initialized = send(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-11-25", "capabilities": {},
+            "clientInfo": { "name": "mesh-acceptance", "version": "1" }
+        }),
+        false,
+    )?;
+    require(
+        initialized["result"]["protocolVersion"] == "2025-11-25",
+        "MCP initialization failed",
+    )?;
+    send("notifications/initialized", json!({}), true)?;
+    let mut call = |name: &str, arguments: Value| -> RunResult<Value> {
+        let response = send(
+            "tools/call",
+            json!({ "name": name, "arguments": arguments }),
+            false,
+        )?;
+        require(
+            response["result"]["isError"] == false,
+            &format!("MCP tool call failed: {response}"),
+        )?;
+        let envelope = &response["result"]["structuredContent"];
+        require(
+            envelope["format"] == "koflcraft.tool-result" && envelope["status"] == "finished",
+            &format!("MCP result is not a finished envelope: {envelope}"),
+        )?;
+        Ok(envelope["result"].clone())
+    };
+    let mut results = vec![
+        call("domain.inspect", json!({ "config": config }))?,
+        call(
+            "mesh.generate",
+            json!({ "config": config, "artifact": "mcp.mesh.json" }),
+        )?,
+        call("mesh.check", json!({ "artifact": "cli.mesh.json" }))?,
+        call(
+            "mesh.export",
+            json!({ "artifact": "mcp.mesh.json", "format": "vtu", "output": "mcp.vtu" }),
+        )?,
+        call(
+            "mesh.export",
+            json!({ "artifact": "mcp.mesh.json", "format": "gmsh", "output": "mcp.msh" }),
+        )?,
+    ];
+    // AG-16: the MCP report is a summary with pages; follow the cursors
+    // and put the rows back together, so the comparison with the CLI's
+    // full report covers the paging too.
+    let mut report = call("mesh.report", json!({ "artifact": "mcp.mesh.json" }))?;
+    let mut rows = json!({ "cells": [], "faces": [] });
+    loop {
+        let page = report["page"].take();
+        let kind = page["rows"]
+            .as_str()
+            .ok_or("MCP report page without rows")?;
+        let items = page["items"]
+            .as_array()
+            .ok_or("MCP report page without items")?;
+        rows[kind]
+            .as_array_mut()
+            .ok_or("unknown row kind")?
+            .extend(items.iter().cloned());
+        let Some(cursor) = page["next_cursor"].as_str() else {
+            break;
+        };
+        let next = call(
+            "mesh.report",
+            json!({ "artifact": "mcp.mesh.json", "cursor": cursor }),
+        )?;
+        report["page"] = next["page"].clone();
+    }
+    require(
+        report["summary"]["cells"] == rows["cells"].as_array().map_or(0, Vec::len)
+            && report["summary"]["faces"] == rows["faces"].as_array().map_or(0, Vec::len),
+        "MCP report pages do not add up to the summary counts",
+    )?;
+    report["cells"] = rows["cells"].take();
+    report["faces"] = rows["faces"].take();
+    results.push(report);
+    drop(call);
+    drop(send);
+    drop(input);
     let output = server.wait_with_output()?;
-    writer.join().map_err(|_| "MCP request writer panicked")??;
     require(
         output.status.success(),
         &String::from_utf8_lossy(&output.stderr),
     )?;
-    let stdout = String::from_utf8(output.stdout)?;
-    let mut responses = stdout.lines().map(serde_json::from_str::<Value>);
-    let initialized = responses.next().ok_or("missing MCP initialization")??;
-    require(
-        initialized["id"] == 0 && initialized["result"]["protocolVersion"] == "2025-11-25",
-        "MCP initialization failed",
-    )?;
-    responses
-        .enumerate()
-        .map(|(index, response)| {
-            let response = response?;
-            require(
-                response["id"] == index + 1 && response["result"]["isError"] == false,
-                &format!("MCP tool call failed: {response}"),
-            )?;
-            let envelope = &response["result"]["structuredContent"];
-            require(
-                envelope["format"] == "koflcraft.tool-result" && envelope["status"] == "finished",
-                &format!("MCP result is not a finished envelope: {envelope}"),
-            )?;
-            Ok(envelope["result"].clone())
-        })
-        .collect()
+    Ok(results)
 }
 
 fn binary(target: &Path, name: &str) -> PathBuf {

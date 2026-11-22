@@ -126,6 +126,14 @@ fn stdio_tools_run_the_shared_engine_and_bound_writes() {
         responses[6]["result"]["structuredContent"]["result"]["build"],
         *build
     );
+    // AG-16: over MCP the report is a summary and one page, never the
+    // full per-cell and per-face arrays
+    let report = &responses[6]["result"]["structuredContent"]["result"];
+    assert!(report.get("cells").is_none() && report.get("faces").is_none());
+    assert_eq!(report["summary"]["cells"], 4);
+    assert_eq!(report["page"]["rows"], "cells");
+    assert_eq!(report["page"]["count"], 4);
+    assert!(report["page"]["next_cursor"].is_string());
     for response in &responses[7..=8] {
         assert_eq!(response["result"]["isError"], false);
     }
