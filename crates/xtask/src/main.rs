@@ -1,10 +1,13 @@
-//! Repository tasks (SW-19): `cargo xtask layering`.
+//! Repository tasks (SW-19): `cargo xtask layering` and
+//! `cargo xtask status [--check]` (AG-17, see `status.rs`).
 //!
 //! `layering` reads the `[dependencies]` of every crate under `crates/`
 //! and checks the layers of section 6 of `docs/requirements.md`: a crate
 //! depends only on crates of a lower layer (with the exceptions listed in
 //! `ALLOWED`), and the front ends reach the engine only through
 //! `mesh-tools`, in their manifests and in their source.
+
+mod status;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -79,8 +82,35 @@ fn main() -> ExitCode {
                 }
             }
         }
+        ["status"] | ["status", "--check"] => {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+            let check = args.len() == 2;
+            let page = match status::render(&root) {
+                Ok(p) => p,
+                Err(errors) => {
+                    for e in errors {
+                        eprintln!("status: {e}");
+                    }
+                    return ExitCode::FAILURE;
+                }
+            };
+            let path = root.join("docs/status.md");
+            if check {
+                if std::fs::read_to_string(&path).ok().as_deref() != Some(page.as_str()) {
+                    eprintln!("status: docs/status.md is out of date: run `cargo xtask status`");
+                    return ExitCode::FAILURE;
+                }
+                println!("status: docs/status.md is up to date");
+            } else if let Err(e) = std::fs::write(&path, page) {
+                eprintln!("status: cannot write docs/status.md: {e}");
+                return ExitCode::FAILURE;
+            } else {
+                println!("status: wrote docs/status.md");
+            }
+            ExitCode::SUCCESS
+        }
         _ => {
-            eprintln!("Usage: cargo xtask layering");
+            eprintln!("Usage: cargo xtask layering | cargo xtask status [--check]");
             ExitCode::FAILURE
         }
     }
@@ -207,6 +237,24 @@ mod tests {
     fn reads_only_the_dependencies_table() {
         let manifest = "[package]\nname = \"x\"\n\n[dependencies]\nmesh-tools.workspace = true\nserde = { version = \"1\" }\n\n[dev-dependencies]\nmesh-engine.workspace = true\n";
         assert_eq!(dependencies(manifest), ["mesh-tools", "serde"]);
+    }
+
+    /// Invariant (AG-17): docs/status.md is what docs/features.toml
+    /// generates, and every test a feature names exists as a `#[test]`, so
+    /// a grade never cites a renamed or deleted test. Editing the features
+    /// without regenerating, or renaming a cited test, breaks it.
+    #[test]
+    fn status_page_is_generated_and_tests_exist() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let page = match status::render(&root) {
+            Ok(p) => p,
+            Err(e) => panic!("{e:#?}"),
+        };
+        let file = std::fs::read_to_string(root.join("docs/status.md")).unwrap_or_default();
+        assert!(
+            file == page,
+            "docs/status.md is out of date: run `cargo xtask status`"
+        );
     }
 
     /// Invariant: the workspace as committed passes, so CI catches the
