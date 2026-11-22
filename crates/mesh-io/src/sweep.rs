@@ -1,4 +1,5 @@
 //! Mixed polygonal prisms on a section swept along a straight axis.
+use crate::handoff::{CellFaces, HandoffError, HandoffMesh, patches_from_names};
 use crate::msh::{GmshVersion, Model};
 use crate::{channel::write_boundary_vtu, end_array, end_vtu, start_array, vtu_points, write_ids};
 use mesh_algorithms::sweep::Sweep;
@@ -228,4 +229,39 @@ pub fn gmsh(
         }
     }
     model.write(version, out)
+}
+
+/// The sweep as the FoehnCraft hand-off mesh: every cell the prism of its
+/// tile between two stations; patches inlet, outlet (not for a blind
+/// profile) and walls; one zone `fluid`.
+pub fn handoff(s: &Sweep, points: &[Vec3]) -> Result<HandoffMesh, HandoffError> {
+    let mut cells = Vec::with_capacity(s.cells());
+    for k in 0..s.axial_layers.len() {
+        for (t, tile) in s.tiles.iter().enumerate() {
+            let mut bottom = cap(s, k, t);
+            bottom.reverse();
+            let mut faces = vec![bottom, cap(s, k + 1, t)];
+            let ring = &tile.ring;
+            for (&a, &b) in ring.iter().zip(ring.iter().cycle().skip(1)) {
+                faces.push(side(s, k, [a, b]).to_vec());
+            }
+            cells.push(CellFaces { faces, zone: 0 });
+        }
+    }
+    let (names, index): (&[&str], fn(usize) -> usize) = if s.profile.blind() {
+        (&["inlet", "walls"], |tag| if tag == 1 { 0 } else { 1 })
+    } else {
+        (&["inlet", "outlet", "walls"], |tag| tag - 1)
+    };
+    let boundary: Vec<_> = boundary(s)
+        .into_iter()
+        .map(|b| (b.ring, index(b.tag)))
+        .collect();
+    HandoffMesh::from_cells(
+        points.to_vec(),
+        cells,
+        vec!["fluid".to_string()],
+        &boundary,
+        patches_from_names(names),
+    )
 }

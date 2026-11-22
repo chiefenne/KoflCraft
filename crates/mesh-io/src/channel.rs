@@ -5,8 +5,10 @@ use std::io::{self, Write};
 
 use mesh_algorithms::channel::{ChannelCell, ChannelMesh, ChannelPatch};
 
+use crate::handoff::{HandoffError, HandoffMesh, patches_from_names};
 use crate::msh::{GmshVersion, Model};
 use crate::{end_vtu, serialize_vtu, vtu_points, write_array};
+use mesh_core::mesh::FaceAdjacency;
 
 pub fn write_volume(channel: &ChannelMesh, out: &mut dyn Write) -> io::Result<()> {
     serialize_vtu(channel.mesh(), Some(channel.cells()), out)
@@ -135,4 +137,18 @@ pub fn write_gmsh(
         }
     }
     model.write(version, out)
+}
+
+/// The channel as the FoehnCraft hand-off mesh: patches inlet, outlet,
+/// walls; one zone `fluid`.
+pub fn handoff(channel: &ChannelMesh) -> Result<HandoffMesh, HandoffError> {
+    let names = ChannelPatch::ALL.map(ChannelPatch::name);
+    HandoffMesh::from_mesh_with(channel.mesh(), patches_from_names(&names), &|adjacency| {
+        match adjacency {
+            FaceAdjacency::Boundary { patch, .. } => {
+                Some(ChannelPatch::from_side(patch) as usize - 1)
+            }
+            _ => None,
+        }
+    })
 }

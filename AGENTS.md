@@ -90,6 +90,7 @@ in the same form as the companion solver
 Layout: see section 6 of [docs/requirements.md](docs/requirements.md).
 Usage: [docs/m1-usage.md](docs/m1-usage.md),
 [docs/m2-stl.md](docs/m2-stl.md),
+[docs/foehncraft.md](docs/foehncraft.md),
 [docs/analytic-development.md](docs/analytic-development.md),
 [docs/nonconvex-duct.md](docs/nonconvex-duct.md).
 

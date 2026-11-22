@@ -257,6 +257,7 @@ dependencies = [
  "mesh-algorithms",
  "mesh-core",
  "mesh-quality",
+ "serde",
 ]
 
 [[package]]

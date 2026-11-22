@@ -3,6 +3,7 @@
 pub mod channel;
 mod directory;
 mod gmsh;
+pub mod handoff;
 mod msh;
 
 pub use directory::MeshDirectory;

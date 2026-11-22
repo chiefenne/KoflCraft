@@ -1,3 +1,4 @@
+use crate::handoff::{CellFaces, HandoffError, HandoffMesh, patches_from_names};
 use crate::msh::{GmshVersion, Model};
 use crate::{end_array, end_vtu, start_array, vtu_points, write_array, write_ids};
 use mesh_algorithms::duct::{DuctMesh, Element};
@@ -132,4 +133,44 @@ pub fn gmsh(mesh: &DuctMesh, version: GmshVersion, out: &mut dyn Write) -> io::R
         }
     }
     model.write(version, out)
+}
+
+/// The duct as the FoehnCraft hand-off mesh: tetrahedra, wedges and
+/// polyhedra as face rings, patches inlet, outlet, walls; one zone `fluid`
+/// (the regions of the partition are a construction aid, not cell zones).
+pub fn handoff(mesh: &DuctMesh) -> Result<HandoffMesh, HandoffError> {
+    let cells = mesh
+        .cells
+        .iter()
+        .map(|cell| {
+            let faces: Vec<Vec<usize>> = match &cell.element {
+                Element::Tet(n) => [[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]]
+                    .iter()
+                    .map(|f| f.iter().map(|&i| n[i]).collect())
+                    .collect(),
+                Element::Wedge(n) => {
+                    let tri = [[0, 2, 1], [3, 4, 5]];
+                    let quad = [[0, 1, 4, 3], [1, 2, 5, 4], [2, 0, 3, 5]];
+                    tri.iter()
+                        .map(|f| f.iter().map(|&i| n[i]).collect())
+                        .chain(quad.iter().map(|f| f.iter().map(|&i| n[i]).collect()))
+                        .collect()
+                }
+                Element::Polyhedron(p) => p.faces.clone(),
+            };
+            CellFaces { faces, zone: 0 }.outward(&mesh.points)
+        })
+        .collect();
+    let boundary: Vec<_> = mesh
+        .boundary
+        .iter()
+        .map(|f| (f.nodes.clone(), f.patch.saturating_sub(1)))
+        .collect();
+    HandoffMesh::from_cells(
+        mesh.points.clone(),
+        cells,
+        vec!["fluid".to_string()],
+        &boundary,
+        patches_from_names(&["inlet", "outlet", "walls"]),
+    )
 }

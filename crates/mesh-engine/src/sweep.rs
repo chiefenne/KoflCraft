@@ -160,6 +160,11 @@ pub fn generate(
     if !profile.blind() {
         files.push(("outlet.vtu", &outlet));
     }
+    let handoff = export::handoff(&mesh, &points).map_err(crate::handoff::export_error)?;
+    let foehn = crate::handoff::foehncraft_vtu(&handoff, &[])?;
+    files.push((crate::handoff::FOEHNCRAFT_VTU, &foehn));
+    let evidence = crate::handoff::evidence(&handoff, "sweep", &files)?;
+    files.push((crate::handoff::MESH_EVIDENCE, &evidence));
     dir.write_bundle(name, &files)
         .map_err(|e| EngineError::new(ErrorCode::IoError, e))?;
     Ok(report)

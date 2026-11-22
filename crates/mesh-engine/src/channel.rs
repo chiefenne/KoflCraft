@@ -139,17 +139,20 @@ pub fn generate_channel(
     ] {
         write_patch(&channel, patch, out).map_err(io)?;
     }
-    dir.write_bundle(
-        name,
-        &[
-            ("volume.vtu", &volume),
-            ("inlet.vtu", &inlet),
-            ("outlet.vtu", &outlet),
-            ("walls.vtu", &walls),
-            ("channel.vtm", MULTIBLOCK),
-            ("channel.msh", &msh),
-        ],
-    )
-    .map_err(|e| EngineError::new(ErrorCode::IoError, e))?;
+    let handoff = mesh_io::channel::handoff(&channel).map_err(crate::handoff::export_error)?;
+    let foehn = crate::handoff::foehncraft_vtu(&handoff, &[])?;
+    let mut files: Vec<(&str, &[u8])> = vec![
+        ("volume.vtu", &volume),
+        ("inlet.vtu", &inlet),
+        ("outlet.vtu", &outlet),
+        ("walls.vtu", &walls),
+        ("channel.vtm", MULTIBLOCK),
+        ("channel.msh", &msh),
+        (crate::handoff::FOEHNCRAFT_VTU, &foehn),
+    ];
+    let evidence = crate::handoff::evidence(&handoff, "straight_channel", &files)?;
+    files.push((crate::handoff::MESH_EVIDENCE, &evidence));
+    dir.write_bundle(name, &files)
+        .map_err(|e| EngineError::new(ErrorCode::IoError, e))?;
     Ok(report)
 }
