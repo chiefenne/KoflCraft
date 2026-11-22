@@ -45,19 +45,19 @@
 
 Grades follow AG-17: **verified** (checked against an exact or independent reference by a named test), **partial** (works on the named fixtures, known gaps), **unverified** (built, not yet checked), **open** (not built). How each was checked is stated. A partial result is never presented as success.
 
-**How this was checked (2026-11-22):** `cargo test --release --locked --workspace --all-targets` passed on macOS (Rust 1.99.1) and on Linux x86_64 (Rust 1.97): 31 passed, 0 failed, 1 ignored. The ignored test (`openfoam_files_parse_as_a_conforming_partition`, a dormant OpenFOAM `polyMesh` writer for the box) also passes when run on its own. `cargo m1 --require-gmsh` passed on macOS with Gmsh 4.15.2 on all six 16/64/256-site fixtures. No FoehnCraft run has used a KoflCraft mesh yet.
+**How this was checked (2026-11-22, after M1b):** `cargo test --release --locked --workspace --all-targets` passed on Linux x86_64 (Rust 1.97): 52 passed, 0 failed, 1 ignored (the dormant box-only OpenFOAM test, which passes when run on its own). `cargo m1 --require-gmsh` passed with Gmsh on all six 16/64/256-site fixtures. CI (`.github/workflows/m1.yml`) runs `cargo fmt --check`, `cargo xtask layering`, clippy with `-D warnings`, the test suite, and `cargo m1 --require-gmsh --require-foehn`, which reads 26 KoflCraft exports back with `foehn mesh` built from FoehnCraft's main branch.
 
 | Area | Grade | Evidence | Gaps |
 |---|---|---|---|
-| M1 box clipped Voronoi, validation, VTU and Gmsh export, CLI and MCP | verified | M1 acceptance (`cargo m1`): 16/64/256-site lattice and clustered fixtures, independent VTU and MSH readers, equal topology digests from CLI and MCP | All-pairs clipping only (ALG-04 open) |
+| M1 box clipped Voronoi, validation, VTU and Gmsh export, CLI and MCP | verified | M1 acceptance (`cargo m1`): 16/64/256-site lattice and clustered fixtures, independent VTU and MSH 4.1 readers, equal topology digests and identical files from CLI and MCP | All-pairs clipping only (ALG-04 open) |
 | M2 STL import and convex STL meshing | partial | `tests/stl_workflow.rs`: unit and skewed boxes, malformed, inward, nonconvex and non-manifold rejection | Size control (ALG-05) open |
 | Swept block and pipe with prism layers | partial | `mesh-cli` workflow tests, `docs/analytic-development.md` (exact block volume, pipe 0.0564 % below the cylinder) | Analytic shapes only |
 | Straight channel with port-terminated layers (M3, BL-10) | partial | `tests/channel_gmsh.rs`, `research/open-port-layers.md` | Planar walls only |
-| Nonconvex duct, bulk, layered and polyhedral (M4/M5 prototype) | partial | `nonconvex_elbow_and_solidcraft_…` workflow test: volume, patch areas to 1e-9, every layer reaches both ports | Needs a Gmsh scaffold and a Python preparation script (OPEN-07); fitted volume 0.183 % below the STL; flow accuracy untested |
-| FoehnCraft hand-off (section 16) | open | — | MSH 2.2 written, FoehnCraft reads 4.1 only; no round-trip test |
-| OpenFOAM `polyMesh` export (box only) | unverified in CI | Ignored test passes when run alone | Box patches only; not in acceptance |
-| Tool registry, journal, approvals, grades (section 7) | open | MCP already confines writes to `--output-dir` | CLI and MCP dispatch separately, with different command names |
-| Repository rules (section 7a) | open | — | Most of the code is not committed; no remote repository |
+| Nonconvex duct, bulk, layered and polyhedral (M4/M5 prototype) | partial | `nonconvex_elbow_and_solidcraft_…` workflow test: volume, patch areas to 1e-9, every layer reaches both ports | Needs a Gmsh scaffold and a Python preparation script (OPEN-07); fitted volume 0.183 % below the STL; the polyhedral dual has 10 faces with S·d ≤ 0; flow accuracy untested |
+| FoehnCraft hand-off (section 16, FC-01, FC-02, FC-04 to FC-06) | partial | MSH 4.1 default (2.2 as an option), single-file `foehncraft.vtu` with region array and boundary names, `mesh-evidence.json`; FC-06 round trip in CI: counts, volume, closure and patch areas agree with `foehn mesh` to 1e-12 on 26 files | FoehnCraft reports the polyhedral elbow invalid (inverted faces above), recorded as a limitation; binary MSH open |
+| OpenFOAM `polyMesh` export (FC-03) | unverified | Written for every mesh type from the hand-off mesh, with patch types and cellZones | No independent reader in tests or CI |
+| Tool registry, journal, roots, diagnostic codes (AG-12 to AG-14, AG-18, FC-07) | partial | `mesh-tools`: 14 tools, `kofl commands`/`call`, `docs/tools.md` generated and tested; `journal_replays_and_detects_a_changed_call`; MCP through the registry with mandatory roots (`read_and_write_roots_confine_every_call`) | Estimates and approvals (AG-15), paged detail (AG-16) and the generated status page (AG-17) open |
+| Repository rules (section 7a) | partial | Repository on GitHub, `AGENTS.md`, pitfalls, changelog fragments, `cargo xtask layering` in CI | Release process open |
 
 ## 2. Milestone M1 — minimum working generator
 
@@ -203,7 +203,7 @@ Requirements named by the maintainer on 2026-11-22. Candidate algorithms for eac
 
 ## 6. Rust software architecture
 
-One Cargo workspace, with a domain engine reusable by all interfaces. The crates are in layers, lowest first; a crate may depend only on lower layers, and the front ends reach the engine only through the tool registry (SW-19, AG-12). `exists` marks crates in the workspace on 2026-11-22.
+One Cargo workspace, with a domain engine reusable by all interfaces. The crates are in layers, lowest first; a crate may depend only on lower layers, and the front ends reach the engine only through the tool registry (SW-19, AG-12). Three same-layer uses are allowed and listed with their reason in `crates/xtask`: `mesh-quality` uses `mesh-geometry` (validation against the surface), `mesh-io` uses `mesh-algorithms` (the writers read the meshes the algorithms build), and `mesh-cli` uses `mesh-mcp` (`kofl mcp`). `exists` marks crates in the workspace on 2026-11-22.
 
 ```text
 koflcraft/
@@ -214,12 +214,12 @@ koflcraft/
     L2 mesh-algorithms/  # Voronoi clipping, sweeps, duct layers, dual   (exists)
     L2 mesh-io/          # VTU / Gmsh / later OpenFOAM writers, readers  (exists)
     L3 mesh-engine/      # operations, plans, orchestration, evidence    (exists)
-    L4 mesh-tools/       # tool registry, journal, approvals (AG-12..16) (new)
+    L4 mesh-tools/       # tool registry, journal, approvals (AG-12..16) (exists)
     L5 mesh-cli/         # command line, through mesh-tools only         (exists)
     L5 mesh-mcp/         # MCP server, the same tool ids                 (exists)
     -- mesh-acceptance/  # M1 acceptance runner (test tool)              (exists)
+    -- xtask/            # repository tasks: `cargo xtask layering` (SW-19) (exists)
     later: mesh-gpu/     # optional GPU kernels (SW-07)
-  xtask/                 # repository tasks: layering, docs (SW-19)     (new)
   examples/  test-fixtures/  research/  docs/
   AGENTS.md  docs/pitfalls.md                                           (new, PROC-01, PROC-02)
 ```
@@ -418,7 +418,7 @@ Decided by the maintainer on 2026-11-22 (OBJ-19), with Leif Kobbelt (RWTH Aachen
 | Milestone | Status | Scope | Exit evidence | Progress (2026-11-22) |
 |---|---|---|---|---|
 | **M1** | D | Rust polyhedral core; box domain; small clipped-Voronoi mesh; QA; VTU/Gmsh; CLI/MCP | 16/64/256-site fixtures pass invariants | Done, verified |
-| **M1b** | D | Craft alignment: tool registry, journal, roots, grades and limitations, diagnostic codes, `AGENTS.md`, pitfalls, layering check, repository and CI (sections 7, 7a) | `kofl commands` lists every tool; CLI and MCP give identical result envelopes; `cargo xtask layering` green | New, open. Do before more meshing features, as FoehnCraft did before its MCP server |
+| **M1b** | D | Craft alignment: tool registry, journal, roots, grades and limitations, diagnostic codes, `AGENTS.md`, pitfalls, layering check, repository and CI (sections 7, 7a) | `kofl commands` lists every tool; CLI and MCP give identical result envelopes; `cargo xtask layering` green | Mostly done 2026-11-22 (PRs #5 to #11): registry, journal and replay, roots, diagnostic codes, layering check, FoehnCraft exports and round trip. Open: estimates and approvals (AG-15), paged detail (AG-16), status page (AG-17) |
 | **M2** | L | STL input; boundary patch labeling and the first `patch.*` tools (BC-01, BC-02); surface validation; basic mesh size control (GRD-01 to GRD-03, GRD-05); FoehnCraft hand-off FC-01 to FC-03 | Box/convex-polyhedron STL cases; every fixture loads in `foehn mesh` (FC-06) | STL import and convex meshing partial; size control and hand-off open |
 | **M3** | L | Simple planar-wall prism boundary layers, conformal core | [Straight channel benchmark and port-area checks](../research/open-port-layers.md#run-the-straight-channel-benchmark) | Prototype partial (channel, swept block and pipe) |
 | **M4** | L | Robust STL/triangulated geometry, feature handling, clipped Voronoi in nonconvex domains | Feature and narrow-gap benchmarks, including the [SolidCraft pipe-and-box surface](../test-fixtures/solidcraft-vs-foehncraft/README.md) | Prototype partial via partitioned dual on a Gmsh scaffold (OPEN-07) |

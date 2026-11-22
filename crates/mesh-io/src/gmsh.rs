@@ -72,7 +72,10 @@ pub fn write_gmsh_domain(
                 }
             }
         }
-        let expected = metrics.cells[cell].volume / volume_scale;
+        let Some(metric) = metrics.cells.get(cell) else {
+            return Err(ExportError::InvalidSubdivision { cell, face: None });
+        };
+        let expected = metric.volume / volume_scale;
         if (volume / expected - 1.0).abs() > RELATIVE_CONSERVATION_TOLERANCE {
             return Err(ExportError::InvalidSubdivision { cell, face: None });
         }
