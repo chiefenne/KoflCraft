@@ -26,7 +26,7 @@ fn fixture() -> Value {
 /// check the pieces only, not the mesh they make.
 #[test]
 fn size_field_grades_the_stl_mesh_and_reports_each_source() {
-    let artifact = build_stl_mesh(UNIT_BOX, config(fixture()), None).unwrap();
+    let artifact = build_stl_mesh(UNIT_BOX, config(fixture()), None, None).unwrap();
     let check = check_mesh(&artifact).unwrap();
     let sizing = artifact.sizing().unwrap();
     assert_eq!(check.cells, sizing.seeds);
@@ -53,11 +53,11 @@ fn size_field_grades_the_stl_mesh_and_reports_each_source() {
     let band = &sizing.sources[1];
     assert_eq!((band.name.as_str(), band.kind.as_str()), ("band", "region"));
 
-    let again = build_stl_mesh(UNIT_BOX, config(fixture()), None).unwrap();
+    let again = build_stl_mesh(UNIT_BOX, config(fixture()), None, None).unwrap();
     assert_eq!(again.build().mesh_digest, artifact.build().mesh_digest);
     let mut other = fixture();
     other["seed"] = json!(2);
-    let other = build_stl_mesh(UNIT_BOX, config(other), None).unwrap();
+    let other = build_stl_mesh(UNIT_BOX, config(other), None, None).unwrap();
     assert_ne!(other.build().mesh_digest, artifact.build().mesh_digest);
 
     // The evidence is part of the config digest: editing it is detected.
@@ -89,7 +89,7 @@ fn every_shape_grades_an_angled_surface() {
             },
             "seed": 3
         });
-        let artifact = build_stl_mesh(SKEWED_BOX, config(value), None).unwrap();
+        let artifact = build_stl_mesh(SKEWED_BOX, config(value), None, None).unwrap();
         check_mesh(&artifact).unwrap();
         let source = &artifact.sizing().unwrap().sources[0];
         assert!(source.governs > 0, "{shape}");
@@ -99,7 +99,7 @@ fn every_shape_grades_an_angled_surface() {
 #[test]
 fn invalid_size_fields_are_diagnosed() {
     let code = |value: Value| {
-        build_stl_mesh(UNIT_BOX, config(value), None)
+        build_stl_mesh(UNIT_BOX, config(value), None, None)
             .unwrap_err()
             .code
     };

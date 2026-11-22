@@ -49,6 +49,47 @@ The result and the artifact carry a `sizing` block: the field as given, the seed
 
 Limits: datum objects from STL surfaces, and curvature, gap and feature-edge sizes (GRD-04), are open. Clipping is all-pairs (ALG-04), so each relaxation iteration costs O(N²); a field may ask for at most 20,000 seeds, and the MCP site limit applies to the seed count.
 
+## Boundary patches
+
+The `patch.*` tools (BC-01, BC-02) name the boundary faces after import, so an agent or a person can define the patches of a FoehnCraft case without editing the STL. They work on any closed shell, convex or not. Each call reads the STL and a patch map, applies one operation and writes a **new** patch map (`koflcraft.patch-map` 1.0): the STL's SHA-256, the facet count, the patches with `name`, `role` and an optional `source_name`, and `facet_patch`, the patch index of every facet in file order. Every read checks that the map belongs to the STL and gives every facet exactly one patch with a unique name (BC-06). Names are FoehnCraft boundary names (1 to 64 ASCII letters, digits, `_`, `-`), so MSH 4.1, the FoehnCraft VTU and OpenFOAM carry the same names.
+
+| Tool | What it does |
+|---|---|
+| `patch.init` | A map from the STL solids: one patch per solid (`west inlet` becomes `west_inlet`, binary STL gives `surface`), roles from the names |
+| `patch.list` | The check and the evidence of each patch: role and FoehnCraft type, facets, area, mean normal and its largest deviation, bounds, regions, neighbouring patches |
+| `patch.select_plane` | Facets with all corners on a plane (`point`, `normal`, optional `tolerance`) |
+| `patch.select_box` | Facets in a box (`min`, `max`; by centroid, or `contain: all_corners`) |
+| `patch.select_normal` | Facets whose outward normal is within `max_angle_deg` of `direction` |
+| `patch.grow` | Feature-angle region growing from `seed_facet` or the facet nearest to `seed_point`, across edges with a dihedral angle up to `feature_angle_deg` |
+| `patch.split` | A patch into its regions (separated by edges sharper than `feature_angle_deg`, or by connectivity), named `names` or `<patch>_1`, … |
+| `patch.merge` | The patches in `merge` into `name` |
+| `patch.rename`, `patch.set_role` | Rename (the new name must be free); set the role: wall, inlet, outlet, symmetry, interface or unspecified ([mapping](foehncraft.md#patch-names-and-roles-fc-04)) |
+
+A selection moves the facets it picks into the patch `name` (created when new, with `role` or the role its name suggests), from any patch or only from the patches in `within`. Patches it empties are dropped; the result lists `change.created`, `change.removed` and `change.facets_changed` with the new summary. An operation that selects or changes nothing writes no file and fails with PATCH004. A rename keeps the role.
+
+```sh
+cat > init.json <<'JSON'
+{"surface": "test-fixtures/unit-box.stl", "output": "mesh-output/p0.json"}
+JSON
+cat > inlet.json <<'JSON'
+{"surface": "test-fixtures/unit-box.stl", "patches": "mesh-output/p0.json", "output": "mesh-output/p1.json",
+ "name": "inlet", "role": "inlet", "point": [0, 0, 0], "normal": [1, 0, 0]}
+JSON
+cat > walls.json <<'JSON'
+{"surface": "test-fixtures/unit-box.stl", "patches": "mesh-output/p1.json", "output": "mesh-output/p2.json",
+ "merge": ["south_wall", "north_wall", "floor", "ceiling"], "name": "walls", "role": "wall"}
+JSON
+echo '{"surface": "test-fixtures/unit-box.stl", "patches": "mesh-output/p2.json"}' > list.json
+target/debug/kofl --journal mesh-output/patches.jsonl call patch.init --input init.json
+target/debug/kofl --journal mesh-output/patches.jsonl call patch.select_plane --input inlet.json
+target/debug/kofl --journal mesh-output/patches.jsonl call patch.merge --input walls.json
+target/debug/kofl --journal mesh-output/patches.jsonl call patch.list --input list.json
+target/debug/kofl generate-stl test-fixtures/unit-box.stl test-fixtures/stl-sites.json mesh-output/patched.mesh.json --patches mesh-output/p2.json
+target/debug/kofl export mesh-output/patched.mesh.json openfoam mesh-output/patched-foam
+```
+
+`kofl run --script mesh-output/patches.jsonl` replays the steps. With `--patches` (tools: `patches`), `generate-stl` and `inspect-stl` take the names from the map instead of the solids, and the map's roles are saved with the artifact and used by every export; `facet_patches` and a map cannot be combined. Over MCP the patch tools accept up to 200,000 facets (`max_patch_facets`). The method and its checks are in [research/m2-patch-tools.md](../research/m2-patch-tools.md).
+
 ## MCP
 
 Launch the server with read and write roots as in the [M1 workflow](m1-usage.md). Place the STL below a read root before calling the tools.
@@ -56,13 +97,14 @@ Launch the server with read and write roots as in the [M1 workflow](m1-usage.md)
 | Tool | Arguments |
 |---|---|
 | `inspect_stl_domain` | `surface` filename and inline STL `config`; with a size field it reports the seed count as `site_count` |
-| `generate_stl_mesh` | `surface` filename, inline STL `config`, and new `artifact` filename |
+| `generate_stl_mesh` | `surface` filename, inline STL `config`, new `artifact` filename, optional `patches` map |
+| `patch.*` | `surface`, `patches` and new `output` filenames and the operation's fields ([tools](tools.md)) |
 
-Reuse `check_mesh`, `mesh_report`, and `export_mesh` with the generated artifact. The MCP server limits this prototype to 2,048 STL facets and 256 sites per job. The CLI uses the same engine and accepts the STL path as an explicit argument.
+Reuse `check_mesh`, `mesh_report`, and `export_mesh` with the generated artifact. To chain patch calls over MCP, make the write root a read root too, so a call can read the map the previous one wrote. The MCP server limits this prototype to 2,048 STL facets and 256 sites per job. The CLI uses the same engine and accepts the STL path as an explicit argument.
 
 ## Verification
 
-`cargo test --release --locked -p mesh-engine --test size_field` builds graded meshes on both fixtures and checks the achieved sizes, determinism, the estimate and the evidence digest. `cargo test --locked --test stl_workflow` compares each unit-box STL cell with the analytic reference, checks boundary patch areas, verifies binary STL with explicit labels, and exercises the skewed fixture plus malformed surfaces. `cargo m1 --require-gmsh` includes these tests in the workspace regression suite.
+`cargo test --release --locked -p mesh-engine --test patches` checks the patch tools against the SolidCraft ports recorded by hand, the exact evidence on the boxes, the map checks and the names and roles in every export. `cargo test --release --locked -p mesh-engine --test size_field` builds graded meshes on both fixtures and checks the achieved sizes, determinism, the estimate and the evidence digest. `cargo test --locked --test stl_workflow` compares each unit-box STL cell with the analytic reference, checks boundary patch areas, verifies binary STL with explicit labels, and exercises the skewed fixture plus malformed surfaces. `cargo m1 --require-gmsh` includes these tests in the workspace regression suite.
 
 The Rust `import_closed_stl` entry point also checks shell connectivity, winding, and positive signed volume for nonconvex test surfaces. The [SolidCraft pipe-and-box case](../test-fixtures/solidcraft-vs-foehncraft/README.md) uses it to verify its inlet, outlet, and wall labels before convexity enters the volume meshing path.
 

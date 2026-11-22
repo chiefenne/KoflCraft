@@ -1,7 +1,9 @@
 //! Import and validation of triangulated volume boundaries.
 
+pub mod patches;
 mod stl;
 
+pub use patches::FacetGeometry;
 pub use stl::{StlOptions, import_closed_stl, import_stl};
 
 use std::collections::{BTreeMap, BTreeSet};

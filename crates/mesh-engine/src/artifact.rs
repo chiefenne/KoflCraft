@@ -6,6 +6,7 @@ use mesh_algorithms::voronoi::{validate_sites, validate_surface_sites};
 use mesh_core::geometry::{AxisAlignedBox, BoxSide, FacetId, PatchId, Vec3};
 use mesh_core::mesh::{FaceAdjacency, Mesh};
 use mesh_geometry::{ConvexSurface, SurfaceTriangle};
+use mesh_io::handoff::PatchRole;
 use mesh_quality::{MeshDomain, MeshMetrics, validate_domain};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -119,6 +120,12 @@ impl MeshArtifact {
         &self.build
     }
 
+    /// The patch roles saved from a patch map (BC-04), in the surface's
+    /// patch order.
+    pub fn patch_roles(&self) -> Option<&[PatchRole]> {
+        self.surface.as_ref()?.patch_roles.as_deref()
+    }
+
     pub fn sizing(&self) -> Option<&SizingEvidence> {
         self.sizing.as_ref()
     }
@@ -213,7 +220,7 @@ pub(crate) fn generation_error(error: GenerationError) -> EngineError {
 pub(crate) fn pack_artifact(
     config: MeshConfig,
     generated: &GeneratedMesh,
-    surface: Option<&ConvexSurface>,
+    surface: Option<(&ConvexSurface, Option<Vec<PatchRole>>)>,
     sizing: Option<SizingEvidence>,
     started: Instant,
 ) -> Result<MeshArtifact, EngineError> {
@@ -223,7 +230,10 @@ pub(crate) fn pack_artifact(
     } else {
         (SCHEMA_VERSION, ALGORITHM)
     };
-    let surface = surface.map(PackedSurface::from);
+    let surface = surface.map(|(surface, roles)| PackedSurface {
+        patch_roles: roles,
+        ..PackedSurface::from(surface)
+    });
     let mesh = PackedMesh::from(generated.mesh());
     let build = BuildEvidence {
         algorithm: algorithm.to_owned(),
@@ -253,6 +263,10 @@ struct PackedSurface {
     vertices: Vec<Point>,
     facets: Vec<PackedFacet>,
     patch_names: Vec<String>,
+    /// The role of each patch from a patch map (BC-04); absent when the
+    /// roles follow the names, so older artifacts keep their digests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    patch_roles: Option<Vec<PatchRole>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -275,12 +289,23 @@ impl From<&ConvexSurface> for PackedSurface {
                 })
                 .collect(),
             patch_names: surface.patch_names().to_vec(),
+            patch_roles: None,
         }
     }
 }
 
 impl PackedSurface {
     fn to_surface(&self) -> Result<ConvexSurface, EngineError> {
+        if self
+            .patch_roles
+            .as_ref()
+            .is_some_and(|r| r.len() != self.patch_names.len())
+        {
+            return Err(EngineError::new(
+                ErrorCode::InvalidDomain,
+                "the artifact has a different number of patch roles and names",
+            ));
+        }
         ConvexSurface::new(
             self.vertices.iter().copied().map(vector).collect(),
             self.facets

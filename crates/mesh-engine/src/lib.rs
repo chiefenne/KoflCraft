@@ -3,6 +3,7 @@ mod assembly;
 pub mod channel;
 mod export;
 pub mod handoff;
+pub mod patches;
 mod report;
 pub mod sizing;
 mod stl;
@@ -40,6 +41,11 @@ pub enum ErrorCode {
     DigestMismatch,
     ValidationFailed,
     InvalidSizeField,
+    InvalidArguments,
+    InvalidPatchMap,
+    UnknownPatch,
+    InvalidPatchName,
+    EmptySelection,
     UnsupportedFormat,
     ExportFailed,
     IoError,

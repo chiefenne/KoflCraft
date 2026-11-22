@@ -394,6 +394,78 @@ fn round_trip(cli: &Path, foehn: &Path, root: &Path, workspace: &Path) -> RunRes
             foehn::Kind::Subdivision,
         )?;
     }
+    // BC-01, BC-02: a boundary defined with the patch tools reaches
+    // FoehnCraft under its names in every format
+    let patched = bundles.join("patched-box");
+    fs::create_dir(&patched)?;
+    let stl = path("unit-box.stl");
+    let steps = [
+        ("patch.init", json!({"surface": stl, "output": "p0.json"})),
+        (
+            "patch.select_plane",
+            json!({"surface": stl, "patches": "p0.json", "output": "p1.json",
+            "name": "inlet", "role": "inlet", "point": [0, 0, 0], "normal": [1, 0, 0]}),
+        ),
+        (
+            "patch.select_normal",
+            json!({"surface": stl, "patches": "p1.json", "output": "p2.json",
+            "name": "outlet", "role": "outlet", "direction": [1, 0, 0], "max_angle_deg": 1}),
+        ),
+        (
+            "patch.merge",
+            json!({"surface": stl, "patches": "p2.json", "output": "p3.json",
+            "merge": ["south_wall", "north_wall", "floor", "ceiling"], "name": "walls", "role": "wall"}),
+        ),
+    ];
+    for (k, (id, input)) in steps.iter().enumerate() {
+        let file = format!("in{k}.json");
+        write_json(&patched.join(&file), input)?;
+        let envelope = run_cli(cli, &patched, &["call", id, "--input", &file])?;
+        require(
+            envelope["status"] == "finished",
+            &format!("{id}: {envelope}"),
+        )?;
+    }
+    run_cli(
+        cli,
+        &patched,
+        &[
+            "generate-stl",
+            &stl,
+            &path("stl-size-field.json"),
+            "m.json",
+            "--patches",
+            "p3.json",
+        ],
+    )?;
+    for (format, file) in [
+        ("openfoam", "foam"),
+        ("foehncraft", "m.vtu"),
+        ("gmsh", "m.msh"),
+    ] {
+        run_cli(cli, &patched, &["export", "m.json", format, file])?;
+    }
+    let evidence = patched.join("foam/mesh-evidence.json");
+    let written: Value = serde_json::from_slice(&fs::read(&evidence)?)?;
+    let mut names: Vec<&str> = written["patches"]
+        .as_array()
+        .ok_or("missing patches in the evidence")?
+        .iter()
+        .filter_map(|p| p["name"].as_str())
+        .collect();
+    names.sort_unstable();
+    require(
+        names == ["inlet", "outlet", "walls"],
+        &format!("patched box exports patches {names:?}"),
+    )?;
+    run(&bundles, "patched-box/m.vtu", &evidence, foehn::Kind::Faces)?;
+    run(&bundles, "patched-box/foam", &evidence, foehn::Kind::Faces)?;
+    run(
+        &bundles,
+        "patched-box/m.msh",
+        &evidence,
+        foehn::Kind::Subdivision,
+    )?;
     println!(
         "FoehnCraft round trip (FC-06): {} files read and matched",
         checks.len()

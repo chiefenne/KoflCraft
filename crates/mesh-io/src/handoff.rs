@@ -15,11 +15,11 @@ use std::io::{self, Write};
 
 use mesh_core::geometry::Vec3;
 use mesh_core::mesh::{FaceAdjacency, Mesh};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// The role of a boundary patch, mapped to a FoehnCraft boundary condition
 /// in `docs/foehncraft.md` (FC-04, GEO-06).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PatchRole {
     Wall,

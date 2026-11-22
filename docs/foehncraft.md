@@ -48,6 +48,10 @@ the FoehnCraft boundary-condition type a case starts from:
 | `interface` | interface | (region interface, OBJ-18) | `patch` |
 | anything else (`xmin` … `zmax` of the box) | unspecified | none: the case decides | `patch` |
 
+A patch map from the `patch.*` tools ([m2-stl.md](m2-stl.md#boundary-patches),
+BC-01, BC-04) sets the role of each patch explicitly instead; its names are
+already hand-off names, so every format carries them unchanged.
+
 The role is a suggestion recorded in the files, not a boundary condition;
 the case file decides. Cell zones are named (`fluid` today) for FoehnCraft
 regions (its D112).
