@@ -64,7 +64,7 @@ node average and an edge), so `foehn mesh` must report the same counts and
 the same volume and areas to round-off, and calls a mesh invalid exactly
 when `inverted_faces` is not zero.
 
-Checked by hand on 2026-11-22 with FoehnCraft main: box (4 sites, OpenFOAM),
+`cargo m1 --require-foehn` checks this for every acceptance fixture (26 files) and records each in `evidence.json` under `foehncraft`; CI runs it. First checked on 2026-11-22 with FoehnCraft main: box (4 sites, OpenFOAM),
 straight channel, analytic block and pipe sweeps, elbow duct bulk and
 layered all load valid with equal counts and volume and areas within
 1.7e-12. The polyhedral elbow loads with equal counts but 10 faces with

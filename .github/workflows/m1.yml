@@ -16,8 +16,24 @@ jobs:
         run: rustup update stable && rustup default stable
       - name: Install Gmsh
         run: sudo apt-get update && sudo apt-get install -y gmsh
-      - name: Verify VTU and Gmsh exports
-        run: cargo m1 --require-gmsh
+      - name: Find the FoehnCraft commit
+        id: foehncraft
+        run: echo "sha=$(git ls-remote https://github.com/chiefenne/Foehncraft.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+      - name: Restore the FoehnCraft binary
+        id: foehn-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/foehn-bin
+          key: foehn-${{ runner.os }}-${{ steps.foehncraft.outputs.sha }}
+      - name: Build FoehnCraft (FC-06 round trip)
+        if: steps.foehn-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 https://github.com/chiefenne/Foehncraft.git "$RUNNER_TEMP/foehncraft"
+          cargo build --release --locked -p foehncraft-cli --manifest-path "$RUNNER_TEMP/foehncraft/Cargo.toml"
+          mkdir -p ~/foehn-bin
+          cp "$RUNNER_TEMP/foehncraft/target/release/foehn" ~/foehn-bin/
+      - name: Verify VTU, Gmsh and FoehnCraft exports
+        run: FOEHN="$HOME/foehn-bin/foehn" cargo m1 --require-gmsh --require-foehn
       - name: Save timing and validation evidence
         uses: actions/upload-artifact@v4
         with:
