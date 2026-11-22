@@ -13,6 +13,7 @@ pub mod diag;
 pub mod journal;
 mod markdown;
 mod mesh;
+mod page;
 mod schemas;
 
 use std::time::Instant;
@@ -26,7 +27,7 @@ pub use journal::{Journal, ReplayInput, call_journaled};
 pub use markdown::markdown;
 pub use mesh::{
     ArtifactInput, ChannelInput, ConfigInput, DuctInput, ExportInput, GenerateInput,
-    GenerateStlInput, StlInput, SweepInput,
+    GenerateStlInput, ReportInput, StlInput, SweepInput,
 };
 
 pub const RESULT_FORMAT: &str = "koflcraft.tool-result";
@@ -255,12 +256,18 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         id: "mesh.report",
-        version: 1,
+        version: 2,
         action: Action::Read,
-        summary: "Report build evidence and per-cell and per-face metrics of a saved artifact.",
+        summary: "Report build evidence and per-cell and per-face metrics of a saved artifact. Over MCP (or with `cursor` or `page_size`) the result is a summary with one page of rows (`page`); follow `page.next_cursor` for the rest.",
         legacy_name: Some("mesh_report"),
         outputs: &[],
-        input_schema: || schemas::input(json!({"artifact": schemas::path()}), &[]),
+        input_schema: || {
+            schemas::input(
+                json!({"artifact": schemas::path(), "cursor": {"type": "string"},
+                       "page_size": {"type": "integer", "minimum": 1}}),
+                &["cursor", "page_size"],
+            )
+        },
         output_schema: out!("mesh_report"),
         run: mesh::report,
     },

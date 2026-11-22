@@ -21,6 +21,8 @@ pub struct Limits {
     pub max_duct_facets: usize,
     pub max_duct_layers: usize,
     pub max_duct_regions: usize,
+    /// Rows per page of per-cell and per-face detail (AG-16).
+    pub max_page_rows: usize,
 }
 
 impl Limits {
@@ -35,6 +37,7 @@ impl Limits {
             max_duct_facets: 100_000,
             max_duct_layers: 4,
             max_duct_regions: 64,
+            max_page_rows: 500,
         }
     }
 }

@@ -171,11 +171,15 @@ gaps = "Decided 2026-11-22: builds over MCP run without a prompt within the esti
 id = "paging"
 title = "Summary first, paged detail over MCP (AG-16)"
 requirements = ["AG-16"]
-grade = "open"
-how = ""
-tests = []
-commands = []
-gaps = "Decided 2026-11-22: only MCP pages mesh.report; the CLI keeps the full report"
+grade = "verified"
+how = "Following `next_cursor` returns every cell and face exactly once at every page and kind boundary; foreign and malformed cursors are refused; the acceptance runner reassembles the MCP pages and compares them with the CLI's full report on all six fixtures"
+tests = [
+  "crates/mesh-tools/src/page.rs::pages_cover_every_row_once",
+  "crates/mesh-tools/src/page.rs::foreign_and_malformed_cursors_are_refused",
+  "crates/mesh-mcp/tests/stdio.rs::stdio_tools_run_the_shared_engine_and_bound_writes",
+]
+commands = ["cargo m1 --require-gmsh"]
+gaps = "Only mesh.report has per-row detail today; the CLI keeps the full report (decided 2026-11-22)"
 
 [[feature]]
 id = "grades"

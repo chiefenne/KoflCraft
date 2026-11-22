@@ -5,6 +5,14 @@ use std::fmt::Write;
 use crate::{CODES, TOOLS};
 
 fn fields(schema: &serde_json::Value) -> String {
+    if let Some(variants) = schema["anyOf"].as_array() {
+        return variants
+            .iter()
+            .enumerate()
+            .map(|(i, v)| format!("Form {}:\n\n{}", i + 1, fields(v)))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
     let Some(props) = schema["properties"].as_object() else {
         return "No fields.\n".to_string();
     };

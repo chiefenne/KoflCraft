@@ -91,6 +91,20 @@ pub struct ArtifactInput {
     pub artifact: String,
 }
 
+/// `mesh.report`: the full report, or (with a cursor, a page size or a
+/// front end with a page limit) a summary and one page of rows (AG-16).
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReportInput {
+    pub artifact: String,
+    /// `next_cursor` of the previous page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    /// Rows per page, at most the front end's limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_size: Option<usize>,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExportInput {
@@ -211,9 +225,34 @@ pub(crate) fn check(input: Value, ctx: &Context) -> Run {
 }
 
 pub(crate) fn report(input: Value, ctx: &Context) -> Run {
-    let i: ArtifactInput = decode(input)?;
-    Ok(json!(mesh_report(&artifact(ctx, &i.artifact)?)?))
+    let i: ReportInput = decode(input)?;
+    let report = json!(mesh_report(&artifact(ctx, &i.artifact)?)?);
+    let limit = ctx.limits.as_ref().map(|l| l.max_page_rows);
+    if i.cursor.is_none() && i.page_size.is_none() && limit.is_none() {
+        return Ok(report);
+    }
+    let size = match (i.page_size, limit) {
+        (Some(0), _) => {
+            return Err(Diagnostic::new(
+                "invalid_arguments",
+                "page_size must be at least 1",
+            ));
+        }
+        (Some(n), Some(max)) if n > max => {
+            return Err(Diagnostic::new(
+                "limit_exceeded",
+                format!("{} pages at most {max} rows, got page_size {n}", ctx.via),
+            ));
+        }
+        (Some(n), _) => n,
+        (None, Some(max)) => max,
+        (None, None) => DEFAULT_PAGE_ROWS,
+    };
+    crate::page::report_page(report, i.cursor.as_deref(), size)
 }
+
+/// Rows per page when neither the input nor the front end sets one.
+pub(crate) const DEFAULT_PAGE_ROWS: usize = 500;
 
 pub(crate) fn export(input: Value, ctx: &Context) -> Run {
     let i: ExportInput = decode(input)?;
