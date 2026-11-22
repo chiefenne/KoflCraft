@@ -99,9 +99,12 @@ Checks to run before a pull request:
 
 ```sh
 cargo fmt --all --check
+cargo xtask layering           # crate layers and front ends (SW-19)
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --release --locked --workspace --all-targets
 cargo m1 --require-gmsh        # needs gmsh on PATH; without it: cargo m1
 ```
 
-When `cargo xtask layering` exists (SW-19), run it too.
+CI runs all of them (`.github/workflows/m1.yml`, jobs `checks` and
+`acceptance`); the acceptance job also reads every FoehnCraft export back
+with `foehn mesh` (`--require-foehn`).

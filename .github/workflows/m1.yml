@@ -8,6 +8,23 @@ permissions:
   contents: read
 
 jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select stable Rust
+        run: rustup update stable && rustup default stable && rustup component add rustfmt clippy
+      - name: Install Gmsh
+        run: sudo apt-get update && sudo apt-get install -y gmsh
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Layering (SW-19)
+        run: cargo xtask layering
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Tests
+        run: cargo test --release --locked --workspace --all-targets
+
   acceptance:
     runs-on: ubuntu-latest
     steps:
