@@ -48,10 +48,18 @@ in the same form as the companion solver
 - **MUST** build algorithms from papers and documented formats and cite them
   in `research/` or the relevant doc.
 - **MUST** look for algorithms first in the computer graphics and geometry
-  processing literature, above all the work of Keenan Crane (CMU) and Bruno
-  Lévy (INRIA) (OBJ-19), and benchmark the candidate against the classical
-  method before choosing, with the outcome in a `research/` note (ALG-16).
-  The papers are the source; their authors' code follows the rules above.
+  processing literature, above all the work of Keenan Crane (CMU), Bruno
+  Lévy (INRIA) and Leif Kobbelt (RWTH Aachen) (OBJ-19), and benchmark the
+  candidate against the classical method before choosing, with the outcome in
+  a `research/` note (ALG-16). A better method from elsewhere wins if the
+  benchmark shows it.
+- **MUST** start from the papers. Open permissively licensed source of a
+  screened project only when the design note says why the papers are not
+  enough and records what was read (LIC-13).
+- **MUST NOT** read weak-copyleft source either (MPL, EPL, CDDL, LGPL, or
+  LGPL-dual without an explicit permissive option) (LIC-14).
+- **MUST** check and record a project's licence in the register of
+  requirements section 14a before opening its source (LIC-15).
 - **MAY** run Gmsh and other copyleft programs as separate processes for
   tests and fixture preparation only; never link them.
 - **MUST** record the provenance of every fixture beside it (LIC-10).

@@ -1,10 +1,10 @@
 # KoflCraft — 3D Polyhedral CFD and Multi-Physics Mesh Generator
-## Software Requirements Specification — v0.7
+## Software Requirements Specification — v0.8
 
 **Date:** 2026-11-22
 
 **Purpose:** A Rust-native mesh generator for CFD and multi-physics simulation that can grow into a high-performance, agent-controllable polyhedral meshing system. It is the mesher of the Craft family and supplies meshes to the companion solver [FoehnCraft](https://github.com/chiefenne/Foehncraft).  
-**Document status:** Decisions consolidated 2026-11-17, with the M1 export scope and inlet/outlet layer treatment updated 2026-11-18. **v0.7 (2026-11-22):** reworked to follow the development method of the [ArtCraft Craft Anything apps](https://getartcraft.com/apps/craft-anything) in the same way FoehnCraft does (its decisions D196–D203 and its [ArtCraft assessment](https://github.com/chiefenne/Foehncraft/blob/main/docs/assessments/artcraft-development-method.md)), and to define the interface to FoehnCraft. New sections: 1a (implementation status), 7 (rewritten), 7a (repository rules), 16 (FoehnCraft interface). OPEN-07 to OPEN-12 were decided by the maintainer the same day, each as proposed. Items marked **O** remain proposals. **D** marks a commitment regardless of implementation status.
+**Document status:** Decisions consolidated 2026-11-17, with the M1 export scope and inlet/outlet layer treatment updated 2026-11-18. **v0.7 (2026-11-22):** reworked to follow the development method of the [ArtCraft Craft Anything apps](https://getartcraft.com/apps/craft-anything) in the same way FoehnCraft does (its decisions D196–D203 and its [ArtCraft assessment](https://github.com/chiefenne/Foehncraft/blob/main/docs/assessments/artcraft-development-method.md)), and to define the interface to FoehnCraft. New sections: 1a (implementation status), 7 (rewritten), 7a (repository rules), 16 (FoehnCraft interface). OPEN-07 to OPEN-12 were decided by the maintainer the same day, each as proposed. **v0.8 (2026-11-22):** Leif Kobbelt (RWTH Aachen) added as third key person of the graphics principle (OBJ-19); online screening of the polyhedral mesher direction ([`research/graphics-screening-2026-11.md`](../research/graphics-screening-2026-11.md)) recorded in section 9a; new section 4a with requirements the maintainer named for mesh grading, thin shells, multi-domain meshing and agent-defined boundary faces, and BL-11/BL-12 for poly-prism layers; clean-room handling of the key groups' publications and software (LIC-12 to LIC-15) with a licence register of the screened software (section 14a). Items marked **O** remain proposals. **D** marks a commitment regardless of implementation status.
 
 ### Requirement-status convention
 
@@ -35,9 +35,10 @@
 | OBJ-14 | D | Implement algorithms independently from published mathematics and algorithms; do not copy or translate third-party source code. | Clean-room engineering process |
 | OBJ-15 | D | Keep a traceable, versioned research-to-requirement-to-implementation record. | Publications and design rationale, no source-code reuse |
 | OBJ-16 | L | Investigate wall-normal refinement using Voronoi seed distributions *without* a conventional prism stack. | Alternative near-wall meshing, not a replacement for committed prism-layer support |
-| OBJ-19 | D | **Guiding principle (maintainer, 2026-11-22): the algorithms of KoflCraft come from the computer graphics and geometry processing community.** The key people are **Keenan Crane (Carnegie Mellon University)** and **Bruno Lévy (INRIA)** and their groups. For every geometry or meshing topic, their published methods and the papers that build on them are the first candidates; a classical CFD-mesher method replaces them only where a measured benchmark shows the graphics method falls short, and the decision records why (ALG-16). | Section 9a lists the topics and the candidates. Fits the clean-room policy (section 14) because the sources are published papers, not code |
+| OBJ-19 | D | **Guiding principle (maintainer, 2026-11-22): the algorithms of KoflCraft come from the computer graphics and geometry processing community.** The key people are **Keenan Crane (Carnegie Mellon University)**, **Bruno Lévy (INRIA)** and **Leif Kobbelt (RWTH Aachen)** and their groups (Kobbelt added 2026-11-22). Their research and the software they publish are the first place to look for every geometry or meshing topic, and each design note asks where their methods could improve or speed up the meshing task. The principle is a starting point, not an exclusive rule: a method from elsewhere (another graphics group or a classical CFD mesher) is chosen where it is better suited, after the measured comparison of ALG-16 that records why. | Section 9a lists the topics, the candidates and the recommended direction. Publications and software are used under the clean-room rules LIC-12 to LIC-15 |
 | OBJ-12 | P | Offer an interactive 3D GUI. | Headless-first architecture. If built, it dispatches the same tool ids as the CLI and MCP (AG-12) and follows FoehnCraft's GUI rules (its L7: translation keys, keyboard use, accessibility tree, theme tokens) |
 | OBJ-17 | D | Be the mesher of the Craft family: every KoflCraft volume mesh is directly usable by FoehnCraft without conversion by a third tool. | Section 16. FoehnCraft defers its own general mesher (its L8) and reads meshes from files |
+| OBJ-20 | D | The polyhedral mesher follows the direction recorded in section 9a: a Voronoi and power-diagram core with per-cell clipping and a completeness test, seed-based grading, mirrored seed pairs for boundaries, thin shells and region interfaces, exact plane-based predicates, and extruded poly-prism layers. Changing direction needs a new screening note and a maintainer decision. | Screening 2026-11-22; it is a direction, each step still passes ALG-16 |
 | OBJ-18 | L | Support multi-physics meshes: several named cell zones (fluid, solid, porous) in one conformal mesh, with named region interfaces, for conjugate heat transfer and the region model of FoehnCraft (its D112, D113). | After single-region boundary-layer meshing (M5) |
 
 ## 1a. Implementation status (2026-11-22)
@@ -136,6 +137,56 @@ Grades follow AG-17: **verified** (checked against an exact or independent refer
 | BL-08 | P | Offer near-wall anisotropic Voronoi refinement without explicit prism cells. | Evaluate especially for wall-modeled LES; keep true prism layers as committed future capability. |
 | BL-09 | O | Define separate near-wall mesh quality and accuracy criteria for wall-resolved RANS/LES versus WMLES. | Proposal: begin with channel flow, measure wall-normal spacing, surface flux, and y+ targets at solver level. |
 | BL-10 | L | At an inlet or outlet, grow prism layers from adjoining wall patches up to the opening plane. Keep the wall-rim layer nodes on that plane. Label the terminal prism faces and the remaining core opening with the port patch. | Each terminal face has one incident cell and the boundary faces tile the original opening. Exercise on a straight channel in M3 and on the SolidCraft fixture in M5. |
+| BL-11 | L | Layer cells on polyhedral surfaces are **poly-prisms**: each polygonal wall face (any number of edges) is extruded along per-vertex marching directions into a prism with that polygon as top and bottom, so a layer stack is aligned with the wall and the flow along it. Triangle and quad prisms are special cases. The outer face of the last layer is the inner boundary the polyhedral core conforms to (BL-02). | Maintainer 2026-11-22: "mostly prismatic if derived from polys". FoehnCraft reads general polyhedra (its D23), so no splitting is needed for the solver |
+| BL-12 | L | Marching directions, layer thickness limits in gaps and at concave corners come from smooth fields computed on the surface or in the volume (candidates: heat method, signed heat method, harmonic fields by Walk on Spheres), not from face normals alone, and the method used is recorded in the evidence. | Section 9a; LIC-08 note on the boundary-layer patent in the screening |
+
+## 4a. Grading, thin shells, multi-domain meshes and boundary definition
+
+Requirements named by the maintainer on 2026-11-22. Candidate algorithms for each group are in section 9a and the [screening note](../research/graphics-screening-2026-11.md).
+
+### Mesh grading
+
+| ID | Status | Requirement | Notes |
+|---|---|---|---|
+| GRD-01 | L | One scalar **size field** h(x) drives the mesh density of the core, combined from several sources by the minimum, with a global minimum and maximum size. | Implements ALG-05. The seeds follow it (density ∝ h⁻³) |
+| GRD-02 | L | **Datum objects** in the domain set a target size within a distance and a growth rate away from it: point, line segment, plane, box, sphere, cylinder, cone, and an STL surface or closed body. | Datum objects are not part of the fluid boundary |
+| GRD-03 | L | **Coordinate regions** set a size inside a region given by coordinate bounds (axis-aligned box, slab, cylinder in a named coordinate system). | — |
+| GRD-04 | L | Geometry-derived sizes: surface curvature, proximity of opposite walls (gap resolution with a minimum cell count across) and feature edges. | — |
+| GRD-05 | L | **Gradation limit**: neighbouring cells differ in size by at most a configured ratio; the size field is smoothed to satisfy it before seeding. | Candidates: gradient limiting, diffusion of the field (also by Walk on Spheres) |
+| GRD-06 | P | Anisotropic size (a metric tensor instead of a scalar), for wakes and near-wall Voronoi refinement. | Candidate Lp-CVT; links to BL-08, ALG-15 |
+| GRD-07 | O | Further grading methods ("other tbd" of the maintainer). **Proposal:** solution-based refinement from a FoehnCraft result file, decided after GRD-01 to GRD-05 work. | — |
+| GRD-08 | D | Every grading source is a typed, named input of the mesh tool (AG-12), reported in the evidence with the achieved sizes per source. | Agents can add, list and remove sources by name |
+
+### Thin shells (zero-thickness walls)
+
+| ID | Status | Requirement | Notes |
+|---|---|---|---|
+| SHL-01 | L | A surface inside the fluid (a baffle, plate or fin of zero thickness) is imprinted into the volume mesh: no cell crosses it and the cell faces on it tile it. | — |
+| SHL-02 | L | The faces on a shell are written as **two boundary faces**, one per side, with one owner cell each, so the solver treats the shell as a wall; the two sides are named patches (`<shell>` and `<shell>_back` unless named otherwise) and are paired in the evidence. | Coordinate the pairing with FoehnCraft (FC-11) |
+| SHL-03 | L | A shell may have free edges inside the fluid and may touch the outer boundary or another shell; cells at free edges stay closed and valid. | — |
+| SHL-04 | L | Prism layers grow on both sides of a shell (BL-11), terminating at free edges with the same rules as at ports (BL-10). | — |
+| SHL-05 | P | A shell may be marked porous or as a "jump" interface instead of a wall. | Needs FoehnCraft support |
+
+### Multi-domain meshes
+
+| ID | Status | Requirement | Notes |
+|---|---|---|---|
+| MD-01 | L | Several domains (fluid, solid, porous) meshed in one run, each a named cell zone. | Extends OBJ-18 |
+| MD-02 | L | **Conformal** interfaces: the two domains share every interface face; the face is written once per side as a named interface patch or once as an internal face, as the export format requires. | M5b |
+| MD-03 | L | Each domain has its own size field and layer settings; layers can grow on either side of an interface. | — |
+| MD-04 | L | **Non-conformal** interfaces: domains meshed independently, the interface written as two patches with the exact intersection of their faces (or the overlap data the solver needs), conservative to round-off. | Later than MD-02; needs a FoehnCraft interface decision |
+| MD-05 | P | Moving or sliding non-conformal interfaces (rotor and stator). | Separate decision |
+
+### Boundary faces for FoehnCraft boundary conditions
+
+| ID | Status | Requirement | Notes |
+|---|---|---|---|
+| BC-01 | L | Boundary patches can be defined after import: by STL solid names, by feature-angle region growing, by plane or box selection, by normal direction, and by merging or splitting patches. | Extends GEO-06 |
+| BC-02 | L | Each selection operation is a registered tool (`patch.*`), so an agent can define the patches through MCP and every step is journalled and replayable (AG-12, AG-13). | Agent-driven definition, maintainer 2026-11-22 |
+| BC-03 | L | KoflCraft can **propose** a patch segmentation (feature edges, planar and cylindrical regions) with geometric evidence (area, normal, bounding box, neighbours) so an agent or a person names and accepts patches instead of picking triangles. | Candidate: variational shape approximation |
+| BC-04 | D | Each patch carries a role (wall, inlet, outlet, symmetry, interface, shell) that maps to a FoehnCraft boundary-condition kind, and the mapping is written with the mesh (FC-04). | — |
+| BC-05 | L | KoflCraft can write a FoehnCraft boundary-condition skeleton (patch names, roles, placeholder values) that FoehnCraft's own tools fill in; KoflCraft never sets physical values. | Avoids a second source of truth |
+| BC-06 | D | The surface patch assignment is checked: every surface face belongs to exactly one patch, and the check is part of mesh validation (CORE-03). | — |
 
 ## 5. Data model and quality
 
@@ -266,7 +317,7 @@ The table keeps AG-01 to AG-11 and adds AG-12 to AG-21. The FoehnCraft column na
 
 ## 9. Research watchlist and decision evidence
 
-Research is an explicit development workstream, not a fixed algorithm selection. Papers below are relevant leads, not proof of full CFD meshing capability. Under OBJ-19 the computer graphics and geometry processing literature, above all the work of Keenan Crane (CMU) and Bruno Lévy (INRIA), is where algorithm candidates are looked for first; section 9a maps their work to project topics.
+Research is an explicit development workstream, not a fixed algorithm selection. Papers below are relevant leads, not proof of full CFD meshing capability. Under OBJ-19 the computer graphics and geometry processing literature, above all the work of Keenan Crane (CMU), Bruno Lévy (INRIA) and Leif Kobbelt (RWTH Aachen), is where algorithm candidates are looked for first; section 9a maps their work to project topics.
 
 | Status | Paper / group | Why relevant | Project interpretation |
 |---|---|---|---|
@@ -283,11 +334,27 @@ Research is an explicit development workstream, not a fixed algorithm selection.
 | D | Hossein Baktash, Mark Gillespie, Keenan Crane (2025/2026 listing), *Subgrid Marching Tetrahedra* | Locally parallel surface reconstruction that handles thin features | Possible future STL reconstruction, not direct polyhedral volume mesh |
 | D | *Anisotropic boundary layer surface mesh generation by improved advancing-front/local-reconnection approach* (2026) | Advancing layer and local reconnection ideas | Relevant to BL research, **surface** layering specifically |
 | P | RWTH Aachen field-aligned and hexahedral meshing work | Structure/quality insights | Lower priority for unrestricted polyhedra |
+| D | Ray, Sokolov, Lefebvre & Lévy (2018), *Meshless Voronoi on the GPU*; Basselin et al. (2021), *Restricted Power Diagrams on the GPU* | Per-cell clipping by k nearest seeds with a security-radius completeness test | **High priority:** replaces all-pairs clipping (ALG-04) and gives the completeness proof of ALG-13 |
+| D | Lévy & Liu (2010), *Lp CVT*; Lévy (2022), *Partial optimal transport for a constant-volume Lagrangian mesh* | Anisotropic and volume-prescribed Voronoi / power diagrams | Grading (GRD-01, GRD-06) |
+| D | Trettner, Nehring-Wirxel & Kobbelt (2022), *EMBER*; Nehring-Wirxel, Trettner & Kobbelt (2021), *Fast exact Booleans … octree-embedded BSPs* | Exact plane-based mesh Booleans | Shell imprinting (SHL-01), port termination, robust clipping |
+| D | Sawhney & Crane (2020), *Monte Carlo geometry processing*; Sawhney et al. (2023), *Walk on Stars*; `nv-tlabs/wosx` (Apache-2.0) | Grid-free point-wise PDE solves on the raw boundary, GPU | Size-field smoothing and layer direction fields (GRD-05, BL-12); fields only, never topology |
+| D | Botsch & Kobbelt (2004), isotropic remeshing; Botsch, Kobbelt, Pauly, Alliez & Lévy (2010), *Polygon Mesh Processing* | Surface preparation under layers | M4, M5 |
+| P | Diazzi & Attene (2021), *Convex polyhedral meshing for robust solid modeling* | Exact convex decomposition of a nonconvex domain | Alternative to the Gmsh scaffold (OPEN-07); its code is LGPL and is not read |
 | P | Bruno Lévy and collaborators' Geogram Voronoi/power diagram papers | Mature conceptual foundations | Reimplement selected ideas in Rust, subject to licenses |
 
 ## 9a. Computer graphics principle: key groups and topics
 
-Decided by the maintainer on 2026-11-22 (OBJ-19). The table maps topics KoflCraft needs to published work of the two key groups. It lists leads for the design notes of ALG-16 and commits to no algorithm. Entries cite only works already in the watchlist above or named in FoehnCraft's requirements; further papers are added to `research/` when a design note reads them.
+Decided by the maintainer on 2026-11-22 (OBJ-19), with Leif Kobbelt (RWTH Aachen) added the same day. The table maps topics KoflCraft needs to published work of the three key groups. It lists leads for the design notes of ALG-16 and commits to no algorithm; the 2026-11-22 [screening note](../research/graphics-screening-2026-11.md) gives the candidates per requirement, the expected speed-ups and the sources.
+
+### Recommended direction (screening 2026-11-22, OBJ-20)
+
+1. **Core:** clipped Voronoi and power diagrams, each cell clipped by its k nearest seeds and accepted only when a security radius proves completeness (Lévy's group, *Meshless Voronoi on the GPU*). This is the M1 clipper made scalable and parallel, not a change of course.
+2. **Grading through seeds:** size field (GRD) → seed density → density-weighted CVT; semi-discrete optimal transport (Lévy) where cell volumes must match the size field; Lp-CVT for anisotropy.
+3. **Mirrored seed pairs** across boundaries, thin shells and region interfaces put Voronoi faces exactly on those surfaces (SHL, MD-02); clipping stays the fallback. Patent check required (LIC-08).
+4. **Exact plane-based predicates and Booleans** (Kobbelt's group; Lévy 2025) for clipping, shell imprinting, port termination and layer collisions.
+5. **Poly-prism layers** extruded from the polygonal wall faces (BL-11), directions and limits from heat-method and harmonic fields (BL-12).
+6. **Walk on Spheres** (Crane's group, `wosx`) for fields before a mesh exists: size-field smoothing, direction fields, inside/outside. Never for topology.
+7. The Delaunay-tetrahedra dual (ALG-07) stays the classical alternative to benchmark against.
 
 | Topic | Candidate from the key groups | Where it enters | Status |
 |---|---|---|---|
@@ -296,11 +363,16 @@ Decided by the maintainer on 2026-11-22 (OBJ-19). The table maps topics KoflCraf
 | Mesh Booleans and intersections on imperfect surfaces | Lévy (2025), as above | Port termination and layer collision handling (M5), imprinting for FoehnCraft's immersed-boundary plan (FC-08) | Lead |
 | Signed distance, inside/outside, wall distance on imperfect surfaces | Feng & Crane (2024), *A Heat Method for Generalized Signed Distance*; Crane, Weischedel & Wardetzky (2013), the heat method for distance, as FoehnCraft cites it | Layer growth directions and local thickness limits in gaps (BL-04, BL-05), FC-08 | Lead; FoehnCraft's D108/L13 plan names the same method |
 | Surface reconstruction that keeps thin features | Baktash, Gillespie & Crane, *Subgrid Marching Tetrahedra* | Preparing damaged STL input (GEO-05) | **P** |
-| Surface parameterization and remeshing under layers | Corman & Crane (2025), rectangular surface parameterization, as FoehnCraft cites it | Surface mesh quality under prism layers (BL-03, M5) | Lead |
+| Surface parameterization and remeshing under layers | Corman & Crane (2025), rectangular surface parameterization, as FoehnCraft cites it; Botsch & Kobbelt (2004), isotropic remeshing | Surface mesh quality under prism layers (BL-03, BL-11, M5) | Lead |
+| Scalable, parallel Voronoi cells with a completeness proof | Ray, Sokolov, Lefebvre & Lévy (2018); Basselin et al. (2021) | ALG-04, ALG-13, GPU-02 | **High priority** |
+| Grading with prescribed cell sizes, anisotropy | Lévy (2015, 2022) semi-discrete and partial optimal transport; Lévy & Liu (2010) Lp-CVT | GRD-01, GRD-06 | Lead |
+| Exact Booleans and plane-based geometry | Kobbelt's group: Nehring-Wirxel, Trettner & Kobbelt (2021); Trettner, Nehring-Wirxel & Kobbelt (2022), *EMBER*; Nehring-Wirxel et al. (2025) | ALG-09, SHL-01, MD-04, port termination | **High priority** with Lévy (2025) |
+| Mesh-free field solves on the raw surface | Sawhney & Crane (2020); Sawhney et al. (2023); `nv-tlabs/wosx` | GRD-05, BL-12 | Lead |
+| Patch proposals for agent-defined boundaries | Feature-angle region growing; variational shape approximation (Cohen-Steiner, Alliez & Desbrun 2004, outside the key groups) | BC-03 | Lead |
 
 **Fit with the existing policy.**
-- **Watchlist:** it already contains five works of the two groups (rows for Yan et al. 2010, Lévy 2025, Feng & Crane 2024, Baktash et al., and the Geogram line). OBJ-19 turns them from leads into the first place to look. Non-graphics entries (Cadence, Discreetize, boundary-layer surface mesh paper) stay as leads for CFD-specific needs the graphics literature does not cover, mainly layers and near-wall resolution.
-- **Clean room and MIT (section 14):** nothing changes. Algorithms are built from the papers and their mathematics (LIC-02, LIC-03). The groups also publish software; LIC-09 applies to it like any other source: do not read copyleft code, permissively licensed code may be read and is never copied, and each library's licence is checked at the LIC-05 audit before anyone opens it. An author's reference implementation is not a licence to copy it.
+- **Watchlist:** before the 2026-11-22 screening it contained five works of the first two groups (rows for Yan et al. 2010, Lévy 2025, Feng & Crane 2024, Baktash et al., and the Geogram line). OBJ-19 turns them from leads into the first place to look. Non-graphics entries (Cadence, Discreetize, boundary-layer surface mesh paper) stay as leads for CFD-specific needs the graphics literature does not cover, mainly layers and near-wall resolution.
+- **Clean room and MIT (section 14):** algorithms are built from the papers and their mathematics (LIC-02, LIC-03). How publications and software of the key groups are used is fixed in LIC-12 to LIC-15; the licences of the software screened so far are in the register of section 14a. An author's reference implementation is not a licence to copy it.
 - **Limits of the principle:** a graphics paper often assumes a clean surface and aims at visual quality. KoflCraft needs closed, conforming, conserving cells (ALG-12, ALG-13), so a graphics method is accepted after the validity benchmark of ALG-16, never on the paper's claims alone. The patent assessment of LIC-08 still applies.
 
 ### Sources and starting URLs
@@ -328,6 +400,18 @@ Decided by the maintainer on 2026-11-22 (OBJ-19). The table maps topics KoflCraf
 21. Numerical 2026: https://www.numerical.it/en/clipped-voronoi-meshing-industrial-les-fidelity-charles/
 22. Cadence primary account: https://community.cadence.com/cadence_blogs_8/b/cfd/posts/clipped-voronoi-meshing-industrial-les
 23. brepkit licensing: https://github.com/andymai/brepkit#license
+24. Screening note 2026-11-22: ../research/graphics-screening-2026-11.md
+25. Ray et al. 2018, *Meshless Voronoi on the GPU*: https://hal.archives-ouvertes.fr/hal-01927559
+26. Basselin et al. 2021, *Restricted Power Diagrams on the GPU*: https://diglib7.eg.org/bitstream/handle/10.1111/cgf142610/v40i2pp001-012.pdf
+27. Lévy & Liu 2010, *Lp CVT*: https://hal.archives-ouvertes.fr/inria-00600251
+28. Lévy 2022, partial optimal transport: https://arxiv.org/abs/2106.03936
+29. Trettner, Nehring-Wirxel & Kobbelt 2022, *EMBER*: https://www.graphics.rwth-aachen.de/publication/03339
+30. Nehring-Wirxel, Trettner & Kobbelt 2021, octree-embedded BSPs: https://arxiv.org/abs/2103.02486
+31. Walk on Stars: https://www.cs.cmu.edu/~kmcrane/Projects/WalkOnStars/
+32. WoSX: https://github.com/nv-tlabs/wosx
+33. Monte Carlo geometry processing resources: https://rohan-sawhney.github.io/mcgp-resources/
+34. Leif Kobbelt, RWTH Visual Computing Institute: https://www.graphics.rwth-aachen.de/
+35. VoroCrust patent US 10,776,540 B1: https://patents.google.com/patent/US10776540B1/en
 
 ## 10. Planned delivery milestones
 
@@ -335,14 +419,14 @@ Decided by the maintainer on 2026-11-22 (OBJ-19). The table maps topics KoflCraf
 |---|---|---|---|---|
 | **M1** | D | Rust polyhedral core; box domain; small clipped-Voronoi mesh; QA; VTU/Gmsh; CLI/MCP | 16/64/256-site fixtures pass invariants | Done, verified |
 | **M1b** | D | Craft alignment: tool registry, journal, roots, grades and limitations, diagnostic codes, `AGENTS.md`, pitfalls, layering check, repository and CI (sections 7, 7a) | `kofl commands` lists every tool; CLI and MCP give identical result envelopes; `cargo xtask layering` green | New, open. Do before more meshing features, as FoehnCraft did before its MCP server |
-| **M2** | L | STL input; boundary patch labeling; surface validation; basic mesh size control; FoehnCraft hand-off FC-01 to FC-03 | Box/convex-polyhedron STL cases; every fixture loads in `foehn mesh` (FC-06) | STL import and convex meshing partial; size control and hand-off open |
+| **M2** | L | STL input; boundary patch labeling and the first `patch.*` tools (BC-01, BC-02); surface validation; basic mesh size control (GRD-01 to GRD-03, GRD-05); FoehnCraft hand-off FC-01 to FC-03 | Box/convex-polyhedron STL cases; every fixture loads in `foehn mesh` (FC-06) | STL import and convex meshing partial; size control and hand-off open |
 | **M3** | L | Simple planar-wall prism boundary layers, conformal core | [Straight channel benchmark and port-area checks](../research/open-port-layers.md#run-the-straight-channel-benchmark) | Prototype partial (channel, swept block and pipe) |
 | **M4** | L | Robust STL/triangulated geometry, feature handling, clipped Voronoi in nonconvex domains | Feature and narrow-gap benchmarks, including the [SolidCraft pipe-and-box surface](../test-fixtures/solidcraft-vs-foehncraft/README.md) | Prototype partial via partitioned dual on a Gmsh scaffold (OPEN-07) |
 | **M5** | L | Robust prism layer termination, collision handling and complex geometry; first FoehnCraft flow run on a KoflCraft mesh | Narrow channels, corners, curved walls, the SolidCraft port termination checks, and a FoehnCraft pipe-flow case on the SolidCraft mesh | Port termination prototype partial |
-| **M5b** | L | Multi-region meshes for conjugate heat transfer (OBJ-18, FC-04) | Fluid and solid zones with a conformal interface load in FoehnCraft as two regions | Open |
+| **M5b** | L | Multi-region meshes for conjugate heat transfer (OBJ-18, FC-04, MD-01 to MD-03) and thin shells (SHL-01 to SHL-04) | Fluid and solid zones with a conformal interface load in FoehnCraft as two regions | Open |
 | **M6** | L | Large meshes, CPU optimization, parallelization, GPU studies | 1–10 million cells, audited time and memory |
 | **M7** | L | Investigate STEP import with a license-audited Rust CAD solution, after core and boundary-layer maturity | STEP vs STL geometry benchmarks |
-| **M8** | P | GUI, adaptive meshing, advanced solver formats | Separate future decision |
+| **M8** | P | GUI, adaptive meshing, advanced solver formats, non-conformal and sliding interfaces (MD-04, MD-05) | Separate future decision |
 
 The milestone ordering after M1 may be revised based on benchmark evidence. **STEP is explicitly deferred to M7 or later**; evaluating a library is not an agreement to depend upon it.
 
@@ -441,7 +525,39 @@ The GPU algorithm pre-tetrahedralizes the domain, pairs candidate cells and tetr
 | LIC-09 | D | Do not read copyleft (GPL, LGPL, AGPL) meshing or geometry source code at all. Permissively licensed source may be read and is never copied. Copyleft programs, such as Gmsh, may run as separate processes for tests and fixture preparation; their output is data with recorded provenance. | Stricter clean room as FoehnCraft D201 and ArtCraft `clean-room.md`; replaces "licence permitting" readings |
 | LIC-10 | D | Every fixture and asset records its provenance (author, tool and version, licence) beside it. Geometry or numbers produced by proprietary meshers need a decision of their own before use as a reference. | ArtCraft A13; FoehnCraft D201 |
 | LIC-11 | D | Commercial meshers and codes may be named where appropriate (a file format, a published reference, a comparison), without breaking LIC-03 or their licences; trademarks used as format names are marked. | FoehnCraft owner decision 2026-11-22 |
-| LIC-12 | D | The graphics-community principle (OBJ-19) works through papers and mathematics only. Software published by the key groups is treated like any third-party source under LIC-03 and LIC-09. | Maintainer principle 2026-11-22; section 9a |
+| LIC-12 | D | The graphics-community principle (OBJ-19) works through papers and mathematics. **Publications** of the key groups (papers, preprints, theses, talks, project pages, supplementary derivations) may be read freely, cited in `research/` and used as the source of an independent implementation; pseudo-code is re-expressed from the mathematics, and code listings inside a paper count as source code (LIC-03). **Software** of the key groups is third-party source like any other and follows LIC-03, LIC-09, LIC-13 and LIC-14. | Maintainer principle 2026-11-22, refined the same day; section 9a |
+| LIC-13 | D | **Papers first, code last.** A design note starts from the papers. Permissively licensed source of a screened project is opened only when the note records why the papers are not enough (for example an unstated tolerance), what was read, and that nothing was copied. READMEs, licence files, documentation and published benchmark numbers may always be read. Published binaries may be run as separate processes to produce comparison data, with provenance (LIC-10). | Screening 2026-11-22 read READMEs and licences only |
+| LIC-14 | D | **Weak copyleft counts as copyleft for reading.** Source under MPL-2.0, EPL, CDDL or LGPL (including LGPL-dual-licensed projects where the permissive option is not explicit for the file) is not read. A repository whose top-level licence is permissive but which bundles copyleft parts (for example Geogram's optional TetGen and Triangle, libigl's `copyleft` directory) may be read only in its permissive files, and only after its licence file has been checked. | Stricter than LIC-09; register in section 14a |
+| LIC-15 | D | The licence of every screened or used third-party project is recorded in the register of section 14a with the date, the licence and how it was checked (licence file read, GitHub detection, crates.io record), before anyone opens its source or adds it as a dependency. Patents found during screening are recorded there too and feed LIC-08. | Same day as the screening |
+
+## 14a. Licence register of screened software
+
+Checked 2026-11-22. "File" means the repository's `LICENSE` file was read; "GitHub" means the GitHub licence detection; "crates.io" means the published crate record. No source code of any project below has been read. "Read source" is what LIC-09, LIC-13 and LIC-14 allow, not a plan to read it.
+
+| Project | Group | Licence | Checked by | Read source? | Use for KoflCraft |
+|---|---|---|---|---|---|
+| `nv-tlabs/wosx` (Walk on Spheres Extensions) | Sawhney (NVIDIA), Crane line | Apache-2.0 (patent grant); deps FCPW MIT, nanoflann BSD, oneTBB Apache-2.0, pcg32 Apache-2.0 | File, README | Allowed after LIC-13 note | Field solves (GRD-05, BL-12) from the papers |
+| `rohan-sawhney/zombie` (origin of WoSX) | Sawhney, Crane | MIT | File | Allowed after LIC-13 note | As WoSX |
+| `rohan-sawhney/fcpw` (closest point, ray queries) | Sawhney | MIT | File | Allowed after LIC-13 note | Geometry queries (FC-09) |
+| `nmwsharp/geometry-central` | Sharp, Crane group | MIT | File | Allowed after LIC-13 note | Heat method, intrinsic triangulations |
+| `nzfeng/signed-heat-3d` | Feng, Crane | MIT | GitHub | Allowed after LIC-13 note | Signed heat method (BL-12) |
+| `nmwsharp/nonmanifold-laplacian` | Sharp, Crane | MIT | GitHub | Allowed after LIC-13 note | Laplacian on dirty meshes |
+| `nmwsharp/polyscope` (viewer) | Sharp | MIT | GitHub | Allowed | Viewing only, never a dependency of the engine |
+| `rohan-sawhney/mcgp-resources` | Sawhney, Crane | CC-BY-4.0 (tutorial) | GitHub | Text may be read and cited | Background for WoS |
+| `BrunoLevy/geogram` | Lévy | BSD-3-Clause; bundles LM6 (LGPL), optional TetGen (AGPL) and Triangle (non-commercial) | File, `doc/devkit/license.dox` | Permissive files only (LIC-14) | Voronoi, power diagrams, OT, exact predicates from the papers |
+| `BrunoLevy/GraphiteThree` | Lévy | GPL-2.0 | GitHub | **No** | — |
+| `geogram_predicates` crate (Rust port of Geogram PCK) | third party | LGPL-3.0 OR MIT | crates.io | Not read: a port of another code base, and LGPL-dual (LIC-14) | Possible benchmark oracle only |
+| `meshless_voronoi` crate (`yuyttenhove/meshless_voro`) | third party, implements Ray et al. 2018 | MIT OR Apache-2.0 OR LGPL-3.0 | crates.io | Not read (LIC-14); its binary output may serve as comparison data | Benchmark oracle for ALG-04 |
+| OpenMesh | Kobbelt group | BSD-3-Clause (project licence page) | Search result, page not reachable from CI proxy | Allowed after LIC-13 note, once the file is read | Surface data structures |
+| OpenVolumeMesh | Kobbelt group | LGPL-3.0 with exceptions | File | **No** | — |
+| `sandialabs/vorocrust-meshing` | Sandia (not a key group) | BSD-3-Clause; method patented (US 10,776,540 B1) | File | Allowed after LIC-13 note; patent check first (LIC-08) | Mirrored seeds (SHL, MD-02) |
+| `MarcoAttene/VolumeMesher` | Diazzi & Attene | LGPL-3.0 | GitHub | **No** | Paper only |
+| `wildmeshing/fTetWild` | Hu, Panozzo et al. | MPL-2.0 | GitHub | **No** (LIC-14) | Paper only |
+| `libigl/libigl` | Jacobson, Panozzo et al. | MPL-2.0 with a GPL `copyleft` directory (GitHub reports GPL-3.0) | GitHub | **No** (LIC-14) | Paper only |
+| `robust` crate | georust | MIT OR Apache-2.0 | crates.io | Allowed | Candidate dependency for Shewchuk predicates under LIC-05, LIC-07 |
+| `wgpu` | gfx-rs | MIT OR Apache-2.0 (crate 30.0.2; GitHub detects Apache-2.0) | crates.io, GitHub | Allowed | GPU path (GPU-06) |
+
+**Patents seen during screening:** US 10,776,540 B1 (conforming Voronoi mesh, VoroCrust line); US 12,094,059 (anisotropic polyhedra boundary layer adaptation, not read). Both go to the LIC-08 assessment before the related work is distributed commercially.
 
 **Dependency caveat:** As of 2026-11-17, `brepkit` v3+ is AGPL-3.0-only or commercial; versions through 2.129.x are reported MIT OR Apache-2.0. This only establishes possible *license* eligibility for a pinned historical version; it does not demonstrate suitability, maintenance, numerical robustness or permission to copy its implementation. The project will not depend on it at M1.
 
@@ -479,5 +595,6 @@ FoehnCraft is the companion general-purpose CFD and multi-physics solver (MIT, R
 | FC-07 | D | Tool-id and envelope conventions match FoehnCraft (`system.*`, `diag.codes`, `result.page`, `journal.replay`; `format`/`format_version`; diagnostic-code style), so one agent can drive both through MCP and FoehnCraft's study layer (its D62) can call `mesh.*` tools for parametric mesh variants. | AG-12 to AG-18 |
 | FC-08 | L | Meshes for FoehnCraft's immersed-boundary plan: a thin body-fitted layer mesh grown from a surface, whose outer surface is handed to FoehnCraft for imprinting (its L13 plan). The open problems FoehnCraft lists for that mesher (column insertion at convex edges, merging at concave corners and in gaps, surface quality under the layers) are KoflCraft BL work items. | Coordinate with FoehnCraft's [L13 plan](https://github.com/chiefenne/Foehncraft/blob/main/docs/requirements/l13-immersed-boundary-plan.md) |
 | FC-09 | P | A shared geometry-query layer (bounding volume hierarchy, closest point, winding numbers) published once as an MIT crate and used by both projects. | FoehnCraft D108 builds one; decide only when both need the same queries |
+| FC-11 | L | Thin shells (SHL-02) and non-conformal interfaces (MD-04) are handed over in a form FoehnCraft reads: paired boundary patches for the two sides of a shell, and interface patches with the pairing recorded in the evidence and, where the format allows, in the file. | FoehnCraft's support for paired patches is to be confirmed with FoehnCraft before SHL work starts |
 | FC-10 | X | KoflCraft depends on FoehnCraft source crates, or FoehnCraft links KoflCraft into its solver binary. | Files and tool calls only |
 
