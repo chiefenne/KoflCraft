@@ -22,6 +22,10 @@ target/debug/mesh-cli export mesh-output/box.mesh.json gmsh mesh-output/box.msh
 
 Open `mesh-output/box.vtu` in ParaView or `mesh-output/box.msh` in Gmsh. The VTU file preserves the polyhedral cells. The MSH 4.1 ASCII file (the format FoehnCraft reads) uses a conforming tetrahedral subdivision with six named surface groups and a `fluid` volume group. A tetrahedron’s elementary entity tag is the original zero-based cell ID plus one. `export ARTIFACT.json gmsh-2.2 OUT.msh` writes the older MSH 2.2 instead. Each generate or export destination must be new, with an existing parent directory. [Gmsh MSH format](https://gmsh.info/doc/texinfo/gmsh.html#MSH-file-format)
 
+## Estimates
+
+`kofl --check COMMAND` prints what a build command would make instead of running it (`mesh.estimate`, AG-15): the exact cell count, rough memory and output bytes and the files it would write. The count comes from the inputs without building the volume mesh: the sites of a box or STL mesh, the channel grid, the swept 2D section, and for a duct the STL facets, region interfaces and wall facets, or the scaffold nodes and wall triangles. `kofl call mesh.estimate --input FILE` takes `{"tool": ID, "input": {...}}`. Only build tools have an estimate; the order of global flags is `kofl [--journal FILE] [--check] COMMAND`.
+
 ## Journal and replay
 
 `kofl --journal FILE COMMAND` (or the environment variable `KOFL_JOURNAL`) appends every tool call to a journal (`koflcraft.journal`, JSON lines: a header with the KoflCraft version, then one row per call with the tool id and version, the input, status, exit code, duration and the SHA-256 of the result without its timings). A journal that cannot be written adds the warning TOOL003; the call itself stands.

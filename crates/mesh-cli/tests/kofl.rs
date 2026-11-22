@@ -194,3 +194,94 @@ fn kofl_mcp_serves_the_registry_and_journals() {
     assert_eq!(row["tool"], "system.info");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Invariant (AG-15): `kofl --check` predicts exactly the cells each
+/// generator then builds: box sites, channel grid, swept section, and the
+/// duct in all three modes. A generator change that alters its cell count
+/// without its estimate breaks it; no other test compares the two.
+#[test]
+fn estimates_match_the_built_cell_counts() {
+    let dir = fresh("estimate");
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../test-fixtures");
+    for f in [
+        "straight-channel.json",
+        "elbow/elbow.stl",
+        "elbow/patches.json",
+        "elbow/partition.json",
+        "elbow/volume-scaffold.msh",
+    ] {
+        let name = std::path::Path::new(f).file_name().unwrap();
+        std::fs::copy(format!("{root}/{f}"), dir.join(name)).unwrap();
+    }
+    std::fs::write(
+        dir.join("sweep.json"),
+        r#"{"schema_version":1,"geometry":{"kind":"pipe","diameter_mm":12,"length_mm":6},"core_spacing_mm":1.25,"wall_layers":2,"first_layer_mm":0.55,"layer_growth":1.2,"max_neighbour_size_ratio":1.4}"#,
+    )
+    .unwrap();
+    let built = |v: &Value| -> u64 {
+        let r = &v["report"];
+        if r["cells"].is_u64() {
+            return r["cells"].as_u64().unwrap();
+        }
+        ["tetrahedra", "prisms", "polyhedra"]
+            .iter()
+            .map(|k| r[k].as_u64().unwrap_or(0))
+            .sum()
+    };
+    let cases: [(&[&str], Option<u64>); 6] = [
+        (&["generate", "box.json", "m.json"], Some(4)),
+        (&["generate-channel", "straight-channel.json", "ch"], None),
+        (&["generate-sweep", "sweep.json", "sw"], None),
+        (
+            &[
+                "generate-duct",
+                "elbow.stl",
+                "patches.json",
+                "partition.json",
+                "bulk",
+                "bulk",
+            ],
+            None,
+        ),
+        (
+            &[
+                "generate-duct",
+                "elbow.stl",
+                "patches.json",
+                "partition.json",
+                "layered",
+                "lay",
+            ],
+            None,
+        ),
+        (
+            &[
+                "generate-duct",
+                "elbow.stl",
+                "patches.json",
+                "partition.json",
+                "polyhedral",
+                "poly",
+            ],
+            None,
+        ),
+    ];
+    for (args, fixed) in cases {
+        let mut check = vec!["--check"];
+        check.extend_from_slice(args);
+        let (ok, estimate) = kofl_in(&dir, &check);
+        assert!(ok, "{args:?}: {estimate}");
+        assert_eq!(estimate["format"], "koflcraft.estimate");
+        assert!(
+            !dir.join(args.last().unwrap()).exists(),
+            "--check must not build"
+        );
+        let (ok, result) = kofl_in(&dir, args);
+        assert!(ok, "{args:?}");
+        let actual = fixed.unwrap_or_else(|| built(&result));
+        assert_eq!(estimate["cells"].as_u64(), Some(actual), "{args:?}");
+    }
+    let (ok, _) = kofl_in(&dir, &["--check", "check", "m.json"]);
+    assert!(!ok, "only build tools have an estimate");
+    let _ = std::fs::remove_dir_all(dir);
+}

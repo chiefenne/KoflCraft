@@ -24,7 +24,10 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(input: Value) -> Result<T, 
     serde_json::from_value(input).map_err(|e| Diagnostic::new("invalid_arguments", e))
 }
 
-fn json_file<T: serde::de::DeserializeOwned>(ctx: &Context, path: &str) -> Result<T, Diagnostic> {
+pub(crate) fn json_file<T: serde::de::DeserializeOwned>(
+    ctx: &Context,
+    path: &str,
+) -> Result<T, Diagnostic> {
     serde_json::from_slice(&ctx.read(path)?)
         .map_err(|e| Diagnostic::new("invalid_json", e).with_path(path))
 }

@@ -15,7 +15,7 @@ use std::process::ExitCode;
 use mesh_tools::{Context, Diagnostic, Envelope, Journal, call_journaled};
 use serde_json::{Value, json};
 
-const USAGE: &str = "Usage: kofl [--journal FILE] COMMAND
+const USAGE: &str = "Usage: kofl [--journal FILE] [--check] COMMAND
   kofl commands [--markdown]
   kofl call TOOL_ID [--input FILE|-]
   kofl run --script JOURNAL [--keep-going]
@@ -34,6 +34,8 @@ const USAGE: &str = "Usage: kofl [--journal FILE] COMMAND
   kofl export ARTIFACT.json vtu|gmsh|gmsh-2.2|foehncraft OUTPUT
   kofl export ARTIFACT.json openfoam NEW_OUTPUT_DIR
 
+`--check` prints the estimate of a build command (`mesh.estimate`:
+cells, memory, output, files) instead of running it.
 `--journal FILE` (or `KOFL_JOURNAL`) appends every tool call to a
 journal that `kofl run --script` replays. `mesh-cli` accepts the same
 commands.";
@@ -55,6 +57,11 @@ pub fn main(program: &str) -> ExitCode {
         journal_flag = Some(std::path::PathBuf::from(args.remove(1)));
         args.remove(0);
     }
+    let mut check = false;
+    if args.first().is_some_and(|a| a == "--check") {
+        check = true;
+        args.remove(0);
+    }
     if args.first().is_some_and(|a| a == "mcp") {
         let mut rest = args.split_off(1);
         if let Some(j) = journal_flag {
@@ -73,7 +80,17 @@ pub fn main(program: &str) -> ExitCode {
         Some(Err(e)) => return fail(&Diagnostic::new("journal_failed", e)),
     };
     let journal = journal.as_ref();
-    match parse(&args) {
+    let request = parse(&args).map(|r| match (check, r) {
+        (true, Request::Classic(id, input)) => {
+            Request::Classic("mesh.estimate", json!({ "tool": id, "input": input }))
+        }
+        (true, Request::Call(id, input)) => Request::Call(
+            "mesh.estimate".into(),
+            json!({ "tool": id, "input": input }),
+        ),
+        (_, r) => r,
+    });
+    match request {
         Err(d) => fail(&d),
         Ok(Request::Text(text)) => {
             print!("{text}");
