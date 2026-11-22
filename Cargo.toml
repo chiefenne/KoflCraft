@@ -21,6 +21,7 @@ mesh-quality = { path = "crates/mesh-quality" }
 mesh-io = { path = "crates/mesh-io" }
 mesh-engine = { path = "crates/mesh-engine" }
 mesh-tools = { path = "crates/mesh-tools" }
+mesh-mcp = { path = "crates/mesh-mcp" }
 cap-std = "=4.0.3"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }

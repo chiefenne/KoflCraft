@@ -216,6 +216,7 @@ dependencies = [
 name = "mesh-cli"
 version = "0.1.0"
 dependencies = [
+ "mesh-mcp",
  "mesh-tools",
  "serde",
  "serde_json",
@@ -265,7 +266,7 @@ name = "mesh-mcp"
 version = "0.1.0"
 dependencies = [
  "mesh-engine",
- "serde",
+ "mesh-tools",
  "serde_json",
 ]
 

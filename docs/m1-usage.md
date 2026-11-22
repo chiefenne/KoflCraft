@@ -43,26 +43,20 @@ The saved artifact contains `config`, `build`, and `mesh`. The mesh stores tripl
 
 Build evidence records the algorithm revision, engine version, OS and architecture, debug-assertion status, and elapsed mesh construction and validation time in microseconds. SHA-256 digests cover the compact JSON serialization of the domain and ordered sites, the full config, the packed topology, and the complete packed mesh respectively. The topology digest excludes point coordinates and build timing. Its equality is checked for repeated builds on the same build and platform.
 
-| CLI command | MCP tool | Successful result |
+| CLI command | Tool id (MCP name before the registry) | Successful result |
 |---|---|---|
-| `inspect` | `inspect_domain` | Box bounds, site count, fixture and seed, algorithm and limitations |
-| `generate` | `generate_mesh` | Artifact name and build evidence |
-| `check` | `check_mesh` | `valid`, mesh counts, domain and mesh volumes, relative volume error, tolerances, topology digest |
-| `report` | `mesh_report` | Build evidence, validation result, fixture and seed, and indexed arrays of cell and face metrics |
-| `export` | `export_mesh` | Output name |
+| `inspect` | `domain.inspect` (`inspect_domain`) | Box bounds, site count, fixture and seed, algorithm and limitations |
+| `generate` | `mesh.generate` (`generate_mesh`) | Artifact name and build evidence |
+| `check` | `mesh.check` (`check_mesh`) | `valid`, mesh counts, domain and mesh volumes, relative volume error, tolerances, topology digest |
+| `report` | `mesh.report` (`mesh_report`) | Build evidence, validation result, fixture and seed, and indexed arrays of cell and face metrics |
+| `export` | `mesh.export` (`export_mesh`) | Output name, format and the SHA-256 of every written file |
 
 The CLI writes successful JSON to stdout and versioned error objects to stderr with a nonzero exit status. The error object has `code` and `message` fields. Input parsing and file errors can also include a path. Engine codes include `unsupported_schema`, `invalid_domain`, `invalid_sites`, `generation_failed`, `invalid_connectivity`, `digest_mismatch`, `validation_failed`, `unsupported_format`, `export_failed`, `io_error`, and `serialization_failed`.
 
 ## MCP
 
-Configure the MCP client to launch `target/debug/mesh-mcp --output-dir /absolute/path/to/mesh-output`. The launch argument grants access to that existing directory. Tool arguments use single filenames in that directory, and every write creates a new entry. The stdio server supports protocol versions `2025-11-25` and `2025-06-18`. It announces input and output schemas through `tools/list` and sends successful outputs as structured content. Tool failures use `isError` with the versioned error object in text content. [MCP stdio transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports), [MCP lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle), [MCP tools](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
+Configure the MCP client to launch `target/debug/kofl mcp --read-root /abs/inputs --write-root /abs/mesh-output` (`mesh-mcp` takes the same arguments). The server refuses to start without at least one read root and one write root (AG-14); both flags may repeat, and `mesh-mcp --output-dir DIR` is short for `--read-root DIR --write-root DIR`. Files are read only below a read root and created only below a write root (symbolic links are resolved first); relative paths resolve from the first write root, and every write creates a new entry. `--journal FILE` records every call with `via: mcp` (see Journal and replay). The stdio server supports protocol versions `2025-11-25` and `2025-06-18`. [MCP stdio transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports), [MCP lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle), [MCP tools](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
 
-| Tool | Arguments |
-|---|---|
-| `inspect_domain` | `config` with the versioned configuration object |
-| `generate_mesh` | `config` and new `artifact` filename |
-| `check_mesh` | Existing `artifact` filename |
-| `mesh_report` | Existing `artifact` filename |
-| `export_mesh` | Existing `artifact` filename, `format` of `vtu` or `gmsh`, and new `output` filename |
+`tools/list` lists every tool of the registry by its dotted id ([tools.md](tools.md)) with its input schema, an output schema of the result envelope around the tool's output, annotations (`readOnlyHint` for read tools; no tool overwrites, so `destructiveHint` is false) and `_meta` with the action kind, contract version and the input fields that name written files. `tools/call` also accepts the names from before the registry (`generate_mesh`, `export_mesh`, …). Every call returns the `koflcraft.tool-result` envelope as structured content and as text; `isError` is true when its status is `error`, and the registered diagnostic code (AG-18) says why. An unknown tool is a JSON-RPC error `-32602`.
 
-The MCP wrapper bounds each request to 256 KiB, saved artifact reads to 8 MiB, and its reference workloads to 256 sites. It returns `invalid_arguments`, `invalid_path`, `site_limit`, `invalid_json`, or `io_error` for invalid tool arguments, path errors, oversized workloads, or unreadable artifacts.
+The server bounds each request to 256 KiB, file reads to 8 MiB, and reference workloads (256 sites, 2048 STL facets, 8 channel layers and 32 axial cells, 500 000 sweep cells, duct facets, layers and regions); a larger input fails with TOOL008. Path errors are TOOL006.

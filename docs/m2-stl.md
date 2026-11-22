@@ -27,7 +27,7 @@ STL artifacts use schema version 2 and embed the indexed shell and patch table. 
 
 ## MCP
 
-Launch the server with the same `--output-dir` argument as the [M1 workflow](m1-usage.md). Place the STL in that directory before calling the tools.
+Launch the server with read and write roots as in the [M1 workflow](m1-usage.md). Place the STL below a read root before calling the tools.
 
 | Tool | Arguments |
 |---|---|
