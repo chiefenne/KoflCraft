@@ -41,13 +41,13 @@ fn stdio_tools_run_the_shared_engine_and_bound_writes() {
         ),
         json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
         rpc(2, "tools/list", json!({})),
-        call(3, "inspect_domain", json!({ "config": config })),
+        call(3, "domain.inspect", json!({ "config": config })),
         call(
             4,
-            "generate_mesh",
+            "mesh.generate",
             json!({ "config": config, "artifact": "mesh.json" }),
         ),
-        call(5, "check_mesh", json!({ "artifact": "mesh.json" })),
+        call(5, "mesh.check", json!({ "artifact": "mesh.json" })),
         call(6, "mesh_report", json!({ "artifact": "mesh.json" })),
         call(
             7,
@@ -104,27 +104,43 @@ fn stdio_tools_run_the_shared_engine_and_bound_writes() {
     assert_eq!(responses[1]["result"]["protocolVersion"], "2025-11-25");
     assert_eq!(
         responses[2]["result"]["tools"].as_array().unwrap().len(),
-        10
+        mesh_tools::TOOLS.len()
     );
-    assert_eq!(responses[3]["result"]["structuredContent"]["site_count"], 4);
-    let build = &responses[4]["result"]["structuredContent"]["build"];
-    assert_eq!(responses[5]["result"]["structuredContent"]["valid"], true);
-    assert_eq!(responses[6]["result"]["structuredContent"]["build"], *build);
+    let names: Vec<&str> = responses[2]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"mesh.generate") && names.contains(&"journal.replay"));
+    assert_eq!(
+        responses[3]["result"]["structuredContent"]["result"]["site_count"],
+        4
+    );
+    let build = &responses[4]["result"]["structuredContent"]["result"]["build"];
+    assert_eq!(
+        responses[5]["result"]["structuredContent"]["result"]["valid"],
+        true
+    );
+    assert_eq!(
+        responses[6]["result"]["structuredContent"]["result"]["build"],
+        *build
+    );
     for response in &responses[7..=8] {
         assert_eq!(response["result"]["isError"], false);
     }
     for (response, expected) in responses[9..=10].iter().zip(["invalid_path", "io_error"]) {
         assert_eq!(response["result"]["isError"], true);
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(text).unwrap()["error"]["code"],
-            expected
-        );
+        let envelope: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(envelope, response["result"]["structuredContent"]);
+        assert_eq!(envelope["status"], "error");
+        assert_eq!(envelope["diagnostics"][0]["name"], expected);
     }
     assert!(!work.path().parent().unwrap().join("escaped.vtu").exists());
 
     assert_eq!(
-        responses[11]["result"]["structuredContent"]["report"]["prisms"],
+        responses[11]["result"]["structuredContent"]["result"]["report"]["prisms"],
         768
     );
     assert!(work.path().join("duct/inlet.vtu").is_file());
@@ -132,15 +148,15 @@ fn stdio_tools_run_the_shared_engine_and_bound_writes() {
     assert!(!work.path().join("over").exists());
 
     assert_eq!(
-        responses[13]["result"]["structuredContent"]["report"]["prisms"],
+        responses[13]["result"]["structuredContent"]["result"]["report"]["prisms"],
         120
     );
     assert!(work.path().join("elbow/mesh.vtm").is_file());
-    let poly = &responses[14]["result"]["structuredContent"]["report"];
+    let poly = &responses[14]["result"]["structuredContent"]["result"]["report"];
     assert_eq!(poly["tetrahedra"], 0);
     assert_eq!(poly["polyhedra"], 227);
     assert!(
-        responses[15]["result"]["structuredContent"]["report"]["core_cells"]
+        responses[15]["result"]["structuredContent"]["result"]["report"]["core_cells"]
             .as_u64()
             .unwrap()
             > 0
@@ -244,15 +260,18 @@ fn stl_tools_reuse_check_and_export_for_a_skewed_surface() {
         assert_eq!(response["result"]["isError"], false, "{response}");
     }
     assert_eq!(
-        responses[1]["result"]["structuredContent"]["patches"][0]["name"],
+        responses[1]["result"]["structuredContent"]["result"]["patches"][0]["name"],
         "west inlet"
     );
     let local =
         mesh_engine::build_stl_mesh(source, serde_json::from_value(config).unwrap(), None).unwrap();
-    let actual = &responses[2]["result"]["structuredContent"];
+    let actual = &responses[2]["result"]["structuredContent"]["result"];
     assert_eq!(actual["artifact_schema_version"], 2);
     assert_eq!(actual["build"]["mesh_digest"], local.build().mesh_digest);
-    assert_eq!(responses[3]["result"]["structuredContent"]["valid"], true);
+    assert_eq!(
+        responses[3]["result"]["structuredContent"]["result"]["valid"],
+        true
+    );
     let ExportData::Gmsh(expected) =
         export_mesh(&local, ExportFormat::Gmsh(GmshVersion::V4_1)).unwrap()
     else {
@@ -262,9 +281,12 @@ fn stl_tools_reuse_check_and_export_for_a_skewed_surface() {
 }
 
 fn run(directory: &Path, requests: &[Value]) -> Vec<Value> {
+    run_with(&["--output-dir".as_ref(), directory.as_os_str()], requests)
+}
+
+fn run_with(args: &[&std::ffi::OsStr], requests: &[Value]) -> Vec<Value> {
     let mut server = Command::new(env!("CARGO_BIN_EXE_mesh-mcp"))
-        .arg("--output-dir")
-        .arg(directory)
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -287,6 +309,84 @@ fn run(directory: &Path, requests: &[Value]) -> Vec<Value> {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+const INIT: fn() -> [Value; 2] = || {
+    [
+        rpc(
+            0,
+            "initialize",
+            json!({
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": { "name": "test", "version": "1" }
+            }),
+        ),
+        json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+    ]
+};
+
+/// Invariant (AG-14): files are read only below a read root and written
+/// only below a write root, and the server does not start without both.
+/// A context that checked only the write side, or a server that fell back
+/// to the current directory, breaks it.
+#[test]
+fn read_and_write_roots_confine_every_call() {
+    let input = WorkDirectory::new();
+    let output = WorkDirectory::new();
+    let elsewhere = WorkDirectory::new();
+    let source = include_bytes!("../../../test-fixtures/skewed-box.stl");
+    fs::write(input.path().join("skew.stl"), source).unwrap();
+    fs::write(elsewhere.path().join("skew.stl"), source).unwrap();
+    let config: Value =
+        serde_json::from_slice(include_bytes!("../../../test-fixtures/stl-sites.json")).unwrap();
+    let inside = input.path().join("skew.stl");
+    let outside = elsewhere.path().join("skew.stl");
+    let mut requests = INIT().to_vec();
+    requests.extend([
+        call(
+            1,
+            "mesh.generate_stl",
+            json!({ "surface": inside, "config": config, "artifact": "m.json" }),
+        ),
+        call(
+            2,
+            "domain.inspect_stl",
+            json!({ "surface": outside, "config": config }),
+        ),
+        call(
+            3,
+            "mesh.export",
+            json!({ "artifact": "m.json", "format": "vtu", "output": input.path().join("m.vtu") }),
+        ),
+        call(4, "mesh.check", json!({ "artifact": "m.json" })),
+    ]);
+    let responses = run_with(
+        &[
+            "--read-root".as_ref(),
+            input.path().as_os_str(),
+            "--read-root".as_ref(),
+            output.path().as_os_str(),
+            "--write-root".as_ref(),
+            output.path().as_os_str(),
+        ],
+        &requests,
+    );
+    let envelope = |i: usize| &responses[i]["result"]["structuredContent"];
+    assert_eq!(envelope(1)["status"], "finished", "{}", envelope(1));
+    assert!(output.path().join("m.json").is_file());
+    assert_eq!(envelope(2)["diagnostics"][0]["code"], "TOOL006");
+    assert_eq!(envelope(3)["diagnostics"][0]["code"], "TOOL006");
+    assert!(!input.path().join("m.vtu").exists());
+    assert_eq!(envelope(4)["result"]["valid"], true);
+
+    let refused = Command::new(env!("CARGO_BIN_EXE_mesh-mcp"))
+        .arg("--write-root")
+        .arg(output.path())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
 }
 
 fn call(id: u32, name: &str, args: Value) -> Value {

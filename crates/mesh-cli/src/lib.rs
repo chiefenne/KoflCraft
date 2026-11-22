@@ -19,6 +19,7 @@ const USAGE: &str = "Usage: kofl [--journal FILE] COMMAND
   kofl commands [--markdown]
   kofl call TOOL_ID [--input FILE|-]
   kofl run --script JOURNAL [--keep-going]
+  kofl mcp --read-root DIR --write-root DIR [--journal FILE]
   kofl diag codes
   kofl info
   kofl inspect CONFIG.json
@@ -53,6 +54,13 @@ pub fn main(program: &str) -> ExitCode {
     if args.len() >= 2 && args[0] == "--journal" {
         journal_flag = Some(std::path::PathBuf::from(args.remove(1)));
         args.remove(0);
+    }
+    if args.first().is_some_and(|a| a == "mcp") {
+        let mut rest = args.split_off(1);
+        if let Some(j) = journal_flag {
+            rest.extend([OsString::from("--journal"), j.into_os_string()]);
+        }
+        return mesh_mcp::main(rest);
     }
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
         println!("{}", USAGE.replace("kofl ", &format!("{program} ")));

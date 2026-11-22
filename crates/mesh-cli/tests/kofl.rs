@@ -139,3 +139,58 @@ fn journal_replays_and_detects_a_changed_call() {
         let _ = std::fs::remove_dir_all(d);
     }
 }
+
+/// Invariant: `kofl mcp` is the registry's MCP server; it refuses to start
+/// without roots, and with `--journal` records its calls with `via: mcp`.
+/// Routing `kofl mcp` around `call_journaled` breaks it.
+#[test]
+fn kofl_mcp_serves_the_registry_and_journals() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let dir = fresh("mcp");
+    let refused = Command::new(env!("CARGO_BIN_EXE_kofl"))
+        .arg("mcp")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    let journal = dir.join("mcp.jsonl");
+    let mut server = Command::new(env!("CARGO_BIN_EXE_kofl"))
+        .env_remove("KOFL_JOURNAL")
+        .arg("--journal")
+        .arg(&journal)
+        .args(["mcp", "--read-root"])
+        .arg(&dir)
+        .arg("--write-root")
+        .arg(&dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        let mut input = server.stdin.take().unwrap();
+        for line in [
+            r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#,
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"system.info","arguments":{}}}"#,
+        ] {
+            writeln!(input, "{line}").unwrap();
+        }
+    }
+    let out = server.wait_with_output().unwrap();
+    assert!(out.status.success());
+    let last: Value = serde_json::from_str(
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .last()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(last["result"]["structuredContent"]["tool"], "system.info");
+    let text = std::fs::read_to_string(&journal).unwrap();
+    let row: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+    assert_eq!(row["via"], "mcp");
+    assert_eq!(row["tool"], "system.info");
+    let _ = std::fs::remove_dir_all(dir);
+}

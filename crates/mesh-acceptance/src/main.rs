@@ -432,27 +432,29 @@ fn run_mcp(mcp: &Path, directory: &Path, config: &MeshConfig) -> RunResult<Vec<V
             }
         }),
         json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
-        call(1, "inspect_domain", json!({ "config": config })),
+        call(1, "domain.inspect", json!({ "config": config })),
         call(
             2,
-            "generate_mesh",
+            "mesh.generate",
             json!({ "config": config, "artifact": "mcp.mesh.json" }),
         ),
-        call(3, "check_mesh", json!({ "artifact": "cli.mesh.json" })),
+        call(3, "mesh.check", json!({ "artifact": "cli.mesh.json" })),
         call(
             4,
-            "export_mesh",
+            "mesh.export",
             json!({ "artifact": "mcp.mesh.json", "format": "vtu", "output": "mcp.vtu" }),
         ),
         call(
             5,
-            "export_mesh",
+            "mesh.export",
             json!({ "artifact": "mcp.mesh.json", "format": "gmsh", "output": "mcp.msh" }),
         ),
-        call(6, "mesh_report", json!({ "artifact": "mcp.mesh.json" })),
+        call(6, "mesh.report", json!({ "artifact": "mcp.mesh.json" })),
     ];
     let mut server = Command::new(mcp)
-        .arg("--output-dir")
+        .arg("--read-root")
+        .arg(directory)
+        .arg("--write-root")
         .arg(directory)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -486,7 +488,12 @@ fn run_mcp(mcp: &Path, directory: &Path, config: &MeshConfig) -> RunResult<Vec<V
                 response["id"] == index + 1 && response["result"]["isError"] == false,
                 &format!("MCP tool call failed: {response}"),
             )?;
-            Ok(response["result"]["structuredContent"].clone())
+            let envelope = &response["result"]["structuredContent"];
+            require(
+                envelope["format"] == "koflcraft.tool-result" && envelope["status"] == "finished",
+                &format!("MCP result is not a finished envelope: {envelope}"),
+            )?;
+            Ok(envelope["result"].clone())
         })
         .collect()
 }

@@ -16,6 +16,7 @@ name = "kofl"
 path = "src/bin/kofl.rs"
 
 [dependencies]
+mesh-mcp.workspace = true
 mesh-tools.workspace = true
 serde.workspace = true
 serde_json.workspace = true
