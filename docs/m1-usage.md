@@ -22,6 +22,19 @@ target/debug/mesh-cli export mesh-output/box.mesh.json gmsh mesh-output/box.msh
 
 Open `mesh-output/box.vtu` in ParaView or `mesh-output/box.msh` in Gmsh. The VTU file preserves the polyhedral cells. The MSH 4.1 ASCII file (the format FoehnCraft reads) uses a conforming tetrahedral subdivision with six named surface groups and a `fluid` volume group. A tetrahedron’s elementary entity tag is the original zero-based cell ID plus one. `export ARTIFACT.json gmsh-2.2 OUT.msh` writes the older MSH 2.2 instead. Each generate or export destination must be new, with an existing parent directory. [Gmsh MSH format](https://gmsh.info/doc/texinfo/gmsh.html#MSH-file-format)
 
+## Journal and replay
+
+`kofl --journal FILE COMMAND` (or the environment variable `KOFL_JOURNAL`) appends every tool call to a journal (`koflcraft.journal`, JSON lines: a header with the KoflCraft version, then one row per call with the tool id and version, the input, status, exit code, duration and the SHA-256 of the result without its timings). A journal that cannot be written adds the warning TOOL003; the call itself stands.
+
+```sh
+target/debug/kofl --journal run.jsonl generate test-fixtures/box-4.json box.mesh.json
+target/debug/kofl --journal run.jsonl export box.mesh.json foehncraft box.vtu
+mkdir again && cd again
+../target/debug/kofl run --script ../run.jsonl [--keep-going]
+```
+
+`kofl run --script` (tool `journal.replay`) calls every recorded tool again and prints the `koflcraft.replay` report: for each call the recorded and the replayed status, exit code and result digest. It stops at the first call that ends differently (TOOL005, exit 1) unless `--keep-going` is given. Calls that failed with TOOL001 or TOOL002 and earlier replays are skipped. Configs are recorded inline, but files a call reads (STL, artifacts) and writes are paths: relative paths resolve from the directory the replay runs in, and outputs must not exist yet, so replay in a fresh directory that has the same input files. Export results carry the SHA-256 of every written file, so a replay also compares the file content.
+
 ## JSON contract
 
 The analytic box workflow uses `schema_version: 1` and zero-based mesh indices. [The example configuration](../test-fixtures/box-4.json) defines an axis-aligned box with `min` and `max` triples and an ordered list of interior sites. Optional `fixture_id` and `seed` describe how the supplied sites were obtained. The engine uses the supplied coordinates directly.

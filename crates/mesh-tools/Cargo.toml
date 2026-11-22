@@ -9,3 +9,4 @@ description = "Tool registry, diagnostic codes and journal of KoflCraft (AG-12, 
 mesh-engine.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
