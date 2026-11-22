@@ -131,6 +131,7 @@ pub fn build_stl_mesh(
             &field,
             &set,
             seed,
+            &surface,
             generated.mesh(),
             generated.metrics(),
         )

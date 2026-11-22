@@ -10,7 +10,7 @@ h(x) = clamp( min( h_max, min_i [ h_i + r_i · max(0, dist_i(x) − d_i) ] ), h_
 
 `dist_i` is the exact Euclidean distance to the shape in the source's frame: point, segment, two-sided plane, box, slab, sphere, and a solid frustum that covers cylinders and cones (the distance in the meridian half-plane to a trapezoid). Bodies are solid, so the distance is zero inside them. Regions are datum sources with `d_i = 0` and the gradation as growth, limited to boxes, slabs and cylinders in a named frame (GRD-03).
 
-**Gradation without smoothing.** The classical method limits the gradient of a sampled size function on a background grid by solving `|∇h| ≤ β` (Persson 2006). For sources given as distance fields the limited field has a closed form: the smallest β-Lipschitz function above `h_i` on a set `S_i` is `h_i + β·dist(x, S_i)`, every distance function is 1-Lipschitz, and the minimum and the clamps keep the bound. So the field above satisfies `|∇h| ≤ β` exactly, everywhere, with no grid, no iterations and no Monte Carlo noise. The Walk-on-Spheres diffusion of the screening note (Sawhney & Crane 2020) is not needed for these sources; it stays a candidate for the sampled, geometry-derived sources of GRD-04, whose field is not a distance field. Distances are Euclidean, which equals the geodesic distance through the domain only for convex domains, as in M2; nonconvex domains (M4) need the geodesic distance.
+**Gradation without smoothing.** The classical method limits the gradient of a sampled size function on a background grid by solving `|∇h| ≤ β` (Persson 2006). For sources given as distance fields the limited field has a closed form: the smallest β-Lipschitz function above `h_i` on a set `S_i` is `h_i + β·dist(x, S_i)`, every distance function is 1-Lipschitz, and the minimum and the clamps keep the bound. So the field above satisfies `|∇h| ≤ β` exactly, everywhere, with no grid, no iterations and no Monte Carlo noise. The Walk-on-Spheres diffusion of the screening note (Sawhney & Crane 2020) is not needed for these sources; it was kept as a candidate for the geometry-derived sources of GRD-04, which turned out not to need it either: written as weighted surface primitives they keep the closed form ([note](grd-04-geometry-sizing.md)). Distances are Euclidean, which equals the geodesic distance through the domain only for convex domains, as in M2; nonconvex domains (M4) need the geodesic distance.
 
 ## Seed placement: candidates
 
@@ -80,7 +80,7 @@ The median neighbour ratio stays below the gradation, the tail does not: the max
 ## Limits
 
 - Convex STL domains only, Euclidean distances (exact there).
-- STL surface and closed-body datum objects, curvature, gap and feature-edge sizes (GRD-04) are open.
+- STL surface and closed-body datum objects are open; curvature, gap and feature-edge sizes (GRD-04) are in [grd-04-geometry-sizing.md](grd-04-geometry-sizing.md).
 - All-pairs clipping (ALG-04) made each Lloyd iteration O(N²). Since the nearest-site clipper ([note](alg-04-neighbour-clipping.md)) an iteration is about O(N log N); the engine refuses fields that ask for more than 200,000 seeds (decided 2026-11-22), and the MCP limits apply to the seed count.
 - Anisotropy (GRD-06) is open; Lp-CVT (Lévy & Liu 2010) is the lead.
 
