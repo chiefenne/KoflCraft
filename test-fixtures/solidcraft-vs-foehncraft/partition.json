@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "source_sha256": "e3f1ac5f0be7e6a2042e514da7e683c186b1efd2f6e2ae2c3469dbfad2bd2be0",
+  "volume_scaffold": {"file": "volume-scaffold.msh", "sha256": "e0678357c125191184cfce3b80186cf543c4b3ddd84cd3016af854632b269abe", "max_relative_geometry_error": 0.002},
+  "regions": [
+    {"kernel":[179.88,360,40], "facets":[[0,16368]]},
+    {"kernel":[25,360,40], "facets":[[16368,21680]]},
+    {"kernel":[280,320,20], "facets":[[21680,22726],[90884,90894]]},
+    {"kernel":[140,300,0], "facets":[[22726,24166]]},
+    {"kernel":[22.218,277.782,0], "facets":[[24166,87014]]},
+    {"kernel":[0,100,0], "facets":[[87014,90884]]}
+  ],
+  "first_thickness": 0.08, "growth": 1.4, "layers": 3
+}

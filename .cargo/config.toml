@@ -1,0 +1,2 @@
+[alias]
+m1 = "run --locked --release -p mesh-acceptance --"

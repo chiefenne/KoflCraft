@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "source_sha256": "acdc4bb836b4acabeac1f0b28325082ce838558b9a718c51b2a61e0200426870",
+  "facet_count": 44,
+  "default_patch": {
+    "name": "walls",
+    "role": "wall"
+  },
+  "ports": [
+    {
+      "name": "inlet",
+      "role": "inlet",
+      "facet_range": [
+        0,
+        2
+      ]
+    },
+    {
+      "name": "outlet",
+      "role": "outlet",
+      "facet_range": [
+        18,
+        20
+      ]
+    }
+  ]
+}

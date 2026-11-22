@@ -1,0 +1,15 @@
+[package]
+name = "mesh-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mesh-core.workspace = true
+mesh-geometry.workspace = true
+mesh-algorithms.workspace = true
+mesh-quality.workspace = true
+mesh-io.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true

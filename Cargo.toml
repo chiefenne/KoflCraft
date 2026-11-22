@@ -1,0 +1,34 @@
+[package]
+name = "koflcraft"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+mesh-core = { path = "crates/mesh-core" }
+mesh-geometry = { path = "crates/mesh-geometry" }
+mesh-algorithms = { path = "crates/mesh-algorithms" }
+mesh-quality = { path = "crates/mesh-quality" }
+mesh-io = { path = "crates/mesh-io" }
+mesh-engine = { path = "crates/mesh-engine" }
+cap-std = "=4.0.3"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
+sha2 = "=0.11.1"
+
+[dependencies]
+mesh-core.workspace = true
+mesh-geometry.workspace = true
+mesh-algorithms.workspace = true
+mesh-quality.workspace = true
+mesh-io.workspace = true
+mesh-engine.workspace = true

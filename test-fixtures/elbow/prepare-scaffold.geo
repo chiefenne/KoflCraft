@@ -1,0 +1,17 @@
+Merge "elbow.stl";
+ClassifySurfaces{40*Pi/180,1,1,Pi};
+CreateGeometry;
+all[] = Surface{:};
+inlet[] = Surface In BoundingBox {-0.00001,-0.00001,-0.00001,0.00001,1.00001,1.00001};
+outlet[] = Surface In BoundingBox {1.99999,2.99999,-0.00001,3.00001,3.00001,1.00001};
+wall[] = all[];
+wall[] -= inlet[];
+wall[] -= outlet[];
+sl=newsl; Surface Loop(sl)={all[]}; Volume(1)={sl};
+Physical Surface("inlet",1)={inlet[]};
+Physical Surface("outlet",2)={outlet[]};
+Physical Surface("walls",3)={wall[]};
+Physical Volume("fluid",4)={1};
+Mesh.MeshSizeMin=0.42;
+Mesh.MeshSizeMax=0.42;
+Mesh.MshFileVersion=2.2;
