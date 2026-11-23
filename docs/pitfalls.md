@@ -30,7 +30,7 @@ digest in the same commit.
 ## A fine cell size does not mean a fine wall
 
 The polyhedral duct takes its wall from the volume scaffold, not from the
-STL. The Gmsh scaffold of SolidCraft remeshed the 1-unit STL wall into
+STL. The Gmsh scaffold of Manifold remeshed the 1-unit STL wall into
 triangles of about 6 units (curvature sizing off), and every finer core or
 layer cell sits on those flat triangles: 0.54 units off the STL, about seven
 first-layer thicknesses. Gmsh's curvature sizing had no effect on the
@@ -49,7 +49,7 @@ tetrahedra whose four corners are all on the wall (two wall triangles and
 the opposite diagonal). Their circumspheres bulge outward, so no interior
 point removes them, and inserting points just inside the wall only adds
 points. Remove them by edge removal around their diagonal (best
-triangulation of the ring by dynamic programming); on SolidCraft that takes
+triangulation of the ring by dynamic programming); on Manifold that takes
 the worst mean ratio from 0.002 to 0.05.
 
 ## Fitted volume differs from the STL
