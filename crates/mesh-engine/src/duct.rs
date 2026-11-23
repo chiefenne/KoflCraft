@@ -5,6 +5,7 @@ use crate::{
     artifact::{digest, require_schema, sha256, vector},
 };
 use mesh_algorithms::duct::{self, Region};
+use mesh_algorithms::{remesh, scaffold as scaffold_build};
 use mesh_geometry::{StlOptions, import_closed_stl};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -26,9 +27,20 @@ pub struct Partition {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScaffoldConfig {
-    pub file: String,
-    sha256: String,
+    /// A Gmsh MSH 2.2 scaffold next to the partition (or `build`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
+    /// Build the scaffold in Rust from the STL: remesh the wall onto it to a
+    /// chord tolerance, then tetrahedralize and refine the interior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<ScaffoldBuild>,
     max_relative_geometry_error: f64,
+    /// Largest allowed sampled distance between the scaffold wall and the
+    /// STL wall, both ways, in model units.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_wall_deviation: Option<f64>,
     /// Polyhedral core built on the scaffold.
     #[serde(default, skip_serializing_if = "CoreKind::is_default")]
     pub core: CoreKind,
@@ -56,6 +68,37 @@ impl WallJoinKind {
         *self == Self::default()
     }
 }
+
+/// The settings of a scaffold built in Rust (lengths in model units).
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ScaffoldBuild {
+    /// Largest distance of a wall facet from the STL (chord tolerance).
+    pub tolerance: f64,
+    pub min_size: f64,
+    pub max_size: f64,
+    /// Growth of the spacing per unit distance (wall and interior).
+    pub rate: f64,
+    /// Wall spacing at the port rims.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rim_size: Option<f64>,
+    /// Source edges sharper than this (degrees) are kept as feature lines.
+    #[serde(default = "default_feature_angle")]
+    pub feature_angle: f64,
+    #[serde(default = "default_remesh_iterations")]
+    pub iterations: usize,
+}
+
+fn default_feature_angle() -> f64 {
+    30.0
+}
+fn default_remesh_iterations() -> usize {
+    10
+}
+
+/// Limits of a scaffold build.
+const MAX_REMESH_ITERATIONS: usize = 50;
+const MAX_SCAFFOLD_POINTS: usize = 2_000_000;
 
 /// The polyhedral core of a scaffold mesh.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -88,7 +131,7 @@ pub const MAX_LLOYD_ITERATIONS: usize = 200;
 impl Partition {
     pub fn scaffold_file(&self, mode: Mode) -> Option<&str> {
         if matches!(mode, Mode::Polyhedral) {
-            self.volume_scaffold.as_ref().map(|s| s.file.as_str())
+            self.volume_scaffold.as_ref().and_then(|s| s.file.as_deref())
         } else {
             None
         }
@@ -195,6 +238,7 @@ pub fn generate(
         .collect();
     let validated = |e: String| EngineError::new(ErrorCode::ValidationFailed, e);
     let mut scaffold_volume = None;
+    let mut scaffold_report: Option<Value> = None;
     let mut voronoi: Option<duct::VoronoiStats> = None;
     let mut source_areas = [0.; 3];
     let scale = surface.bounds().extent().max_abs_component();
@@ -202,15 +246,29 @@ pub fn generate(
         source_areas[tag - 1] += f.normalized_area * scale * scale;
     }
     let mesh = if let (Mode::Polyhedral, Some(spec)) = (mode, &plan.volume_scaffold) {
-        let bytes = scaffold_data.ok_or_else(|| invalid("missing configured volume scaffold"))?;
-        if sha256(bytes) != spec.sha256 {
-            return Err(invalid("volume scaffold digest mismatch"));
-        }
         let limit = spec.max_relative_geometry_error;
         if !limit.is_finite() || !(0.0..1.0).contains(&limit) {
             return Err(invalid("invalid scaffold geometry error limit"));
         }
-        let input = scaffold::read(bytes).map_err(validated)?;
+        let (input, built) = load_scaffold(&surface, &patches, spec, scaffold_data)?;
+        let deviation = wall_deviation(&surface, &patches, &input);
+        if let Some(max) = spec.max_wall_deviation {
+            if !max.is_finite() || max <= 0.0 {
+                return Err(invalid("invalid wall deviation limit"));
+            }
+            if deviation[0].max(deviation[1]) > max {
+                return Err(validated(format!(
+                    "scaffold wall deviates from the STL by {:.4} (limit {max})",
+                    deviation[0].max(deviation[1])
+                )));
+            }
+        }
+        scaffold_report = Some(json!({
+            "source": if built.is_some() {"rust_remesh_delaunay_v1"} else {"file"},
+            "build": built,
+            "wall_deviation": {"max_scaffold_to_stl": deviation[0], "max_stl_to_scaffold": deviation[1]},
+        }));
+        let retry_input = input.clone();
         let (mesh, shell) = match spec.core {
             CoreKind::MedianDual => duct::build_volume_dual(input, &steps).map_err(validated)?,
             CoreKind::Voronoi => {
@@ -229,7 +287,7 @@ pub fn generate(
                 loop {
                     let scaffold = match input.take() {
                         Some(s) => s,
-                        None => scaffold::read(bytes).map_err(validated)?,
+                        None => retry_input.clone(),
                     };
                     let (mesh, shell, mut stats) = duct::build_voronoi_core(
                         scaffold,
@@ -323,6 +381,7 @@ pub fn generate(
         "config_sha256": digest(&(patch_map, plan, mode))?,
         "regions": if scaffold_volume.is_some(){1}else{regions.len()},
         "scaffold_volume": scaffold_volume,
+        "scaffold": scaffold_report,
         "stl_patch_areas": {"inlet":source_areas[0],"outlet":source_areas[1],"walls":source_areas[2]},
         "source_facets": surface.facets().len(),
         "tetrahedra": tetrahedra,
@@ -459,9 +518,7 @@ pub fn cell_count(
         ));
     }
     if let (Mode::Polyhedral, Some(config)) = (mode, &plan.volume_scaffold) {
-        let bytes = scaffold_data.ok_or_else(|| invalid("missing configured volume scaffold"))?;
-        let scaffold =
-            scaffold::read(bytes).map_err(|e| EngineError::new(ErrorCode::ValidationFailed, e))?;
+        let (scaffold, _) = load_scaffold(&surface, &patches, config, scaffold_data)?;
         let walls = scaffold.boundary.iter().filter(|(_, p)| *p == 3).count();
         // median dual: six subprisms per wall triangle and layer; Voronoi
         // core: one wedge (or split-cap polyhedron) per wall triangle and
@@ -522,6 +579,135 @@ pub fn cell_count(
         .checked_add(2 * seam)
         .and_then(|v| v.checked_add(walls.checked_mul(layers)?))
         .ok_or_else(|| invalid("cell count overflow"))
+}
+
+/// The scaffold of a polyhedral run: the configured file (digest checked)
+/// or, with `build`, the STL wall remeshed onto itself to the chord
+/// tolerance and tetrahedralized in Rust; the build's statistics.
+fn load_scaffold(
+    surface: &mesh_geometry::ClosedSurface,
+    patches: &[usize],
+    spec: &ScaffoldConfig,
+    data: Option<&[u8]>,
+) -> Result<(duct::Scaffold, Option<Value>), EngineError> {
+    let invalid = |s: &str| EngineError::new(ErrorCode::InvalidDomain, s);
+    let validated = |e: String| EngineError::new(ErrorCode::ValidationFailed, e);
+    match (&spec.file, &spec.build) {
+        (Some(_), None) => {
+            let bytes = data.ok_or_else(|| invalid("missing configured volume scaffold"))?;
+            if spec.sha256.as_deref() != Some(sha256(bytes).as_str()) {
+                return Err(invalid("volume scaffold digest mismatch"));
+            }
+            Ok((scaffold::read(bytes).map_err(validated)?, None))
+        }
+        (None, Some(b)) => {
+            if spec.sha256.is_some() {
+                return Err(invalid("a built scaffold takes no digest"));
+            }
+            let positive = |v: f64| v.is_finite() && v > 0.0;
+            if !(positive(b.tolerance)
+                && positive(b.min_size)
+                && positive(b.max_size)
+                && b.max_size >= b.min_size
+                && positive(b.rate)
+                && b.rim_size.is_none_or(positive)
+                && b.feature_angle > 0.0
+                && b.feature_angle < 180.0
+                && b.iterations <= MAX_REMESH_ITERATIONS)
+            {
+                return Err(invalid("invalid scaffold build settings"));
+            }
+            let start = Instant::now();
+            let triangles: Vec<[usize; 3]> =
+                surface.facets().iter().map(|f| f.triangle.vertices).collect();
+            let keep: Vec<bool> = patches.iter().map(|&p| p != 3).collect();
+            let wall = remesh::remesh(
+                surface.vertices(),
+                &triangles,
+                &keep,
+                remesh::RemeshOptions {
+                    tolerance: b.tolerance,
+                    min_size: b.min_size,
+                    max_size: b.max_size,
+                    rate: b.rate,
+                    feature_angle: b.feature_angle.to_radians(),
+                    iterations: b.iterations,
+                    rim_size: b.rim_size,
+                },
+            )
+            .map_err(validated)?;
+            let remesh_seconds = start.elapsed().as_secs_f64();
+            let tags: Vec<usize> = wall
+                .source
+                .iter()
+                .map(|s| s.map_or(3, |f| patches[f]))
+                .collect();
+            let (scaffold, st) = scaffold_build::build(
+                &wall.vertices,
+                &wall.triangles,
+                &tags,
+                scaffold_build::ScaffoldOptions {
+                    max_size: b.max_size,
+                    rate: b.rate,
+                    max_points: MAX_SCAFFOLD_POINTS,
+                    ..Default::default()
+                },
+            )
+            .map_err(validated)?;
+            let w = wall.stats;
+            Ok((
+                scaffold,
+                Some(json!({
+                    "settings": b,
+                    "wall_triangles": tags.iter().filter(|&&t| t == 3).count(),
+                    "feature_edges": w.feature_edges,
+                    "feature_corners": w.corners,
+                    "wall_edge_range": [w.min_edge, w.max_edge],
+                    "deviation_splits": w.deviation_splits,
+                    "surface_points": st.surface_points,
+                    "recovery_points": st.recovery_points,
+                    "interior_points": st.interior_points,
+                    "refused_points": st.refused,
+                    "tetrahedra": st.tetrahedra,
+                    "remesh_seconds": remesh_seconds,
+                    "tetrahedralize_seconds": start.elapsed().as_secs_f64() - remesh_seconds,
+                })),
+            ))
+        }
+        _ => Err(invalid("volume scaffold needs exactly one of file or build")),
+    }
+}
+
+/// The largest sampled distance from the scaffold wall to the STL wall and
+/// from the STL wall to the scaffold wall (each facet at its centroid,
+/// edge midpoints and three interior points).
+fn wall_deviation(
+    surface: &mesh_geometry::ClosedSurface,
+    patches: &[usize],
+    scaffold: &duct::Scaffold,
+) -> [f64; 2] {
+    use mesh_algorithms::sizing::surface::Primitive;
+    let stl: Vec<[mesh_core::geometry::Vec3; 3]> = surface
+        .facets()
+        .iter()
+        .zip(patches)
+        .filter(|(_, p)| **p == 3)
+        .map(|(f, _)| f.triangle.vertices.map(|v| surface.vertices()[v]))
+        .collect();
+    let wall: Vec<[mesh_core::geometry::Vec3; 3]> = scaffold
+        .boundary
+        .iter()
+        .filter(|(_, p)| *p == 3)
+        .map(|(t, _)| t.map(|v| scaffold.points[v]))
+        .collect();
+    let one_way = |from: &[[mesh_core::geometry::Vec3; 3]], to: &[[mesh_core::geometry::Vec3; 3]]| {
+        let set = remesh::ClosestSet::new(to.iter().map(|&t| Primitive::Triangle(t)).collect());
+        from.iter()
+            .flat_map(|&t| remesh::samples(t))
+            .map(|x| set.closest(x).map_or(f64::INFINITY, |(_, d)| d))
+            .fold(0.0, f64::max)
+    };
+    [one_way(&wall, &stl), one_way(&stl, &wall)]
 }
 
 fn voronoi_json(v: &duct::VoronoiStats) -> Value {

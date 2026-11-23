@@ -1,7 +1,11 @@
 pub mod channel;
 pub mod clipping;
+pub mod delaunay;
 pub mod duct;
 pub mod neighbours;
+pub mod predicates;
+pub mod remesh;
+pub mod scaffold;
 pub mod sizing;
 pub mod sweep;
 pub mod voronoi;

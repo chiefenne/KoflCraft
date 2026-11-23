@@ -4,6 +4,7 @@ use mesh_core::geometry::PatchId;
 use mesh_geometry::SurfaceTriangle;
 use std::collections::HashMap;
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct Scaffold {
     pub points: Vec<Vec3>,
     pub boundary: Vec<([usize; 3], usize)>,
