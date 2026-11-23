@@ -72,7 +72,7 @@ when `inverted_faces` is not zero.
 straight channel, analytic block and pipe sweeps, elbow duct bulk and
 layered all load valid with equal counts and volume and areas within
 1.7e-12. The polyhedral elbow then loaded with equal counts but 10 faces with
-S·d ≤ 0 (SolidCraft: 18), which FoehnCraft flagged as invalid. Since the
+S·d ≤ 0 (Manifold: 18), which FoehnCraft flagged as invalid. Since the
 split of dual cells at reentrant wall edges (2026-11-22,
 [note](../research/m4-reentrant-dual-split.md)) both load valid, and the
 round trip fails on any export FoehnCraft calls invalid.

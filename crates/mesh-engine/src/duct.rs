@@ -119,7 +119,7 @@ impl CoreKind {
 
 /// Layer cells per wall triangle and layer assumed by the estimate of a
 /// Voronoi core with wall columns (measured 0.76 on the elbow, 2.08 on
-/// SolidCraft).
+/// Manifold).
 const COLUMN_CELLS_PER_WALL: usize = 2;
 
 /// Rebuilds of a Voronoi core that FoehnCraft would reject.
@@ -526,7 +526,7 @@ pub fn cell_count(
         // core: one wedge (or split-cap polyhedron) per wall triangle and
         // layer, one cell per site (the scaffold nodes the tetrahedra use).
         // Wall columns follow the built core: two per wall triangle and
-        // layer bound the fixtures from above (elbow 0.8, SolidCraft 2.1).
+        // layer bound the fixtures from above (elbow 0.8, Manifold 2.1).
         let (per_wall, core) = match config.core {
             CoreKind::MedianDual => (6, scaffold.points.len()),
             CoreKind::Voronoi => {

@@ -22,11 +22,11 @@ Where the graphics literature does compete is **BC-03, proposing a segmentation*
 
 ## Checks
 
-- **Independent reference.** The SolidCraft surface (90,894 facets, sharp rims, rounded pipe bends) has its two port caps recorded by hand in [its patch map](../test-fixtures/solidcraft-vs-foehncraft/patches.json). Region growing at 30° from a point on each port returns exactly the recorded facet ranges (510 and 512 facets), the inlet's area matches the recorded area to 1e-12 and its mean normal is exactly −Y; the plane `y = 0` selects the same inlet set (`region_growing_and_planes_recover_the_solidcraft_ports`).
+- **Independent reference.** The Manifold surface (90,894 facets, sharp rims, rounded pipe bends) has its two port caps recorded by hand in [its patch map](../test-fixtures/manifold/patches.json). Region growing at 30° from a point on each port returns exactly the recorded facet ranges (510 and 512 facets), the inlet's area matches the recorded area to 1e-12 and its mean normal is exactly −Y; the plane `y = 0` selects the same inlet set (`region_growing_and_planes_recover_the_manifold_ports`).
 - **Exact evidence.** On the unit box the summary reports areas 1, axis normals with zero spread, one region and four neighbours per side (`solid_names_start_the_map_with_exact_evidence`). Splitting the whole skewed box at 10° returns its six sides, two facets each.
 - **Every facet in one patch (BC-06).** Each read of a map checks the STL digest, the facet count, one valid index per facet, unique valid names and no empty patch; an edited map fails (`invalid_maps_and_empty_operations_are_diagnosed`).
 - **Names in every format.** A mesh built with a map carries its names in MSH 4.1 physical groups, the FoehnCraft VTU and OpenFOAM `boundary`, and its roles in the VTU, the OpenFOAM types and the evidence (`patch_map_names_and_roles_reach_every_export`). `cargo m1 --require-foehn` reads such a mesh in all three formats with `foehn mesh` and compares counts, volume and patch areas.
-- **Cost.** On the SolidCraft surface, release build, Linux x86_64, 2026-11-22: `patch.init` 0.21 s, `patch.grow` 0.18 s and `patch.split` at 30° (eight regions: the outlet cap, the pipe and box walls, the flat box sides) 0.29 s per call, each including the STL import and the summary.
+- **Cost.** On the Manifold surface, release build, Linux x86_64, 2026-11-22: `patch.init` 0.21 s, `patch.grow` 0.18 s and `patch.split` at 30° (eight regions: the outlet cap, the pipe and box walls, the flat box sides) 0.29 s per call, each including the STL import and the summary.
 
 ## Choices made without a decision card
 

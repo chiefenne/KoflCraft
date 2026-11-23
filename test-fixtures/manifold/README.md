@@ -1,6 +1,6 @@
-# SolidCraft vs FoehnCraft
+# Manifold
 
-The user-supplied [binary STL](SolidCraft_vs_FoehnCraft.stl) is stored byte for byte. It contains 90,894 triangles and 45,449 distinct vertices. It has one closed nonconvex shell with pipe roundings and sharp wall edges. Its bounds span `x = −120 … 380`, `y = 0 … 400`, and `z = −40 … 80`, in model units.
+The user-supplied [binary STL](manifold.stl) is stored byte for byte. It contains 90,894 triangles and 45,449 distinct vertices. It has one closed nonconvex shell with pipe roundings and sharp wall edges. Its bounds span `x = −120 … 380`, `y = 0 … 400`, and `z = −40 … 80`, in model units.
 
 The STL already includes the two triangulated circular end caps. [The patch map](patches.json) records the source SHA-256 and assigns an explicit role to each cap. The ranges use zero-based facet indices with exclusive upper bounds, in STL record order.
 

@@ -10,10 +10,8 @@ use mesh_engine::{
 const UNIT_BOX: &[u8] = include_bytes!("../../../test-fixtures/unit-box.stl");
 const SKEWED_BOX: &[u8] = include_bytes!("../../../test-fixtures/skewed-box.stl");
 const SITES: &str = include_str!("../../../test-fixtures/stl-sites.json");
-const SOLIDCRAFT: &[u8] =
-    include_bytes!("../../../test-fixtures/solidcraft-vs-foehncraft/SolidCraft_vs_FoehnCraft.stl");
-const SOLIDCRAFT_PORTS: &str =
-    include_str!("../../../test-fixtures/solidcraft-vs-foehncraft/patches.json");
+const MANIFOLD: &[u8] = include_bytes!("../../../test-fixtures/manifold/manifold.stl");
+const MANIFOLD_PORTS: &str = include_str!("../../../test-fixtures/manifold/patches.json");
 
 fn target(name: &str) -> Target {
     Target {
@@ -73,15 +71,15 @@ fn solid_names_start_the_map_with_exact_evidence() {
 }
 
 /// Keep rule (SW-18). Invariant: region growing from a point on each port
-/// of the SolidCraft surface (90,894 facets, sharp rims, rounded pipes)
+/// of the Manifold surface (90,894 facets, sharp rims, rounded pipes)
 /// returns exactly the cap facets recorded by hand in the fixture's patch
 /// map, and the plane selection of the inlet plane returns the same set.
 /// A wrong neighbour across an edge, a wrong angle test or a nearest-facet
 /// error changes the sets; no other test has an independent reference.
 #[test]
-fn region_growing_and_planes_recover_the_solidcraft_ports() {
-    let ports: serde_json::Value = serde_json::from_str(SOLIDCRAFT_PORTS).unwrap();
-    let s = PatchSurface::import(SOLIDCRAFT, None).unwrap();
+fn region_growing_and_planes_recover_the_manifold_ports() {
+    let ports: serde_json::Value = serde_json::from_str(MANIFOLD_PORTS).unwrap();
+    let s = PatchSurface::import(MANIFOLD, None).unwrap();
     let start = s.initial_map();
     let range = |i: usize| -> Vec<usize> {
         let r = &ports["ports"][i]["facet_range"];

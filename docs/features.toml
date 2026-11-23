@@ -100,11 +100,11 @@ id = "m2-patches"
 title = "M2 boundary patch tools: patch maps, selections and roles through every export (BC-01, BC-02)"
 requirements = ["BC-01", "BC-02", "BC-04", "BC-06"]
 grade = "verified"
-how = "Region growing and the inlet plane recover exactly the port caps recorded by hand on the 90,894-facet SolidCraft surface (area to 1e-12); exact areas, normals, regions and neighbours on the unit box; splitting the skewed box at 10° gives its six sides; maps from another STL, with a bad index, an empty or repeated patch or a bad name are refused; the names reach MSH 4.1, the FoehnCraft VTU and OpenFOAM and the roles the VTU, OpenFOAM types and evidence; a session of patch calls replays from its journal; CI reads a patched box in all three formats with `foehn mesh`"
+how = "Region growing and the inlet plane recover exactly the port caps recorded by hand on the 90,894-facet Manifold surface (area to 1e-12); exact areas, normals, regions and neighbours on the unit box; splitting the skewed box at 10° gives its six sides; maps from another STL, with a bad index, an empty or repeated patch or a bad name are refused; the names reach MSH 4.1, the FoehnCraft VTU and OpenFOAM and the roles the VTU, OpenFOAM types and evidence; a session of patch calls replays from its journal; CI reads a patched box in all three formats with `foehn mesh`"
 tests = [
   "crates/mesh-geometry/src/patches.rs::closest_point_by_region",
   "crates/mesh-engine/tests/patches.rs::solid_names_start_the_map_with_exact_evidence",
-  "crates/mesh-engine/tests/patches.rs::region_growing_and_planes_recover_the_solidcraft_ports",
+  "crates/mesh-engine/tests/patches.rs::region_growing_and_planes_recover_the_manifold_ports",
   "crates/mesh-engine/tests/patches.rs::selections_merge_and_split_on_the_skewed_box",
   "crates/mesh-engine/tests/patches.rs::invalid_maps_and_empty_operations_are_diagnosed",
   "crates/mesh-engine/tests/patches.rs::patch_map_names_and_roles_reach_every_export",
@@ -144,7 +144,7 @@ id = "duct"
 title = "Nonconvex duct, bulk, layered and polyhedral (M4/M5 prototype)"
 requirements = ["M4", "M5"]
 grade = "partial"
-how = "Elbow volume and patch areas to 1e-9; every layer reaches both ports; no face with S·d ≤ 0 in any mode of the elbow or SolidCraft; the hand-off's fanned volume equals the mesher's exact volume"
+how = "Elbow volume and patch areas to 1e-9; every layer reaches both ports; no face with S·d ≤ 0 in any mode of the elbow or Manifold; the hand-off's fanned volume equals the mesher's exact volume"
 tests = [
   "crates/mesh-cli/tests/workflow.rs::nonconvex_elbow_preserves_volume_and_exposes_each_port_layer",
   "crates/mesh-cli/tests/workflow.rs::nonconvex_manifold_preserves_volume_and_exposes_each_port_layer",
@@ -156,7 +156,7 @@ tests = [
   "crates/mesh-algorithms/src/duct/intersection.rs::rejects_transverse_coplanar_and_shared_vertex_overlaps",
 ]
 commands = []
-gaps = "Needs a Gmsh scaffold and a Python preparation script (OPEN-07); fitted volume 0.183 % below the STL; the wall columns reach 80.1° (elbow) and 82.8° (SolidCraft) non-orthogonality; on curved walls they leave sliver cells where a core cell clips a wall triangle (smallest cell about 5e-11 on SolidCraft); SolidCraft builds in about 80 s; flow accuracy untested"
+gaps = "Needs a Gmsh scaffold and a Python preparation script (OPEN-07); fitted volume 0.183 % below the STL; the wall columns reach 80.1° (elbow) and 82.8° (Manifold) non-orthogonality; on curved walls they leave sliver cells where a core cell clips a wall triangle (smallest cell about 5e-11 on Manifold); Manifold builds in about 80 s; flow accuracy untested"
 
 [[feature]]
 id = "duct-scaffold"
@@ -183,7 +183,7 @@ id = "foehncraft-handoff"
 title = "FoehnCraft hand-off: MSH 4.1, single-file VTU, names, evidence (FC-01, FC-02, FC-04 to FC-06)"
 requirements = ["FC-01", "FC-02", "FC-04", "FC-05", "FC-06"]
 grade = "partial"
-how = "CI reads 35 exports back with `foehn mesh` (elbow and SolidCraft ducts in all three modes among them): every one valid, counts, volume, closure and patch areas agree to 1e-12"
+how = "CI reads 35 exports back with `foehn mesh` (elbow and Manifold ducts in all three modes among them): every one valid, counts, volume, closure and patch areas agree to 1e-12"
 tests = [
   "crates/mesh-io/src/handoff.rs::foehncraft_vtu_holds_cells_faces_and_names",
   "crates/mesh-io/src/handoff.rs::two_faces_between_one_pair_merge_into_one",

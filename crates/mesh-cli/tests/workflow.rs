@@ -379,7 +379,7 @@ fn nonconvex_elbow_preserves_volume_and_exposes_each_port_layer() {
 #[test]
 #[ignore = "full run: Manifold builds three duct meshes (about 4 minutes)"]
 fn nonconvex_manifold_preserves_volume_and_exposes_each_port_layer() {
-    nonconvex_duct_preserves_volume_and_exposes_each_port_layer("solidcraft-vs-foehncraft");
+    nonconvex_duct_preserves_volume_and_exposes_each_port_layer("manifold");
 }
 
 fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
@@ -388,8 +388,8 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
     for (dir, stl, volume, tets, wedges, port_areas) in [
         ("elbow", "elbow.stl", 5., 52, 120, [1., 1.]),
         (
-            "solidcraft-vs-foehncraft",
-            "SolidCraft_vs_FoehnCraft.stl",
+            "manifold",
+            "manifold.stl",
             5290738.125459458,
             93326,
             269616,
@@ -421,7 +421,7 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
             // Polyhedral: a wall triangle covered by one Voronoi core cell
             // keeps its native wedges; the others are cut into poly-prism
             // columns under the core cells (none native on the elbow).
-            // SolidCraft's Voronoi core repairs its reentrant edge from the
+            // Manifold's Voronoi core repairs its reentrant edge from the
             // site layout, which rounding can shift between platforms, so its
             // counts are checked within a band.
             let wall_prisms = match (mode, dir) {
@@ -430,7 +430,7 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
                 ("polyhedral", _) => report["prisms"].as_i64().unwrap(),
                 _ => wedges,
             };
-            if (mode, dir) == ("polyhedral", "solidcraft-vs-foehncraft") {
+            if (mode, dir) == ("polyhedral", "manifold") {
                 // Manifold builds its scaffold in Rust and joins with split
                 // caps (the columns fail on its finer wall, follow-up):
                 // native wedges plus split caps are 3 per wall triangle.
@@ -483,7 +483,7 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
                 }
                 let vtu = fs::read_to_string(work.path().join(&name).join("volume.vtu")).unwrap();
                 let types = vtu_array(&vtu, "types");
-                if dir == "solidcraft-vs-foehncraft" {
+                if dir == "manifold" {
                     assert!(maximum_core_span(&vtu, &types) < 25.0);
                 }
                 let offsets = vtu_array(&vtu, "faceoffsets");
@@ -521,7 +521,7 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
             // Keep: FoehnCraft rejects a mesh with any interior face whose
             // area vector points against the owner-to-neighbour centroid
             // vector (S·d <= 0). Cells at reentrant wall edges had 10 such
-            // faces on the elbow and 18 on SolidCraft until they were split
+            // faces on the elbow and 18 on Manifold until they were split
             // (median dual) or their sites split in pairs (Voronoi core);
             // undoing that brings them back. The shell checks above do not
             // look at centroids, so only this catches it.
@@ -533,7 +533,7 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
             // Keep: the hand-off fans every face about its node average, as
             // FoehnCraft does, so its volume equals the mesher's only if no
             // bent wall face was merged into one polygon. Wall columns merged
-            // over curved SolidCraft walls lost 0.14% this way. The checks
+            // over curved Manifold walls lost 0.14% this way. The checks
             // above integrate KoflCraft's own faces and cannot see it.
             let handoff_volume = evidence["summary"]["total_volume"].as_f64().unwrap();
             assert!((handoff_volume / mesh_volume - 1.).abs() < 1e-10, "{name}");
@@ -564,7 +564,7 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
                 assert!(report["minimum_wedge_jacobian"].as_f64().unwrap() > 0.);
             }
         }
-        if dir == "solidcraft-vs-foehncraft" {
+        if dir == "manifold" {
             let mut bad: Value = serde_json::from_slice(&fs::read(config).unwrap()).unwrap();
             bad["first_thickness"] = 1.0.into();
             fs::write(

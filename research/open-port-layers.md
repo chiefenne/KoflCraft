@@ -41,6 +41,6 @@ The [generator](../crates/mesh-algorithms/src/channel.rs) pairs opposing face lo
 
 In VTU, `OwnerCellId` on each boundary face refers to the zero-based cell index in `volume.vtu`. `PatchId` values 1, 2 and 3 identify the inlet, outlet and walls in both formats. The Gmsh writer preserves each prism. It subdivides each core polyhedron into eight tetrahedra and two pyramids sharing its centre, retaining the original port quads and prism interfaces. The [Gmsh regression](../tests/channel_gmsh.rs) checks the signed volume of each element, per-parent volume, face incidence, patch areas and port winding after serialization. The exports follow the [VTK XML specification](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) and the [Gmsh MSH specification](https://gmsh.info/doc/texinfo/gmsh.html#MSH-file-format-version-2-_0028Legacy_0029).
 
-## SolidCraft fixture
+## Manifold fixture
 
-The [SolidCraft surface](../test-fixtures/solidcraft-vs-foehncraft/README.md) has two circular ports with nonparallel normals and a connected wall surface with sharp edges and roundings. The [nonconvex duct benchmark](../docs/nonconvex-duct.md) now exercises this shell as a bulk mesh and with three prism layers, including exposed port faces and a collision rejection case.
+The [Manifold surface](../test-fixtures/manifold/README.md) has two circular ports with nonparallel normals and a connected wall surface with sharp edges and roundings. The [nonconvex duct benchmark](../docs/nonconvex-duct.md) now exercises this shell as a bulk mesh and with three prism layers, including exposed port faces and a collision rejection case.

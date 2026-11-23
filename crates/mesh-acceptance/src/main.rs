@@ -307,7 +307,7 @@ fn round_trip(cli: &Path, foehn: &Path, root: &Path, workspace: &Path) -> RunRes
         let out = dir.join(format!("foehn-{}", file.replace('/', "-")));
         let check = foehn::check(foehn, &dir.join(file), &expected["summary"], kind, &out)?;
         // Every export must be valid for FoehnCraft: no face with S·d <= 0
-        // (the elbow and SolidCraft polyhedral cores once had them).
+        // (the elbow and Manifold polyhedral cores once had them).
         require(
             check["foehncraft_valid"] == true,
             &format!(
@@ -364,9 +364,9 @@ fn round_trip(cli: &Path, foehn: &Path, root: &Path, workspace: &Path) -> RunRes
         &bundles.join("channel/mesh-evidence.json"),
         foehn::Kind::Subdivision,
     )?;
-    for (case, stl, mode) in ["elbow", "solidcraft-vs-foehncraft"]
+    for (case, stl, mode) in ["elbow", "manifold"]
         .into_iter()
-        .zip(["elbow.stl", "SolidCraft_vs_FoehnCraft.stl"])
+        .zip(["elbow.stl", "manifold.stl"])
         .flat_map(|(c, s)| ["bulk", "layered", "polyhedral"].map(|m| (c, s, m)))
     {
         let name = format!("{case}-{mode}");

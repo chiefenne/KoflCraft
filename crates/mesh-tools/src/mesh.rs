@@ -370,9 +370,7 @@ pub(crate) fn limitations(id: &str, output: &Value) -> Vec<String> {
                     100.0 * (v / s - 1.0)
                 ));
             }
-            l.push(
-                "geometry outside the validated elbow and SolidCraft fixtures is untested".into(),
-            );
+            l.push("geometry outside the validated elbow and Manifold fixtures is untested".into());
         }
         _ => {}
     }

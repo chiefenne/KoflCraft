@@ -56,10 +56,9 @@ struct Port {
 }
 
 #[test]
-fn solidcraft_vs_foehncraft_has_two_exterior_ports_and_feature_walls() {
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/solidcraft-vs-foehncraft");
-    let bytes = fs::read(path.join("SolidCraft_vs_FoehnCraft.stl")).unwrap();
+fn manifold_has_two_exterior_ports_and_feature_walls() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/manifold");
+    let bytes = fs::read(path.join("manifold.stl")).unwrap();
     let fixture: Fixture =
         serde_json::from_slice(&fs::read(path.join("patches.json")).unwrap()).unwrap();
     assert_eq!(fixture.schema_version, 1);
