@@ -157,8 +157,45 @@ pub struct RegionConfig {
     facets: Vec<[usize; 2]>,
 }
 
+/// The boundary of a duct: a port file (`schema_version` 1: a `walls`
+/// default patch and one inlet and one outlet facet range) or a
+/// `koflcraft.patch-map` from the `patch.*` tools, whose patches are one
+/// inlet, one outlet and walls (BC-01). A patch map names any facets, so the
+/// ports need not be contiguous in the STL.
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum PatchMap {
+    Ports(PortFile),
+    Map(crate::patches::PatchMap),
+}
+
+impl<'de> Deserialize<'de> for PatchMap {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let value = Value::deserialize(d)?;
+        if value.get("format").is_some() {
+            serde_json::from_value(value)
+                .map(Self::Map)
+                .map_err(D::Error::custom)
+        } else {
+            serde_json::from_value(value)
+                .map(Self::Ports)
+                .map_err(D::Error::custom)
+        }
+    }
+}
+
+impl PatchMap {
+    pub fn facet_count(&self) -> usize {
+        match self {
+            Self::Ports(p) => p.facet_count,
+            Self::Map(m) => m.facet_count,
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize)]
-pub struct PatchMap {
+pub struct PortFile {
     schema_version: u32,
     source_sha256: String,
     pub facet_count: usize,
@@ -446,10 +483,31 @@ fn prepare(
     plan: &Partition,
 ) -> Result<(mesh_geometry::ClosedSurface, Vec<usize>), EngineError> {
     let invalid = |s: &str| EngineError::new(ErrorCode::InvalidDomain, s);
-    require_schema(patch_map.schema_version)?;
     require_schema(plan.schema_version)?;
+    if sha256(data) != plan.source_sha256 {
+        return Err(invalid(
+            "patch map or partition digest differs from input STL",
+        ));
+    }
+    surface_tags(data, patch_map)
+}
+
+/// The surface and per-facet patch ids (1 inlet, 2 outlet, 3 wall) of a
+/// checked STL and patch map.
+fn surface_tags(
+    data: &[u8],
+    patch_map: &PatchMap,
+) -> Result<(mesh_geometry::ClosedSurface, Vec<usize>), EngineError> {
+    let invalid = |s: &str| EngineError::new(ErrorCode::InvalidDomain, s);
     let source_digest = sha256(data);
-    if source_digest != patch_map.source_sha256 || source_digest != plan.source_sha256 {
+    let (map_digest, facet_count) = match patch_map {
+        PatchMap::Ports(p) => {
+            require_schema(p.schema_version)?;
+            (&p.source_sha256, p.facet_count)
+        }
+        PatchMap::Map(m) => (&m.source_sha256, m.facet_count),
+    };
+    if source_digest != *map_digest {
         return Err(invalid(
             "patch map or partition digest differs from input STL",
         ));
@@ -457,21 +515,125 @@ fn prepare(
     let surface = import_closed_stl(
         data,
         StlOptions {
-            facet_limit: Some(patch_map.facet_count),
+            facet_limit: Some(facet_count),
             facet_patches: None,
         },
     )
     .map_err(|e| EngineError::new(ErrorCode::InvalidDomain, e))?;
-    if surface.facets().len() != patch_map.facet_count
-        || patch_map.default_patch.role != "wall"
-        || patch_map.default_patch.name != "walls"
+    if surface.facets().len() != facet_count {
+        return Err(invalid("expected a matching facet count"));
+    }
+    let patches = match patch_map {
+        PatchMap::Ports(p) => port_tags(p, facet_count)?,
+        PatchMap::Map(m) => map_tags(m)?,
+    };
+    if !patches.contains(&1) || !patches.contains(&2) || !patches.contains(&3) {
+        return Err(invalid("expected distinct inlet, outlet and wall patches"));
+    }
+    Ok((surface, patches))
+}
+
+/// What `setup` may change; lengths in model units.
+#[derive(Clone, Copy, Debug)]
+pub struct SetupOptions {
+    /// Multiplies every derived length; below 1 is finer.
+    pub size_factor: f64,
+    pub layers: Option<usize>,
+    pub first_thickness: Option<f64>,
+    pub growth: Option<f64>,
+}
+
+impl Default for SetupOptions {
+    fn default() -> Self {
+        Self {
+            size_factor: 1.0,
+            layers: None,
+            first_thickness: None,
+            growth: None,
+        }
+    }
+}
+
+/// The partition of a polyhedral duct for an STL and its patch map: a
+/// scaffold built in Rust and wall layers, every length a fixed fraction of
+/// the smaller port's equivalent radius r (the fractions of the Manifold
+/// fixture, r = 25: chord tolerance r/500, wall sizes r/38 to r/4, rim size
+/// r/29, first layer r/312, growth 1.4, three layers), times `size_factor`.
+/// The regions are empty: the scaffold route does not use them. Returns the
+/// partition and r.
+pub fn setup(
+    data: &[u8],
+    patch_map: &PatchMap,
+    options: SetupOptions,
+) -> Result<(Partition, f64), EngineError> {
+    let invalid = |s: &str| EngineError::new(ErrorCode::InvalidArguments, s);
+    let k = options.size_factor;
+    if !k.is_finite() || k <= 0.0 {
+        return Err(invalid("size_factor must be positive"));
+    }
+    let (surface, patches) = surface_tags(data, patch_map)?;
+    let scale = surface.bounds().extent().max_abs_component();
+    let mut areas = [0.0; 2];
+    for (f, &tag) in surface.facets().iter().zip(&patches) {
+        if tag < 3 {
+            areas[tag - 1] += f.normalized_area * scale * scale;
+        }
+    }
+    let r = (areas[0].min(areas[1]) / std::f64::consts::PI).sqrt();
+    let h = r * k;
+    let layers = options.layers.unwrap_or(3);
+    let first_thickness = options.first_thickness.unwrap_or(h / 312.5);
+    let growth = options.growth.unwrap_or(1.4);
+    if layers == 0
+        || !(first_thickness.is_finite() && first_thickness > 0.0)
+        || !(growth.is_finite() && growth > 0.0)
     {
         return Err(invalid(
-            "expected a matching facet count and a walls default patch",
+            "layers, first_thickness and growth must be positive",
         ));
     }
-    let mut patches = vec![3; surface.facets().len()];
-    for port in &patch_map.ports {
+    let tolerance = h / 500.0;
+    let round = |v: f64| {
+        let digits = 10f64.powi(3 - v.abs().log10().ceil() as i32);
+        (v * digits).round() / digits
+    };
+    let plan = Partition {
+        schema_version: 1,
+        source_sha256: sha256(data),
+        regions: Vec::new(),
+        volume_scaffold: Some(ScaffoldConfig {
+            file: None,
+            sha256: None,
+            build: Some(ScaffoldBuild {
+                tolerance: round(tolerance),
+                min_size: round(h / 38.5),
+                max_size: round(h / 4.17),
+                rate: 0.4,
+                rim_size: Some(round(h / 29.4)),
+                feature_angle: default_feature_angle(),
+                iterations: default_remesh_iterations(),
+            }),
+            max_relative_geometry_error: 0.002,
+            max_wall_deviation: Some(round(1.2 * tolerance)),
+            core: CoreKind::default(),
+            lloyd_iterations: None,
+            wall_join: WallJoinKind::default(),
+        }),
+        first_thickness: round(first_thickness),
+        growth,
+        layers,
+    };
+    Ok((plan, r))
+}
+
+/// Patch ids (1 inlet, 2 outlet, 3 wall) of a port file.
+fn port_tags(map: &PortFile, facet_count: usize) -> Result<Vec<usize>, EngineError> {
+    let invalid = |s: &str| EngineError::new(ErrorCode::InvalidDomain, s);
+    if map.default_patch.role != "wall" || map.default_patch.name != "walls" {
+        return Err(invalid("expected a walls default patch"));
+    }
+    let mut patches = vec![3; facet_count];
+    for port in &map.ports {
         let id = match (port.name.as_str(), port.role.as_str()) {
             ("inlet", "inlet") => 1,
             ("outlet", "outlet") => 2,
@@ -489,10 +651,63 @@ fn prepare(
             *tag = id;
         }
     }
-    if !patches.contains(&1) || !patches.contains(&2) || !patches.contains(&3) {
-        return Err(invalid("expected distinct inlet, outlet and wall patches"));
+    Ok(patches)
+}
+
+/// Patch ids (1 inlet, 2 outlet, 3 wall) of a patch map: exactly one patch
+/// with role inlet, one with role outlet, every other patch a wall. The
+/// duct mesh names them `inlet`, `outlet` and `walls`.
+fn map_tags(map: &crate::patches::PatchMap) -> Result<Vec<usize>, EngineError> {
+    use crate::patches::PatchRole;
+    let bad = |s: String| EngineError::new(ErrorCode::InvalidPatchMap, s);
+    if map.format != crate::patches::PATCH_MAP_FORMAT
+        || map.format_version != crate::patches::PATCH_MAP_FORMAT_VERSION
+        || map.facet_patch.len() != map.facet_count
+    {
+        return Err(bad(format!(
+            "expected a {} {} map with one patch per facet",
+            crate::patches::PATCH_MAP_FORMAT,
+            crate::patches::PATCH_MAP_FORMAT_VERSION
+        )));
     }
-    Ok((surface, patches))
+    let mut tag = Vec::with_capacity(map.patches.len());
+    let (mut inlets, mut outlets) = (0, 0);
+    for p in &map.patches {
+        tag.push(match p.role {
+            PatchRole::Inlet => {
+                inlets += 1;
+                1
+            }
+            PatchRole::Outlet => {
+                outlets += 1;
+                2
+            }
+            PatchRole::Wall => 3,
+            other => {
+                return Err(bad(format!(
+                    "a duct takes inlet, outlet and wall patches; {} has role {other:?}",
+                    p.name
+                )));
+            }
+        });
+    }
+    if inlets != 1 || outlets != 1 {
+        return Err(bad(format!(
+            "a duct needs exactly one inlet and one outlet patch, the map has {inlets} and {outlets}"
+        )));
+    }
+    map.facet_patch
+        .iter()
+        .enumerate()
+        .map(|(f, &p)| {
+            tag.get(p).copied().ok_or_else(|| {
+                bad(format!(
+                    "facet {f} has patch index {p}; the map has {} patches",
+                    tag.len()
+                ))
+            })
+        })
+        .collect()
 }
 
 /// The number of cells `generate` builds (AG-15), counted from the inputs:

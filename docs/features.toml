@@ -111,7 +111,22 @@ tests = [
   "crates/mesh-cli/tests/kofl.rs::patch_tools_define_a_boundary_that_meshes_and_replays",
 ]
 commands = ["cargo m1 --require-gmsh --require-foehn"]
-gaps = "Volume meshing with a map is convex STL only; the duct path still reads its own port-range map; proposals (BC-03), the boundary-condition skeleton (BC-05) and the shell role are open; the viewing VTU carries no patch names"
+gaps = "Volume meshing with a map: convex STL and the duct path; proposals beyond pipe-end ports (BC-03), the boundary-condition skeleton (BC-05) and the shell role are open; the viewing VTU carries no patch names"
+
+[[feature]]
+id = "bare-stl-ports"
+title = "Bare STL to duct: port detection, duct setup and patch maps in generate-duct (BC-03 ports)"
+requirements = ["BC-03"]
+grade = "partial"
+how = "On the 90,894-facet Manifold surface the two best candidates are exactly the hand-recorded port caps; on the synthetic cooling jacket both 96-gon caps score 1.000 against 0.57 for a block face, the map passes BC-06 and the setup lengths follow the port radius; a map with two inlets or a symmetry patch is refused; the elbow's port file and the same ports as a map give the same bulk mesh"
+tests = [
+  "crates/mesh-engine/tests/ports.rs::detection_recovers_the_hand_recorded_manifold_ports",
+  "crates/mesh-engine/tests/ports.rs::detection_and_setup_on_the_cooling_jacket",
+  "crates/mesh-engine/tests/ports.rs::duct_input_refuses_maps_without_one_inlet_and_outlet",
+  "crates/mesh-cli/tests/workflow.rs::generate_duct_reads_a_patch_map_like_a_port_file",
+]
+commands = []
+gaps = "Planar pipe-end caps only (no open or curved ports, no more than two); inlet and outlet are a guess to confirm; the setup serves the polyhedral mode only (no star-shaped regions for bulk or layered); setup sizes are fixed fractions of the port radius, not of the wall gaps"
 
 [[feature]]
 id = "sweep"

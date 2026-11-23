@@ -291,3 +291,54 @@ pub(crate) fn set_role(input: Value, ctx: &Context) -> Run {
     let result = patches::set_role(&map, &i.name, i.role)?;
     write(ctx, &s, &i.output, result)
 }
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DetectPortsInput {
+    pub surface: String,
+    pub output: String,
+    /// Candidate ids for the inlet and the outlet (default 0 and 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inlet: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outlet: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planar_angle_deg: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidates: Option<usize>,
+}
+
+/// Find the planar end caps of a bare closed STL and write a map with
+/// `walls`, `inlet` and `outlet` (BC-03, ports).
+pub(crate) fn detect_ports(input: Value, ctx: &Context) -> Run {
+    let i: DetectPortsInput = decode(input)?;
+    let s = surface(ctx, &i.surface)?;
+    let defaults = mesh_engine::ports::PortOptions::default();
+    let detection = s.detect_ports(mesh_engine::ports::PortOptions {
+        planar_angle_deg: i.planar_angle_deg.unwrap_or(defaults.planar_angle_deg),
+        candidates: i.candidates.unwrap_or(defaults.candidates),
+    })?;
+    let (inlet, outlet) = (i.inlet.unwrap_or(0), i.outlet.unwrap_or(1));
+    let map = s.port_map(&detection, inlet, outlet)?;
+    let ports = map.facet_patch.iter().filter(|&&p| p != 0).count();
+    let change = patches::Change {
+        facets_changed: s.facet_count(),
+        created: vec!["walls".into(), "inlet".into(), "outlet".into()],
+        removed: Vec::new(),
+    };
+    let mut result = write(ctx, &s, &i.output, (map, change))?;
+    let strength = |c: &mesh_engine::ports::PortCandidate| c.score;
+    let next = detection.candidates.get(2).map(strength).unwrap_or(0.0);
+    result["detection"] = json!({
+        "inlet": inlet,
+        "outlet": outlet,
+        "port_facets": ports,
+        "planar_regions": detection.planar_regions,
+        "disc_regions": detection.disc_regions,
+        // how clearly the two picked caps stand out from the next candidate
+        "margin": strength(&detection.candidates[inlet]).min(strength(&detection.candidates[outlet])) - next,
+        "candidates": detection.candidates,
+        "note": "Inlet and outlet are the two most pipe-end-like caps; which is which is a guess. Swap or pick others with `inlet` and `outlet` (candidate ids).",
+    });
+    Ok(result)
+}

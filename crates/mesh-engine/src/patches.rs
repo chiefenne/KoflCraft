@@ -56,9 +56,9 @@ pub struct PatchDef {
 /// A surface the patch tools work on: the closed shell (convex or not),
 /// its facet geometry and its digest.
 pub struct PatchSurface {
-    surface: ClosedSurface,
-    geometry: FacetGeometry,
-    sha256: String,
+    pub(crate) surface: ClosedSurface,
+    pub(crate) geometry: FacetGeometry,
+    pub(crate) sha256: String,
 }
 
 fn err(code: ErrorCode, message: impl std::fmt::Display) -> EngineError {

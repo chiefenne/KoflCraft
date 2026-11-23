@@ -242,6 +242,25 @@ pub static TOOLS: &[Tool] = &[
         run: patch::grow,
     },
     Tool {
+        id: "patch.detect_ports",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Find the planar end caps of the pipes of a bare closed STL (convex or not) and write a map with `walls`, `inlet` and `outlet` (BC-03, ports): planar disc regions ranked by circularity and a pipe-end rim. Lists the candidates; `inlet` and `outlet` pick others by id.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: || {
+            schemas::input(
+                json!({"surface": schemas::path(), "output": schemas::path(),
+                       "inlet": {"type": "integer", "minimum": 0}, "outlet": {"type": "integer", "minimum": 0},
+                       "planar_angle_deg": {"type": "number", "minimum": 0, "maximum": 30},
+                       "candidates": {"type": "integer", "minimum": 2}}),
+                &["inlet", "outlet", "planar_angle_deg", "candidates"],
+            )
+        },
+        output_schema: schemas::patch_detect_ports,
+        run: patch::detect_ports,
+    },
+    Tool {
         id: "patch.split",
         version: 1,
         action: Action::WriteFiles,
@@ -360,6 +379,26 @@ pub static TOOLS: &[Tool] = &[
         },
         output_schema: out!("generate_channel"),
         run: mesh::channel,
+    },
+    Tool {
+        id: "mesh.setup_duct",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Write the partition of a polyhedral duct for an STL and its patch map (one inlet, one outlet, walls): a Rust-built scaffold and wall layers sized from the smaller port radius, scaled by `size_factor` (smaller is finer). For `mesh.generate_duct` in polyhedral mode.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: || {
+            schemas::input(
+                json!({"surface": schemas::path(), "patches": schemas::path(), "output": schemas::path(),
+                       "size_factor": {"type": "number", "exclusiveMinimum": 0},
+                       "layers": {"type": "integer", "minimum": 1},
+                       "first_thickness": {"type": "number", "exclusiveMinimum": 0},
+                       "growth": {"type": "number", "exclusiveMinimum": 0}}),
+                &["size_factor", "layers", "first_thickness", "growth"],
+            )
+        },
+        output_schema: schemas::duct_setup_result,
+        run: mesh::setup_duct,
     },
     Tool {
         id: "mesh.generate_duct",
