@@ -80,3 +80,7 @@ The Gmsh export subdivides polyhedra into tetrahedra (and the duct export
 into pyramids and tetrahedra). A solver reading it sees a different cell
 count and different face connectivity. To hand true polyhedra to a solver,
 use VTU or OpenFOAM `polyMesh` (OPEN-12).
+
+## Hash iteration order makes a mesh differ between runs
+
+`std::collections::HashMap` and `HashSet` seed their hasher randomly per process. Code that iterates one (a Delaunay cavity, a set of faces to split) and lets the order decide tetrahedron indices or insertion order gives a different mesh on every run of the same input. The Manifold scaffold's smallest core sphericity moved between 0.03 and 0.17 that way. The scaffold modules use the fixed-hasher aliases `delaunay::HashMap` and `delaunay::HashSet`; use them, or a `BTreeMap`, wherever iteration order reaches the output.
