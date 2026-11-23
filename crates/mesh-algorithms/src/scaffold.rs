@@ -94,6 +94,29 @@ fn morton(p: Vec3, min: Vec3, extent: f64) -> u64 {
     spread(q(p.x, min.x)) | spread(q(p.y, min.y)) << 1 | spread(q(p.z, min.z)) << 2
 }
 
+/// The split point of surface edge (a, b) in the boundary recovery:
+/// concentric shells (Ruppert 1995, Shewchuk 2002). On an edge with exactly
+/// one input vertex the point is at the power of two times the unit length
+/// from it that is nearest to the midpoint, so the splits of the edges that
+/// meet at an input vertex lie on common spheres about it and cannot
+/// encroach each other without end; otherwise the midpoint.
+fn shell_point(points: &[Vec3], input: &HashSet<usize>, a: usize, b: usize) -> Vec3 {
+    let (pa, pb) = (points[a], points[b]);
+    let (from, to) = match (input.contains(&a), input.contains(&b)) {
+        (true, false) => (pa, pb),
+        (false, true) => (pb, pa),
+        _ => return (pa + pb) / 2.0,
+    };
+    let length = (to - from).length();
+    let half = length / 2.0;
+    let mut d = 2f64.powi(half.log2().round() as i32);
+    // keep the point well inside the edge
+    if d >= 0.75 * length || d <= 0.25 * length {
+        d = half;
+    }
+    from + (to - from) * (d / length)
+}
+
 /// Tetrahedralize the closed surface `triangles` (outward, `tags` per
 /// triangle) and refine its interior.
 pub fn build(
@@ -138,6 +161,7 @@ pub fn build(
         .map(|(t, &g)| (t.map(|v| id[v]), g))
         .collect();
     // 2. boundary recovery
+    let input: HashSet<usize> = id.iter().copied().collect();
     let mut recovered = false;
     for _ in 0..64 {
         let edges = dt.edge_set();
@@ -173,7 +197,7 @@ pub fn build(
         split.sort_unstable();
         let mut midpoint = HashMap::default();
         for (a, b) in split {
-            let m = (dt.points[a] + dt.points[b]) / 2.0;
+            let m = shell_point(&dt.points, &input, a, b);
             // a vertex exactly at the midpoint lies on the edge: split there
             let index = match dt.insert(m) {
                 Ok(i) | Err(Refused::Duplicate(i)) => i,

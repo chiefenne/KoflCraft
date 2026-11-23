@@ -78,6 +78,8 @@ pub struct RemeshStats {
     pub corners: usize,
     pub splits: usize,
     pub collapses: usize,
+    /// Flips that made an edge locally Delaunay on the surface.
+    pub delaunay_flips: usize,
     pub flips: usize,
     /// Facets split in the final deviation pass.
     pub deviation_splits: usize,
@@ -575,6 +577,74 @@ impl Work<'_> {
         true
     }
 
+    /// Flip edge (a, b) when it is not locally Delaunay on the surface: the
+    /// angles opposite it sum to more than 180°. Only between nearly
+    /// coplanar facets (20°) and when both new facets stay within the chord
+    /// tolerance, so the wall shape is kept. A surface that is Delaunay in
+    /// this sense has few edges that a 3D Delaunay tetrahedralization lacks,
+    /// so the scaffold's boundary recovery needs few splits.
+    fn delaunay_flip(&mut self, a: usize, b: usize) -> bool {
+        if self.feature.contains(&key(a, b)) {
+            return false;
+        }
+        let faces = self.edge_faces(a, b);
+        if faces.len() != 2 || self.touches_keep(&faces) {
+            return false;
+        }
+        let (mut f0, mut f1) = (faces[0], faces[1]);
+        let has =
+            |t: [usize; 3], x: usize, y: usize| (0..3).any(|i| t[i] == x && t[(i + 1) % 3] == y);
+        if !has(self.t[f0], a, b) {
+            std::mem::swap(&mut f0, &mut f1);
+        }
+        if !has(self.t[f0], a, b) || !has(self.t[f1], b, a) {
+            return false;
+        }
+        let other = |t: [usize; 3]| t.into_iter().find(|&v| v != a && v != b);
+        let (Some(c), Some(d)) = (other(self.t[f0]), other(self.t[f1])) else {
+            return false;
+        };
+        if c == d || self.neighbours(c).contains(&d) {
+            return false;
+        }
+        let angle = |o: usize| {
+            let (u, v) = (self.p[a] - self.p[o], self.p[b] - self.p[o]);
+            (u.dot(v) / (u.length() * v.length()))
+                .clamp(-1.0, 1.0)
+                .acos()
+        };
+        if angle(c) + angle(d) <= std::f64::consts::PI + 1e-9 {
+            return false;
+        }
+        let n0 = unit(normal(self.corners_of(f0)));
+        let n1 = unit(normal(self.corners_of(f1)));
+        if n0.dot(n1) < (20f64).to_radians().cos() {
+            return false;
+        }
+        let (t0, t1) = ([c, a, d], [d, b, c]);
+        let m = unit(n0 + n1);
+        for t in [t0, t1] {
+            let p = t.map(|v| self.p[v]);
+            let n = normal(p);
+            if n.length() <= 0.0 || unit(n).dot(m) < 0.8 {
+                return false;
+            }
+            if samples(p).iter().any(|&x| {
+                self.surface
+                    .closest(x)
+                    .is_some_and(|(_, d)| d > self.opts.tolerance)
+            }) {
+                return false;
+            }
+        }
+        self.remove_face(f0);
+        self.remove_face(f1);
+        self.add_face(t0);
+        self.add_face(t1);
+        self.stats.delaunay_flips += 1;
+        true
+    }
+
     fn smooth(&mut self) {
         let n = self.p.len();
         let mut next = self.p.clone();
@@ -834,6 +904,18 @@ pub fn remesh(
             if w.split(a, b) {
                 w.stats.deviation_splits += 1;
             }
+        }
+    }
+    // Delaunay flips (see `delaunay_flip`)
+    for _ in 0..20 {
+        let before = w.stats.delaunay_flips;
+        for (a, b) in w.edges() {
+            if !w.vf[a].is_empty() && !w.vf[b].is_empty() {
+                w.delaunay_flip(a, b);
+            }
+        }
+        if w.stats.delaunay_flips == before {
+            break;
         }
     }
     // compact

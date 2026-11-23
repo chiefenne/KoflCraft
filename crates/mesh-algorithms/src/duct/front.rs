@@ -7,6 +7,12 @@ pub(super) struct Front {
     pub inner: Vec<usize>,
 }
 
+/// Largest distance of a port vertex from the port plane, relative to the
+/// longest extent: a few f32 roundings of the coordinates.
+pub(crate) const PORT_RELATIVE_TOLERANCE: f64 = 1e-6;
+/// Largest 1 - cos of the angle between two port facet normals (0.08°).
+pub(crate) const PORT_NORMAL_SLACK: f64 = 1e-6;
+
 pub(super) fn advance(
     surface: &ClosedSurface,
     patches: &[usize],
@@ -63,6 +69,9 @@ pub(super) fn advance(
             }
         }
     }
+    // single-precision STL: a tilted cap's corners are coplanar only to the
+    // rounding of f32 coordinates
+    let port_tol = surface.bounds().extent().max_abs_component() * PORT_RELATIVE_TOLERANCE;
     for (index, edges) in rims.iter().enumerate() {
         let ids = loop_vertices(edges)?;
         let center = mean(original, &ids);
@@ -86,12 +95,12 @@ pub(super) fn advance(
             if patch != index + 1 {
                 continue;
             }
-            if f.plane.normal().dot(normal) < 1.0 - 1e-10 {
+            if f.plane.normal().dot(normal) < 1.0 - PORT_NORMAL_SLACK {
                 return Err("port patch must be planar and consistently oriented".into());
             }
             for &v in &f.triangle.vertices {
                 let r = original[v] - center;
-                if r.dot(normal).abs() > tol {
+                if r.dot(normal).abs() > port_tol {
                     return Err("off-plane port vertex".into());
                 }
                 // A single in-plane similarity preserves every original cap triangle.

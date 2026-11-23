@@ -12,13 +12,13 @@ import struct
 import sys
 
 import numpy as np
-from manifold3d import CrossSection, Manifold, set_circular_segments
+from manifold3d import Manifold, Mesh, set_circular_segments
 
 set_circular_segments(96)
 
 R_IN, R_OUT, HEIGHT = 60.0, 66.0, 60.0
 RIB_DEPTH, RIB_WIDTH, RIBS, GAP_DEG = 4.0, 2.0, 6, 24.0
-PIPE_R = 4.0
+PIPE_R, BEND_R = 4.0, 12.0
 
 
 def ring(r_in, r_out, z0, z1):
@@ -41,38 +41,61 @@ def jacket():
     return fluid
 
 
-def pipe(z, out_dir):
-    """A block on the outer wall, a radial pipe and a bent end leg."""
+def pipe(z, down):
+    """A block on the outer wall and a swept tube: a radial leg, a 45° bend
+    of centreline radius BEND_R tangent to both legs, and an end leg turning
+    down or up, closed by flat caps (the far one is the port)."""
     block = Manifold.cube([10.0, 12.0, 12.0]).translate([R_OUT - 2.0, -6.0, z - 6.0])
+    k = -1.0 if down else 1.0
     start = np.array([R_OUT + 6.0, 0.0, z])
     knee = start + np.array([30.0, 0.0, 0.0])
-    end = knee + 25.0 * np.asarray(out_dir) / np.linalg.norm(out_dir)
-    leg1 = segment(start, knee)
-    leg2 = segment(knee, end)
-    joint = Manifold.sphere(PIPE_R, 96).translate(list(knee))
-    return block + leg1 + leg2 + joint
+    centre = knee + np.array([0.0, 0.0, k * BEND_R])
+    frames = []  # (point, tangent) along the centreline
+    for t in np.linspace(0.0, 1.0, 16):
+        frames.append((start + t * (knee - start), np.array([1.0, 0.0, 0.0])))
+    for a in np.radians(np.linspace(0.0, 45.0, 25))[1:]:
+        frames.append((centre + BEND_R * np.array([np.sin(a), 0.0, -k * np.cos(a)]),
+                       np.array([np.cos(a), 0.0, k * np.sin(a)])))
+    end, d = frames[-1]
+    for t in np.linspace(0.0, 25.0, 13)[1:]:
+        frames.append((end + t * d, d))
+    return block + tube(frames)
 
 
-def segment(a, b):
-    a, b = np.asarray(a, float), np.asarray(b, float)
-    d = b - a
-    length = np.linalg.norm(d)
-    cyl = Manifold.cylinder(length, PIPE_R)
-    z = d / length
-    # rotate +z onto d
-    v = np.cross([0, 0, 1], z)
-    s, c = np.linalg.norm(v), z[2]
-    if s < 1e-12:
-        m = np.eye(3) if c > 0 else np.diag([1, -1, -1])
-    else:
-        k = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
-        m = np.eye(3) + k + k @ k * ((1 - c) / s**2)
-    t = np.hstack([m, a.reshape(3, 1)])
-    return cyl.transform(t.tolist())
+def tube(frames, n=96):
+    """A closed tube of radius PIPE_R through the frames, flat end caps."""
+    side = np.array([0.0, 1.0, 0.0])  # the bend stays in the xz plane
+    verts = []
+    for p, t in frames:
+        u = np.cross(t, side)
+        u /= np.linalg.norm(u)
+        for j in range(n):
+            a = 2 * np.pi * j / n
+            verts.append(p + PIPE_R * (np.cos(a) * u + np.sin(a) * side))
+    rings = len(frames)
+    tris = []
+    for i in range(rings - 1):
+        for j in range(n):
+            a, b = i * n + j, i * n + (j + 1) % n
+            c, d = a + n, b + n
+            tris += [[a, d, b], [a, c, d]]
+    c0, c1 = len(verts), len(verts) + 1
+    verts += [frames[0][0], frames[-1][0]]
+    last = (rings - 1) * n
+    for j in range(n):
+        tris.append([c0, j, (j + 1) % n])
+        tris.append([c1, last + (j + 1) % n, last + j])
+    mesh = Mesh(vert_properties=np.array(verts, np.float32), tri_verts=np.array(tris, np.uint32))
+    body = Manifold(mesh)
+    if body.volume() <= 0:
+        raise RuntimeError(f"tube: {body.status()} volume {body.volume()}")
+    return body
 
 
 def main(path):
-    body = jacket() + pipe(15.0, [1.0, 0.0, -1.0]) + pipe(45.0, [1.0, 0.0, 1.0])
+    body = jacket() + pipe(15.0, True) + pipe(45.0, False)
+    if body.genus() != 1:
+        raise RuntimeError(f"genus {body.genus()}")
     mesh = body.to_mesh()
     v = np.asarray(mesh.vert_properties)[:, :3]
     f = np.asarray(mesh.tri_verts)

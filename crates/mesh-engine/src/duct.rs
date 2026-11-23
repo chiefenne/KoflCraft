@@ -378,12 +378,13 @@ pub fn generate(
                 .iter()
                 .filter(|f| f.triangle.patch.0 == tag - 1)
             {
-                if face.plane.normal().dot(normal) < 1. - 1e-9
+                // f32 STL: a tilted cap is planar to the coordinate rounding
+                if face.plane.normal().dot(normal) < 1. - 1e-6
                     || face
                         .triangle
                         .vertices
                         .iter()
-                        .any(|&v| (shell.vertices()[v] - origin).dot(normal).abs() > scale * 1e-9)
+                        .any(|&v| (shell.vertices()[v] - origin).dot(normal).abs() > scale * 1e-6)
                 {
                     return Err(invalid(
                         "scaffold opening differs from STL port plane or winding",
@@ -614,7 +615,7 @@ pub fn setup(
                 iterations: default_remesh_iterations(),
             }),
             max_relative_geometry_error: 0.002,
-            max_wall_deviation: Some(round(1.2 * tolerance)),
+            max_wall_deviation: Some(round(1.5 * tolerance)),
             core: CoreKind::default(),
             lloyd_iterations: None,
             wall_join: WallJoinKind::default(),

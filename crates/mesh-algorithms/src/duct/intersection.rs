@@ -162,7 +162,12 @@ pub(super) fn embedded(
                     && boxes[i].overlaps(boxes[j], tol)
                     && intersects(tri, triangles[j], points, tol)
                 {
-                    return Err(format!("surface collision between facets {i} and {j}"));
+                    let c = |t: [usize; 3]| (points[t[0]] + points[t[1]] + points[t[2]]) / 3.0;
+                    let (a, b) = (c(tri), c(triangles[j]));
+                    return Err(format!(
+                        "surface collision between facets {i} and {j} near ({:.4}, {:.4}, {:.4}) and ({:.4}, {:.4}, {:.4})",
+                        a.x, a.y, a.z, b.x, b.y, b.z
+                    ));
                 }
             }
         }
