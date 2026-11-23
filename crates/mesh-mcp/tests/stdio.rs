@@ -162,7 +162,7 @@ fn stdio_tools_run_the_shared_engine_and_bound_writes() {
     assert!(work.path().join("elbow/mesh.vtm").is_file());
     let poly = &responses[14]["result"]["structuredContent"]["result"]["report"];
     assert_eq!(poly["tetrahedra"], 0);
-    assert_eq!(poly["polyhedra"], 603);
+    assert_eq!(poly["polyhedra"], 1082);
     assert!(
         responses[15]["result"]["structuredContent"]["result"]["report"]["core_cells"]
             .as_u64()

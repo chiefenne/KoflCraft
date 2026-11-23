@@ -144,15 +144,18 @@ id = "duct"
 title = "Nonconvex duct, bulk, layered and polyhedral (M4/M5 prototype)"
 requirements = ["M4", "M5"]
 grade = "partial"
-how = "Elbow volume and patch areas to 1e-9; every layer reaches both ports; no face with S·d ≤ 0 in any mode of the elbow or SolidCraft"
+how = "Elbow volume and patch areas to 1e-9; every layer reaches both ports; no face with S·d ≤ 0 in any mode of the elbow or SolidCraft; the hand-off's fanned volume equals the mesher's exact volume"
 tests = [
   "crates/mesh-cli/tests/workflow.rs::nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer",
   "crates/mesh-cli/tests/workflow.rs::median_dual_core_stays_available_and_valid_on_the_elbow",
+  "crates/mesh-cli/tests/workflow.rs::split_cap_wall_join_stays_available_and_valid_on_the_elbow",
+  "crates/mesh-algorithms/src/duct/columns.rs::contact_chains",
+  "crates/mesh-io/src/duct.rs::only_flat_boundary_polygons_merge",
   "crates/mesh-algorithms/src/duct/convex.rs::halving_a_cube_keeps_half_the_volume_and_tags_the_cut",
   "crates/mesh-algorithms/src/duct/intersection.rs::rejects_transverse_coplanar_and_shared_vertex_overlaps",
 ]
 commands = []
-gaps = "Needs a Gmsh scaffold and a Python preparation script (OPEN-07); fitted volume 0.183 % below the STL; the Voronoi core still reaches 85.9° (elbow) and 87.7° (SolidCraft) non-orthogonality at the join to the wall layers (columns per core cell are follow-up); SolidCraft builds in about 75 s; flow accuracy untested"
+gaps = "Needs a Gmsh scaffold and a Python preparation script (OPEN-07); fitted volume 0.183 % below the STL; the wall columns reach 80.1° (elbow) and 82.8° (SolidCraft) non-orthogonality; on curved walls they leave sliver cells where a core cell clips a wall triangle (smallest cell about 5e-11 on SolidCraft); SolidCraft builds in about 80 s; flow accuracy untested"
 
 [[feature]]
 id = "foehncraft-handoff"
@@ -231,7 +234,7 @@ id = "estimates"
 title = "Estimates, action kinds and approval policies (AG-15)"
 requirements = ["AG-15"]
 grade = "partial"
-how = "`mesh.estimate` and `kofl --check` predict exactly the cells that every generator then builds (box, channel, sweep, duct bulk and layered; polyhedral ducts before the split of reentrant-edge cells, which `cells_basis` states and the test checks); over MCP, builds within the limits run, larger ones ask the user through MCP elicitation, and a TOML policy (`--policy`) sets allow, ask or refuse and the limits"
+how = "`mesh.estimate` and `kofl --check` predict exactly the cells that every generator then builds (box, channel, sweep, duct bulk and layered; polyhedral ducts before the split of reentrant-edge cells, and approximately from above for the wall columns of the Voronoi core, which `cells_basis` states and the test checks); over MCP, builds within the limits run, larger ones ask the user through MCP elicitation, and a TOML policy (`--policy`) sets allow, ask or refuse and the limits"
 tests = [
   "crates/mesh-cli/tests/kofl.rs::estimates_match_the_built_cell_counts",
   "crates/mesh-mcp/tests/stdio.rs::builds_over_the_limits_need_approval",

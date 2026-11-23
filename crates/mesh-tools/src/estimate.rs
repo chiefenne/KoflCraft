@@ -3,7 +3,9 @@
 //! the inputs (sites, the channel grid, the swept 2D section, the duct
 //! surface or scaffold) without building the volume mesh. The one exception
 //! is labelled in `cells_basis`: a polyhedral duct splits or adds a few
-//! cells at reentrant wall edges, which only the built wall layers decide. Memory and
+//! cells at reentrant wall edges, which only the built wall layers decide,
+//! and the wall columns under a Voronoi core follow the built core, so their
+//! count is approximate. Memory and
 //! output bytes are rough per-cell figures, labelled as such.
 
 use std::path::Path;
@@ -41,6 +43,11 @@ const EXACT: &str = "exact";
 const SPLIT_BASIS: &str = "exact before cells are split or added at reentrant wall edges, \
     which needs the built layers (Voronoi core: none on the elbow fixture, 14 on SolidCraft; \
     median dual: 10 and 3)";
+
+/// `cells_basis` of a Voronoi core with wall columns.
+const COLUMN_BASIS: &str = "approximate: the wall-layer columns follow the built Voronoi core, \
+    counted as two cells per wall triangle and layer (built: 0.76 on the elbow fixture, 2.08 on \
+    SolidCraft); cells are also added at reentrant wall edges";
 
 /// The cell count of one build call and its basis.
 pub(crate) fn cells(
@@ -87,7 +94,9 @@ pub(crate) fn cells(
                     ctx.read(&path.to_string_lossy())
                 })
                 .transpose()?;
-            if scaffold.is_some() {
+            if partition.wall_columns(i.mode) {
+                basis = COLUMN_BASIS;
+            } else if scaffold.is_some() {
                 basis = SPLIT_BASIS;
             }
             duct::cell_count(
