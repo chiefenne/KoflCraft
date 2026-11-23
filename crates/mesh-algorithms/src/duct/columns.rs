@@ -26,6 +26,9 @@ use std::collections::HashMap;
 const WALL_PLANE_TOL: f64 = 1e-10;
 /// The same on the inner layer surfaces, relative to the thinnest layer.
 const LAYER_PLANE_TOL: f64 = 1e-6;
+/// Smallest cosine between a merged column's side face and the line to its
+/// neighbour's centroid (85°); below it the column is split into its units.
+const MIN_SIDE_COS: f64 = 0.087;
 /// Passes that split merged columns whose contacts FoehnCraft would reject.
 const SPLIT_PASSES: usize = 8;
 
@@ -302,6 +305,65 @@ pub(super) fn build(
                 }
             }
             sides.push(edges);
+        }
+        // FoehnCraft's orthogonality test (S·d > 0) between a merged column
+        // and each neighbour, on every layer. A merged footprint can be
+        // nonconvex (a core cell with merged or reassigned pieces), and its
+        // centroid can then lie behind a side face.
+        let mut centre: HashMap<(usize, usize), Vec3> = HashMap::new();
+        let mut centroid = |x: usize, k: usize| -> Vec3 {
+            *centre.entry((x, k)).or_insert_with(|| {
+                let (mut v, mut m) = (0.0, Vec3::ZERO);
+                for ring in columns[x].iter().flat_map(|&u| &units[u].rings) {
+                    for i in 1..ring.len() - 1 {
+                        let w = [ring[0], ring[i + 1], ring[i]];
+                        let n = [
+                            img(w[0], k),
+                            img(w[1], k),
+                            img(w[2], k),
+                            img(w[0], k + 1),
+                            img(w[1], k + 1),
+                            img(w[2], k + 1),
+                        ];
+                        let vol = verify::wedge(n.map(|i| points[i])).1;
+                        let c = n.iter().fold(Vec3::ZERO, |s, &i| s + points[i]) / 6.0;
+                        v += vol;
+                        m = m + c * vol;
+                    }
+                }
+                m / v
+            })
+        };
+        for x in 0..columns.len() {
+            let mut by: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
+            for &(a, b, _, other) in &sides[x] {
+                if let Some(y) = other {
+                    by.entry(y).or_default().push((a, b));
+                }
+            }
+            for (y, list) in by {
+                if columns[x].len() == 1 && columns[y].len() == 1 {
+                    continue;
+                }
+                let skewed = (0..layers).any(|k| {
+                    let area = list.iter().fold(Vec3::ZERO, |s, &(a, b)| {
+                        let q =
+                            [img(b, k), img(a, k), img(a, k + 1), img(b, k + 1)].map(|i| points[i]);
+                        s + (q[2] - q[0]).cross(q[3] - q[1]) * 0.5
+                    });
+                    let d = centroid(y, k) - centroid(x, k);
+                    let cos = area.dot(d) / (area.length() * d.length());
+                    // NaN (a degenerate face) counts as skewed
+                    cos.is_nan() || cos <= MIN_SIDE_COS
+                });
+                if skewed {
+                    for z in [x, y] {
+                        if columns[z].len() > 1 {
+                            bad.insert(z);
+                        }
+                    }
+                }
+            }
         }
         if bad.is_empty() {
             break;

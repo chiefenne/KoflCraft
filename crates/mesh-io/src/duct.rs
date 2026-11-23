@@ -347,7 +347,7 @@ fn merge_boundary(cells: &mut [CellFaces], mesh: &DuctMesh) -> Vec<(Vec<usize>, 
         let merged = (rings.len() > 1)
             .then(|| single_loop(&rings))
             .flatten()
-            .filter(|ring| planar(&mesh.points, ring));
+            .filter(|ring| planar(&mesh.points, ring, &rings));
         let Some(ring) = merged else {
             out.extend(rings.into_iter().map(|r| (r.clone(), tag)));
             continue;
@@ -373,8 +373,10 @@ fn merge_boundary(cells: &mut [CellFaces], mesh: &DuctMesh) -> Vec<(Vec<usize>, 
 
 /// Whether a merged boundary polygon is planar to roundoff. FoehnCraft fans
 /// a polygon about its node average, so a bent wall face would move the wall
-/// and change the volume; such faces stay as their planar pieces.
-fn planar(points: &[Vec3], ring: &[usize]) -> bool {
+/// and change the volume; such faces stay as their planar pieces. Every
+/// vertex of the pieces is tested, not only the merged loop: pieces with a
+/// flat rim around a raised inner vertex are no flat polygon.
+fn planar(points: &[Vec3], ring: &[usize], pieces: &[&Vec<usize>]) -> bool {
     let centre = ring.iter().fold(Vec3::ZERO, |s, &v| s + points[v]) / ring.len() as f64;
     let n = newell(points, ring);
     let len = n.length();
@@ -387,7 +389,10 @@ fn planar(points: &[Vec3], ring: &[usize]) -> bool {
         .map(|&v| (points[v] - centre).length())
         .fold(0.0, f64::max);
     let tol = 1e-10 * size + 256.0 * f64::EPSILON * centre.max_abs_component().max(size);
-    ring.iter()
+    pieces
+        .iter()
+        .flat_map(|r| r.iter())
+        .chain(ring)
         .all(|&v| (points[v] - centre).dot(unit).abs() <= tol)
 }
 
@@ -451,9 +456,14 @@ mod tests {
             [1., 1., 0.],
             [0., 1., 0.],
             [0., 1., 0.01],
+            [0.5, 0.5, 0.01],
         ]
         .map(|[x, y, z]| Vec3::new(x, y, z));
-        assert!(planar(&p, &[0, 1, 2, 3]));
-        assert!(!planar(&p, &[0, 1, 2, 4]));
+        assert!(planar(&p, &[0, 1, 2, 3], &[]));
+        assert!(!planar(&p, &[0, 1, 2, 4], &[]));
+        // a flat rim around a raised inner vertex (a tent) is not flat
+        let tent = [0, 1, 2, 3].map(|k| vec![k, (k + 1) % 4, 5]);
+        let refs: Vec<&Vec<usize>> = tent.iter().collect();
+        assert!(!planar(&p, &[0, 1, 2, 3], &refs));
     }
 }
