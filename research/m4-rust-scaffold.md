@@ -58,7 +58,7 @@ Manifold, polyhedral mode, Voronoi core, split-cap join, release build, Linux x8
 
 The finer wall needed one fix outside the scaffold: the verifier treated a sliver triangle face of a core cell (two corners 1.3·10⁻⁸ apart) as nonplanar, because its Newell normal is too inaccurate for the offset test. A triangle is planar, so the test now skips triangles. FoehnCraft reads the mesh with 0 inverted faces; its largest non-orthogonality is 89.0° (1,928 faces above 70°), at the thin core cells next to the fine wall.
 
-The columns wall join (PR #24) does not yet build on this wall (a nonplanar polyhedron face); the Manifold fixture uses split caps until that is fixed.
+The columns wall join (PR #24) does not yet build on this wall: on the reproducible build it stops with MESH006, a layer-0 cell whose polyhedron shell volume differs from its source partition (earlier, nondeterministic builds also reported a nonplanar polyhedron face). The Manifold fixture uses split caps until that is fixed.
 
 The scaffold code uses hash containers with a fixed hasher. With Rust's per-process random hash seed, the cavity order of the Delaunay insertion changed from run to run, and so did the mesh (smallest core sphericity 0.03 to 0.17 on the same input); two builds now give byte-identical files.
 
