@@ -222,7 +222,9 @@ pub(crate) fn duct(input: Value, ctx: &Context) -> Run {
     let (dir, name) = ctx.target(&i.output)?;
     let patches: PatchMap = json_file(ctx, &i.patches)?;
     let partition: Partition = json_file(ctx, &i.partition)?;
-    ctx.limit("source facets", patches.facet_count, |l| l.max_duct_facets)?;
+    ctx.limit("source facets", patches.facet_count(), |l| {
+        l.max_duct_facets
+    })?;
     ctx.limit("layers", partition.layers, |l| l.max_duct_layers)?;
     ctx.limit("regions", partition.regions.len(), |l| l.max_duct_regions)?;
     let scaffold = partition
@@ -378,4 +380,49 @@ pub(crate) fn limitations(id: &str, output: &Value) -> Vec<String> {
         l.push("flow accuracy on this mesh is untested".into());
     }
     l
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetupDuctInput {
+    pub surface: String,
+    pub patches: String,
+    pub output: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_factor: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layers: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_thickness: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub growth: Option<f64>,
+}
+
+/// Write the partition of a polyhedral duct (`mesh.setup_duct`).
+pub(crate) fn setup_duct(input: Value, ctx: &Context) -> Run {
+    let i: SetupDuctInput = decode(input)?;
+    let patches: PatchMap = json_file(ctx, &i.patches)?;
+    let options = duct::SetupOptions {
+        size_factor: i.size_factor.unwrap_or(1.0),
+        layers: i.layers,
+        first_thickness: i.first_thickness,
+        growth: i.growth,
+    };
+    let (partition, radius) = duct::setup(&ctx.read(&i.surface)?, &patches, options)?;
+    let mut bytes = serde_json::to_vec_pretty(&partition)
+        .map_err(|e| Diagnostic::new("serialization_failed", e))?;
+    bytes.push(b'\n');
+    let (dir, name) = ctx.target(&i.output)?;
+    dir.write_new(&name, &bytes)
+        .map_err(|e| Diagnostic::new("io_error", e).with_path(&i.output))?;
+    Ok(json!({
+        "format": "koflcraft.duct-setup",
+        "format_version": crate::FORMAT_VERSION,
+        "output": i.output,
+        "files": [{ "path": i.output, "sha256": crate::journal::hex(&sha2::Sha256::digest(&bytes)) }],
+        "port_radius": radius,
+        "size_factor": options.size_factor,
+        "partition": partition,
+        "note": "For mesh.generate_duct in polyhedral mode; the partition has no regions, so bulk and layered modes need a hand-made one.",
+    }))
 }

@@ -404,6 +404,43 @@ pub(crate) fn patch_result() -> Value {
     }))
 }
 
+/// `patch.detect_ports`: a patch result plus the ranked candidates.
+pub(crate) fn patch_detect_ports() -> Value {
+    let mut schema = patch_result();
+    let number = json!({ "type": "number" });
+    let count = json!({ "type": "integer", "minimum": 0 });
+    let candidate = object_schema(json!({
+        "id": count, "facets": count,
+        "facet_span": {"type": "array", "items": count, "minItems": 2, "maxItems": 2},
+        "area": number, "centre": point(), "normal": point(), "equivalent_radius": number,
+        "circularity": number, "rim_edges": count, "pipe_end_rim": number,
+        "rim_angle_deg": {"type": "array", "items": number, "minItems": 2, "maxItems": 2},
+        "score": number
+    }));
+    schema["properties"]["detection"] = object_schema(json!({
+        "inlet": count, "outlet": count, "port_facets": count, "planar_regions": count,
+        "disc_regions": count, "margin": number,
+        "candidates": {"type": "array", "items": candidate}, "note": {"type": "string"}
+    }));
+    schema["required"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("detection"));
+    schema
+}
+
+pub(crate) fn duct_setup_result() -> Value {
+    let number = json!({ "type": "number" });
+    let string = json!({ "type": "string" });
+    object_schema(json!({
+        "format": {"const": "koflcraft.duct-setup"}, "format_version": string,
+        "output": string,
+        "files": { "type": "array", "items": object_schema(json!({ "path": string, "sha256": {"type": "string"} })) },
+        "port_radius": number, "size_factor": number,
+        "partition": {"type": "object"}, "note": string
+    }))
+}
+
 /// `koflcraft.patch-summary`: evidence per patch and the BC-06 check.
 pub(crate) fn patch_summary() -> Value {
     let count = json!({ "type": "integer", "minimum": 0 });

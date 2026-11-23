@@ -762,3 +762,51 @@ fn sweep_refinement_reduces_cell_size_and_rejects_abrupt_grading() {
     );
     assert!(!work.path().join("steep").exists());
 }
+
+/// Keep rule (SW-18). Invariant: `generate-duct` reads a
+/// `koflcraft.patch-map` (BC-01) as it reads a port file: the elbow's port
+/// ranges written as a map, with other patch names, give the same bulk mesh.
+/// Breaking the map branch of the duct input fails the run or changes the
+/// counts. (Scattered port facets: `ports.rs` in mesh-engine.)
+#[test]
+fn generate_duct_reads_a_patch_map_like_a_port_file() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/elbow");
+    let work = WorkDirectory::new();
+    let ports: Value =
+        serde_json::from_slice(&fs::read(fixture.join("patches.json")).unwrap()).unwrap();
+    let count = ports["facet_count"].as_u64().unwrap() as usize;
+    let mut facet_patch = vec![0; count];
+    for (p, port) in ports["ports"].as_array().unwrap().iter().enumerate() {
+        let r = &port["facet_range"];
+        for f in r[0].as_u64().unwrap()..r[1].as_u64().unwrap() {
+            facet_patch[f as usize] = p + 1;
+        }
+    }
+    let map = serde_json::json!({
+        "format": "koflcraft.patch-map", "format_version": "1.0",
+        "source_sha256": ports["source_sha256"], "facet_count": count,
+        "patches": [{"name": "walls", "role": "wall"}, {"name": "in", "role": "inlet"},
+                    {"name": "out", "role": "outlet"}],
+        "facet_patch": facet_patch,
+    });
+    let map_path = work.path().join("map.json");
+    fs::write(&map_path, serde_json::to_vec(&map).unwrap()).unwrap();
+    let (stl, partition) = (fixture.join("elbow.stl"), fixture.join("partition.json"));
+    let run = |patches: &Path, out: &str| {
+        work.run(&[
+            "generate-duct",
+            stl.to_str().unwrap(),
+            patches.to_str().unwrap(),
+            partition.to_str().unwrap(),
+            "bulk",
+            out,
+        ])["report"]
+            .clone()
+    };
+    let a = run(&fixture.join("patches.json"), "ports");
+    let b = run(&map_path, "map");
+    for key in ["tetrahedra", "volume", "patch_areas", "source_facets"] {
+        assert_eq!(a[key], b[key], "{key}");
+    }
+    assert_eq!(b["patch_areas"]["inlet"], 1.0);
+}

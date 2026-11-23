@@ -4,6 +4,7 @@ pub mod channel;
 mod export;
 pub mod handoff;
 pub mod patches;
+pub mod ports;
 mod report;
 pub mod sizing;
 mod stl;

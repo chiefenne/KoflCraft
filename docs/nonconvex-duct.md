@@ -25,6 +25,28 @@ The Gmsh file `mesh.msh` preserves wall prisms and subdivides general polyhedra 
 
 For MCP, place the STL, both JSON files and, if the partition names one, the `volume-scaffold.msh` in the server's authorized directory. Call `generate_duct` with their filenames (`surface`, `patches`, `partition`), `mode` (`bulk`, `layered` or `polyhedral`), and a new output directory name (`output`). The same Rust engine serves the CLI and MCP. The MCP job limit is 100,000 source facets, four layers and 64 regions.
 
+## From a bare STL
+
+A closed STL with two pipe ends needs no hand-written port file or partition. `patch.detect_ports` finds the planar end caps and writes a patch map with `walls`, `inlet` and `outlet`; `mesh.setup_duct` writes a polyhedral partition sized from the smaller port; `generate-duct` reads the patch map in place of a port file, so the cap facets may lie anywhere in the STL.
+
+```sh
+cargo build --locked --release -p mesh-cli
+case_dir=test-fixtures/cooling-jacket
+mkdir -p target/jacket && cp "$case_dir/cooling-jacket.stl" target/jacket/
+cd target/jacket
+echo '{"surface": "cooling-jacket.stl", "output": "ports.json"}' > detect.json
+../release/kofl call patch.detect_ports --input detect.json
+echo '{"surface": "cooling-jacket.stl", "patches": "ports.json", "output": "partition.json", "size_factor": 2}' > setup.json
+../release/kofl call mesh.setup_duct --input setup.json
+../release/kofl generate-duct cooling-jacket.stl ports.json partition.json polyhedral mesh
+```
+
+**Detection.** The surface is split into coplanar regions by a flood fill from each seed facet to neighbours whose normal is within `planar_angle_deg` (default 1°) of the seed's and whose corners lie on the seed's plane (to 1e-5 of the longest extent); comparing with the seed keeps a finely tessellated cylinder from creeping into one region. A region whose rim is one connected loop (a disc) is a candidate. Its score is the isoperimetric quotient 4πA/P² (1 for a circle, 0.785 for a square) times the share of rim edges where the wall turns away from the cap at 60° to 120°, as at the flat end of a pipe. The result lists the best `candidates` (default 8) with facets, area, centre, normal, equivalent radius, circularity, rim angles and score, and `margin`, the lead of the weaker picked cap over the third candidate. The two best are inlet and outlet; which is which is a guess, so check the centres and pass `inlet` and `outlet` (candidate ids) to swap them or pick others. Any `patch.*` tool can edit the map afterwards; `generate-duct` takes a map with exactly one patch of role inlet, one of role outlet and every other patch a wall, and names them `inlet`, `outlet` and `walls`.
+
+**Setup.** Every length is a fixed fraction of the smaller port's equivalent radius r, the fractions of the Manifold fixture (r = 25): chord tolerance r/500, wall sizes r/38.5 to r/4.17, rim size r/29.4, spacing rate 0.4, first layer r/312.5 with growth 1.4 and three layers, a wall deviation limit of 1.2 times the tolerance and a geometry error limit of 0.2%. `size_factor` multiplies the lengths (2 is twice as coarse); `layers`, `first_thickness` and `growth` override the layers. The partition has no regions, so it serves the polyhedral mode only. Edit it by hand for finer control.
+
+On the synthetic [cooling jacket](../test-fixtures/cooling-jacket/README.md) (8,120 facets) both caps score 1.000 and the next candidate, a block face, 0.57. On the Manifold surface the two best candidates are exactly the port caps of its hand-made port file. Run `cargo test --release --locked -p mesh-engine --test ports`.
+
 ## Fixture results
 
 | Case | Core tetrahedra | Core polyhedra | Wall prisms | Fluid volume | Inlet / outlet area |
