@@ -13,6 +13,15 @@ repeated body names. When the update arrives, replace the file, update its
 SHA-256 and the inventory, and keep the geometry checks if the geometry is
 unchanged.
 
+**Two shipped variants (maintainer decision 2026-11-23).** The corrected
+example comes as two files: an **open** one, whose nozzles end in annular
+wall faces as in this file and which tests the automatic port caps (MD-19),
+and a **closed** one, in which each nozzle opening is closed by a named
+planar cap face inside the inner radius (`tube_inlet`, `tube_outlet`,
+`shell_inlet`, `shell_outlet`). The closed one lets the STEP reader and the
+fluid domains be tested before MD-19 is built, and both must give the same
+mesh domains and port patches.
+
 ## Provenance (LIC-10)
 
 | Item | Value |
