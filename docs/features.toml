@@ -146,7 +146,8 @@ requirements = ["M4", "M5"]
 grade = "partial"
 how = "Elbow volume and patch areas to 1e-9; every layer reaches both ports; no face with S·d ≤ 0 in any mode of the elbow or SolidCraft; the hand-off's fanned volume equals the mesher's exact volume"
 tests = [
-  "crates/mesh-cli/tests/workflow.rs::nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer",
+  "crates/mesh-cli/tests/workflow.rs::nonconvex_elbow_preserves_volume_and_exposes_each_port_layer",
+  "crates/mesh-cli/tests/workflow.rs::nonconvex_manifold_preserves_volume_and_exposes_each_port_layer",
   "crates/mesh-cli/tests/workflow.rs::median_dual_core_stays_available_and_valid_on_the_elbow",
   "crates/mesh-cli/tests/workflow.rs::split_cap_wall_join_stays_available_and_valid_on_the_elbow",
   "crates/mesh-algorithms/src/duct/columns.rs::contact_chains",
@@ -171,7 +172,8 @@ tests = [
   "crates/mesh-algorithms/src/delaunay.rs::grid_is_delaunay",
   "crates/mesh-algorithms/src/scaffold.rs::sphere_scaffold_fills_the_wall",
   "crates/mesh-algorithms/src/scaffold.rs::nonconvex_box_is_recovered",
-  "crates/mesh-cli/tests/workflow.rs::nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer",
+  "crates/mesh-cli/tests/workflow.rs::nonconvex_elbow_preserves_volume_and_exposes_each_port_layer",
+  "crates/mesh-cli/tests/workflow.rs::nonconvex_manifold_preserves_volume_and_exposes_each_port_layer",
 ]
 commands = []
 gaps = "Ports are kept as they are (the elbow, with two-triangle ports, keeps its Gmsh scaffold); scaffold mean ratio floor 0.05 against Gmsh's 0.26, no vertex smoothing; features by dihedral angle only; a finer wall makes the Manifold mesh 2.4 times larger and its build about 3 minutes"

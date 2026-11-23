@@ -107,9 +107,19 @@ cargo xtask layering           # crate layers and front ends (SW-19)
 cargo xtask status --check     # docs/status.md from docs/features.toml (AG-17)
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --release --locked --workspace --all-targets
+```
+
+Full run, on the maintainer's go-ahead (ask before starting one):
+
+```sh
+cargo test --release --locked --workspace --all-targets -- --include-ignored
 cargo m1 --require-gmsh        # needs gmsh on PATH; without it: cargo m1
 ```
 
-CI runs all of them (`.github/workflows/m1.yml`, jobs `checks` and
-`acceptance`); the acceptance job also reads every FoehnCraft export back
-with `foehn mesh` (`--require-foehn`).
+CI (`.github/workflows/m1.yml`) makes the fast run on every pull request and
+push to main: job `checks` without the tests marked `#[ignore = "full run: …"]`.
+The full run adds those tests and job `acceptance` (`cargo m1`, which also reads
+every FoehnCraft export back with `foehn mesh`, `--require-foehn`). It starts by
+hand (`workflow_dispatch`) or when the pull request has the label `full-ci`.
+Mark a test as a full-run test when it takes more than about a minute in a
+release build; keep a fast test of the same code path in the fast run.

@@ -99,7 +99,8 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 
 ### Nonconvex duct, bulk, layered and polyhedral (M4/M5 prototype)
 
-- `nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
+- `nonconvex_elbow_preserves_volume_and_exposes_each_port_layer` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
+- `nonconvex_manifold_preserves_volume_and_exposes_each_port_layer` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
 - `median_dual_core_stays_available_and_valid_on_the_elbow` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
 - `split_cap_wall_join_stays_available_and_valid_on_the_elbow` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
 - `contact_chains` in [crates/mesh-algorithms/src/duct/columns.rs](../crates/mesh-algorithms/src/duct/columns.rs)
@@ -116,7 +117,8 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 - `grid_is_delaunay` in [crates/mesh-algorithms/src/delaunay.rs](../crates/mesh-algorithms/src/delaunay.rs)
 - `sphere_scaffold_fills_the_wall` in [crates/mesh-algorithms/src/scaffold.rs](../crates/mesh-algorithms/src/scaffold.rs)
 - `nonconvex_box_is_recovered` in [crates/mesh-algorithms/src/scaffold.rs](../crates/mesh-algorithms/src/scaffold.rs)
-- `nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
+- `nonconvex_elbow_preserves_volume_and_exposes_each_port_layer` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
+- `nonconvex_manifold_preserves_volume_and_exposes_each_port_layer` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
 
 ### FoehnCraft hand-off: MSH 4.1, single-file VTU, names, evidence (FC-01, FC-02, FC-04 to FC-06)
 

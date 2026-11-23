@@ -370,7 +370,19 @@ fn median_dual_core_stays_available_and_valid_on_the_elbow() {
 }
 
 #[test]
-fn nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer() {
+fn nonconvex_elbow_preserves_volume_and_exposes_each_port_layer() {
+    nonconvex_duct_preserves_volume_and_exposes_each_port_layer("elbow");
+}
+
+/// About four minutes in a release build (scaffold, 108k Voronoi cells,
+/// 116k prisms), so it runs only in the full CI run (`--include-ignored`).
+#[test]
+#[ignore = "full run: Manifold builds three duct meshes (about 4 minutes)"]
+fn nonconvex_manifold_preserves_volume_and_exposes_each_port_layer() {
+    nonconvex_duct_preserves_volume_and_exposes_each_port_layer("solidcraft-vs-foehncraft");
+}
+
+fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures");
     let work = WorkDirectory::new();
     for (dir, stl, volume, tets, wedges, port_areas) in [
@@ -383,7 +395,10 @@ fn nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer() {
             269616,
             [1963.2400669472445, 1963.2401020872057],
         ),
-    ] {
+    ]
+    .into_iter()
+    .filter(|case| case.0 == only)
+    {
         let fixture = fixtures.join(dir);
         let source = fixture.join(stl);
         let patches = fixture.join("patches.json");
