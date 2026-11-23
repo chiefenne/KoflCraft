@@ -527,19 +527,20 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
                     assert!(report["minimum_cell_volume"].as_f64().unwrap() > 8e-5);
                     1004
                 } else {
-                    assert!((107_000..109_500).contains(&polyhedra), "{polyhedra}");
-                    assert!((84_000..85_500).contains(&core_faces), "{core_faces}");
+                    assert!((94_000..97_500).contains(&polyhedra), "{polyhedra}");
+                    assert!((79_000..83_000).contains(&core_faces), "{core_faces}");
                     // Keep: on curved walls the conforming seeds leave no
                     // sliver cells. Before, the core cells cut the wall
                     // triangles at random and the columns join had cells
                     // down to 9e-13 (volume ratio 1e13 in FoehnCraft, 412
-                    // faces above 70°); now 46,571 of the 46,635 triangles
-                    // offered get a seed and the smallest cell is 1.1e-3.
+                    // faces above 70°); now 45,752 triangles get a seed and the
+                    // smallest cell is 5.6e-3 (1.1e-3 before the Delaunay
+                    // wall flips).
                     // Dropping the seeds, the clearance of the free sites
                     // or the merge of small columns brings the slivers
                     // back; the elbow has no curved wall.
                     let seeds = core["wall_seeds"].as_i64().unwrap();
-                    assert!((46_000..47_200).contains(&seeds), "{seeds}");
+                    assert!((45_000..47_200).contains(&seeds), "{seeds}");
                     assert!(core["unseeded_wall_triangles"].as_i64().unwrap() < 200);
                     assert!(core["whole_wall_triangles"].as_i64().unwrap() > 43_000);
                     assert!(report["minimum_cell_volume"].as_f64().unwrap() > 5e-4);
