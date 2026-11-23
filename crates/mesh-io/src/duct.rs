@@ -440,8 +440,8 @@ mod tests {
     /// Keep: the hand-off merges the boundary faces one cell has on a patch
     /// only when the result is flat. A bent wall face would be fanned about
     /// its node average by FoehnCraft and move the wall (0.14% of the
-    /// SolidCraft volume with merged wall columns). Removing the test in
-    /// `merge_boundary` breaks this; the SolidCraft volume check of the
+    /// Manifold volume with merged wall columns). Removing the test in
+    /// `merge_boundary` breaks this; the Manifold volume check of the
     /// workflow test catches it too, but only after a long build.
     #[test]
     fn only_flat_boundary_polygons_merge() {

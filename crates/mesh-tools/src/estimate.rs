@@ -41,13 +41,13 @@ pub struct EstimateInput {
 const EXACT: &str = "exact";
 /// `cells_basis` of a polyhedral duct with a volume scaffold.
 const SPLIT_BASIS: &str = "exact before cells are split or added at reentrant wall edges, \
-    which needs the built layers (Voronoi core: none on the elbow fixture, 14 on SolidCraft; \
+    which needs the built layers (Voronoi core: none on the elbow fixture, 14 on Manifold; \
     median dual: 10 and 3)";
 
 /// `cells_basis` of a Voronoi core with wall columns.
 const COLUMN_BASIS: &str = "approximate: the wall-layer columns follow the built Voronoi core, \
     counted as two cells per wall triangle and layer (built: 0.76 on the elbow fixture, 2.08 on \
-    SolidCraft); cells are also added at reentrant wall edges";
+    Manifold); cells are also added at reentrant wall edges";
 
 /// The cell count of one build call and its basis.
 pub(crate) fn cells(

@@ -55,7 +55,7 @@ the worst mean ratio from 0.002 to 0.05.
 ## Fitted volume differs from the STL
 
 The polyhedral duct mode remeshes the wall along curved pipes and fillets.
-On the SolidCraft fixture the fitted fluid volume is 0.183 % below the STL
+On the Manifold fixture the fitted fluid volume is 0.183 % below the STL
 volume. Report both values and the difference as a limitation; never call
 the fitted mesh "volume conserving" with respect to the STL.
 
