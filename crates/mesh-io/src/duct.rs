@@ -108,13 +108,11 @@ impl Splits {
                     .iter()
                     .flat_map(|w| [[w[0], w[1], w[2]], [w[3], w[4], w[5]]])
                     .collect();
-                for face in p.faces.iter().filter(|f| f.len() > 4 || f.len() == 3) {
-                    let tris: Vec<[usize; 3]> = ends
-                        .iter()
-                        .filter(|t| t.iter().all(|v| face.contains(v)))
-                        .copied()
-                        .collect();
-                    caps.insert(sorted(face), tris);
+                for face in &p.faces {
+                    let tris = end_triangles(&ends, face);
+                    if !tris.is_empty() {
+                        caps.insert(sorted(face), tris);
+                    }
                 }
             }
         }
@@ -122,6 +120,12 @@ impl Splits {
             caps,
             centres: HashMap::new(),
         }
+    }
+
+    /// Whether a face is tiled by the end triangles of a native layer cell
+    /// (a quadrilateral cap of a wall column is two triangles, not a quad).
+    fn is_cap(&self, ring: &[usize]) -> bool {
+        self.caps.contains_key(&sorted(ring))
     }
 
     fn split(&mut self, points: &mut Vec<Vec3>, ring: &[usize]) -> Vec<[usize; 3]> {
@@ -150,12 +154,30 @@ impl Splits {
     }
 }
 
-/// A one-wedge layer cell that is still a plain wedge (5 faces of at most
-/// 4 nodes) and so can be written as a native Gmsh prism.
+/// The end triangles of a cell's wedges that lie in one of its faces.
+fn end_triangles(ends: &[[usize; 3]], face: &[usize]) -> Vec<[usize; 3]> {
+    ends.iter()
+        .filter(|t| t.iter().all(|v| face.contains(v)))
+        .copied()
+        .collect()
+}
+
+/// A layer cell that can be written as its native Gmsh prisms: every face
+/// is a wedge side (a quadrilateral) or exactly tiled by wedge end
+/// triangles. A wall column qualifies; a split cap, whose faces carry core
+/// vertices that are no wedge corners, does not.
 fn native(p: &mesh_algorithms::duct::Polyhedron) -> bool {
-    p.prism.as_ref().is_some_and(|w| w.len() == 1)
-        && p.faces.len() == 5
-        && p.faces.iter().all(|f| f.len() <= 4)
+    let Some(wedges) = &p.prism else {
+        return false;
+    };
+    let ends: Vec<[usize; 3]> = wedges
+        .iter()
+        .flat_map(|w| [[w[0], w[1], w[2]], [w[3], w[4], w[5]]])
+        .collect();
+    p.faces.iter().all(|f| {
+        let tris = end_triangles(&ends, f).len();
+        tris + 2 == f.len() || (f.len() == 4 && tris == 0)
+    })
 }
 
 fn sorted(ring: &[usize]) -> Vec<usize> {
@@ -193,7 +215,8 @@ pub fn gmsh(mesh: &DuctMesh, version: GmshVersion, out: &mut dyn Write) -> io::R
     let mut splits = Splits::new(mesh);
     let mut boundary_split = Vec::with_capacity(mesh.boundary.len());
     for face in &mesh.boundary {
-        boundary_split.push((face.nodes.len() > 4).then(|| splits.split(&mut points, &face.nodes)));
+        let split = face.nodes.len() > 4 || splits.is_cap(&face.nodes);
+        boundary_split.push(split.then(|| splits.split(&mut points, &face.nodes)));
     }
     let mut cell_split = Vec::with_capacity(mesh.cells.len());
     for cell in &mesh.cells {
@@ -201,7 +224,7 @@ pub fn gmsh(mesh: &DuctMesh, version: GmshVersion, out: &mut dyn Write) -> io::R
             Element::Polyhedron(p) if !native(p) => p
                 .faces
                 .iter()
-                .map(|f| (f.len() > 4).then(|| splits.split(&mut points, f)))
+                .map(|f| (f.len() > 4 || splits.is_cap(f)).then(|| splits.split(&mut points, f)))
                 .collect(),
             _ => Vec::new(),
         });
@@ -321,7 +344,10 @@ fn merge_boundary(cells: &mut [CellFaces], mesh: &DuctMesh) -> Vec<(Vec<usize>, 
     let mut out = Vec::with_capacity(mesh.boundary.len());
     for ((owner, patch), rings) in groups {
         let tag = patch.saturating_sub(1);
-        let merged = (rings.len() > 1).then(|| single_loop(&rings)).flatten();
+        let merged = (rings.len() > 1)
+            .then(|| single_loop(&rings))
+            .flatten()
+            .filter(|ring| planar(&mesh.points, ring));
         let Some(ring) = merged else {
             out.extend(rings.into_iter().map(|r| (r.clone(), tag)));
             continue;
@@ -343,6 +369,26 @@ fn merge_boundary(cells: &mut [CellFaces], mesh: &DuctMesh) -> Vec<(Vec<usize>, 
         out.push((face, tag));
     }
     out
+}
+
+/// Whether a merged boundary polygon is planar to roundoff. FoehnCraft fans
+/// a polygon about its node average, so a bent wall face would move the wall
+/// and change the volume; such faces stay as their planar pieces.
+fn planar(points: &[Vec3], ring: &[usize]) -> bool {
+    let centre = ring.iter().fold(Vec3::ZERO, |s, &v| s + points[v]) / ring.len() as f64;
+    let n = newell(points, ring);
+    let len = n.length();
+    if len.is_nan() || len <= 0.0 {
+        return false;
+    }
+    let unit = n / len;
+    let size = ring
+        .iter()
+        .map(|&v| (points[v] - centre).length())
+        .fold(0.0, f64::max);
+    let tol = 1e-10 * size + 256.0 * f64::EPSILON * centre.max_abs_component().max(size);
+    ring.iter()
+        .all(|&v| (points[v] - centre).dot(unit).abs() <= tol)
 }
 
 fn same_cycle(a: &[usize], b: &[usize]) -> bool {
@@ -385,4 +431,29 @@ fn single_loop(rings: &[&Vec<usize>]) -> Option<Vec<usize>> {
         at = *next.get(&at)?;
     }
     (ring.len() == next.len()).then_some(ring)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Keep: the hand-off merges the boundary faces one cell has on a patch
+    /// only when the result is flat. A bent wall face would be fanned about
+    /// its node average by FoehnCraft and move the wall (0.14% of the
+    /// SolidCraft volume with merged wall columns). Removing the test in
+    /// `merge_boundary` breaks this; the SolidCraft volume check of the
+    /// workflow test catches it too, but only after a long build.
+    #[test]
+    fn only_flat_boundary_polygons_merge() {
+        let p = [
+            [0., 0., 0.],
+            [1., 0., 0.],
+            [1., 1., 0.],
+            [0., 1., 0.],
+            [0., 1., 0.01],
+        ]
+        .map(|[x, y, z]| Vec3::new(x, y, z));
+        assert!(planar(&p, &[0, 1, 2, 3]));
+        assert!(!planar(&p, &[0, 1, 2, 4]));
+    }
 }

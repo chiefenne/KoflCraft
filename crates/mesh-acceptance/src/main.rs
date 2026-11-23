@@ -602,8 +602,7 @@ fn run_mcp(mcp: &Path, directory: &Path, config: &MeshConfig) -> RunResult<Vec<V
     report["cells"] = rows["cells"].take();
     report["faces"] = rows["faces"].take();
     results.push(report);
-    drop(call);
-    drop(send);
+    // closes the server's stdin; the closures that wrote to it are done
     drop(input);
     let output = server.wait_with_output()?;
     require(

@@ -35,6 +35,26 @@ pub struct ScaffoldConfig {
     /// Lloyd iterations of the Voronoi core.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lloyd_iterations: Option<usize>,
+    /// How the wall layers meet the Voronoi core.
+    #[serde(default, skip_serializing_if = "WallJoinKind::is_default")]
+    pub wall_join: WallJoinKind,
+}
+
+/// How the wall layers meet the Voronoi core.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WallJoinKind {
+    /// A poly-prism column under each core cell and wall plane.
+    #[default]
+    Columns,
+    /// One innermost polyhedron with a split cap per shared wall triangle.
+    SplitCap,
+}
+
+impl WallJoinKind {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// The polyhedral core of a scaffold mesh.
@@ -54,6 +74,11 @@ impl CoreKind {
     }
 }
 
+/// Layer cells per wall triangle and layer assumed by the estimate of a
+/// Voronoi core with wall columns (measured 0.76 on the elbow, 2.08 on
+/// SolidCraft).
+const COLUMN_CELLS_PER_WALL: usize = 2;
+
 /// Rebuilds of a Voronoi core that FoehnCraft would reject.
 const VORONOI_RETRIES: usize = 2;
 
@@ -67,6 +92,15 @@ impl Partition {
         } else {
             None
         }
+    }
+
+    /// Whether a build has wall columns under a Voronoi core, whose layer
+    /// cell count only the built core decides.
+    pub fn wall_columns(&self, mode: Mode) -> bool {
+        matches!(mode, Mode::Polyhedral)
+            && self.volume_scaffold.as_ref().is_some_and(|s| {
+                s.core == CoreKind::Voronoi && s.wall_join == WallJoinKind::Columns
+            })
     }
 }
 
@@ -202,6 +236,10 @@ pub fn generate(
                         &steps,
                         duct::VoronoiOptions {
                             lloyd_iterations: lloyd_iterations + attempt,
+                            wall_join: match spec.wall_join {
+                                WallJoinKind::Columns => duct::WallJoin::Columns,
+                                WallJoinKind::SplitCap => duct::WallJoin::SplitCap,
+                            },
                         },
                     )
                     .map_err(validated)?;
@@ -427,7 +465,9 @@ pub fn cell_count(
         let walls = scaffold.boundary.iter().filter(|(_, p)| *p == 3).count();
         // median dual: six subprisms per wall triangle and layer; Voronoi
         // core: one wedge (or split-cap polyhedron) per wall triangle and
-        // layer, one cell per site (the scaffold nodes the tetrahedra use)
+        // layer, one cell per site (the scaffold nodes the tetrahedra use).
+        // Wall columns follow the built core: two per wall triangle and
+        // layer bound the fixtures from above (elbow 0.8, SolidCraft 2.1).
         let (per_wall, core) = match config.core {
             CoreKind::MedianDual => (6, scaffold.points.len()),
             CoreKind::Voronoi => {
@@ -437,7 +477,11 @@ pub fn cell_count(
                         used[n] = true;
                     }
                 }
-                (1, used.iter().filter(|&&u| u).count())
+                let per_wall = match config.wall_join {
+                    WallJoinKind::Columns => COLUMN_CELLS_PER_WALL,
+                    WallJoinKind::SplitCap => 1,
+                };
+                (per_wall, used.iter().filter(|&&u| u).count())
             }
         };
         return walls
@@ -490,6 +534,10 @@ fn voronoi_json(v: &duct::VoronoiStats) -> Value {
         "lloyd_iterations": v.lloyd_iterations,
         "last_relative_shift": v.last_relative_shift,
         "merged_core_faces": v.merged_core_faces,
+        "wall_join": match v.wall_join {
+            duct::WallJoin::Columns => "columns",
+            duct::WallJoin::SplitCap => "split_cap",
+        },
     });
     let extra = json!({
         "reentrant_splits": v.reentrant_splits,
@@ -501,6 +549,9 @@ fn voronoi_json(v: &duct::VoronoiStats) -> Value {
         "whole_wall_triangles": v.whole_wall_triangles,
         "split_wall_triangles": v.split_wall_triangles,
         "layer_pieces": v.layer_pieces,
+        "layer_columns": v.layer_columns,
+        "merged_column_units": v.merged_column_units,
+        "split_columns": v.split_columns,
     });
     if let (Some(o), Value::Object(e)) = (out.as_object_mut(), extra) {
         o.extend(e);

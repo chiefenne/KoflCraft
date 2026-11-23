@@ -32,12 +32,26 @@ use std::collections::HashMap;
 pub struct VoronoiOptions {
     /// Lloyd iterations before the final diagram.
     pub lloyd_iterations: usize,
+    /// How the wall layers meet the core.
+    pub wall_join: WallJoin,
+}
+
+/// How the wall layers meet the Voronoi core.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WallJoin {
+    /// One poly-prism column per core cell and wall plane (`columns.rs`).
+    #[default]
+    Columns,
+    /// The innermost prism of a wall triangle shared by several core cells
+    /// becomes one polyhedron with a split cap (PR #22).
+    SplitCap,
 }
 
 impl Default for VoronoiOptions {
     fn default() -> Self {
         Self {
             lloyd_iterations: DEFAULT_LLOYD_ITERATIONS,
+            wall_join: WallJoin::Columns,
         }
     }
 }
@@ -74,6 +88,14 @@ pub struct VoronoiStats {
     pub added_sites: usize,
     /// Wall pieces at a reentrant edge made cells of their own.
     pub detached_pieces: usize,
+    /// Poly-prism wall columns (each gives one cell per layer).
+    pub layer_columns: usize,
+    /// Wall polygons merged with others of their core cell into a column.
+    pub merged_column_units: usize,
+    /// Merged columns split back because of their contacts.
+    pub split_columns: usize,
+    /// The wall join used.
+    pub wall_join: WallJoin,
 }
 
 /// Rebuilds of the final diagram with sites added at reentrant edges.
@@ -233,7 +255,7 @@ fn per_tet<T: Send>(
 
 /// Whether polygons that share edges pairwise tile one disk: after the
 /// shared edges cancel, the rest must be a single closed loop.
-fn one_loop(rings: &[&Vec<usize>]) -> bool {
+pub(super) fn one_loop(rings: &[&Vec<usize>]) -> bool {
     if rings.len() < 2 {
         return true;
     }
@@ -415,6 +437,7 @@ pub fn build_voronoi_core(
             Built::Done(done) => {
                 let (mesh, surface, mut stats) = *done;
                 stats.added_sites = added;
+                stats.wall_join = options.wall_join;
                 return Ok((mesh, surface, stats));
             }
             Built::Retry {
@@ -425,7 +448,7 @@ pub fn build_voronoi_core(
                 added += extra.len() / 2;
                 let mut all = sites;
                 all.extend(extra);
-                seeds = Some((all, stats));
+                seeds = Some((all, *stats));
             }
         }
     }
@@ -438,7 +461,7 @@ enum Built {
     Retry {
         sites: Vec<Vec3>,
         extra: Vec<Vec3>,
-        stats: VoronoiStats,
+        stats: Box<VoronoiStats>,
     },
 }
 
@@ -892,7 +915,7 @@ fn build(
             return Ok(Built::Retry {
                 sites,
                 extra,
-                stats,
+                stats: Box::new(stats),
             });
         }
     }
@@ -1336,7 +1359,7 @@ fn build(
     let mut cells: Vec<Cell> = Vec::new();
     let mut boundary: Vec<BoundaryFace> = Vec::new();
     let mut core_wall: Vec<(usize, Vec<usize>)> = Vec::new();
-    if layers > 0 {
+    if layers > 0 && options.wall_join == WallJoin::SplitCap {
         // Barycentric coordinates of the core wall vertices: the vertices on
         // a wall triangle edge, in order along it, are shared by the two
         // innermost prisms beside it.
@@ -1458,6 +1481,34 @@ fn build(
                 owner: new_index[f.owner],
             });
         }
+        for &bi in &wall {
+            for (part, ring) in records.get(&bi).into_iter().flatten() {
+                core_wall.push((*part, ring.clone()));
+            }
+        }
+    } else if layers > 0 {
+        let tris: Vec<[usize; 3]> = facets.iter().map(|f| f.triangle.vertices).collect();
+        let thinnest = thickness.iter().map(|r| r[0]).fold(f64::INFINITY, f64::min);
+        let built = super::columns::build(
+            points,
+            &tris,
+            &wall,
+            &coarse,
+            old_boundary,
+            &stack,
+            &rim,
+            &records,
+            scale,
+            thinnest,
+        )?;
+        cells = built.cells;
+        boundary = built.boundary;
+        stats.whole_wall_triangles = built.native_triangles;
+        stats.split_wall_triangles = wall.len() - built.native_triangles;
+        stats.layer_pieces = built.poly_cells;
+        stats.layer_columns = built.columns;
+        stats.merged_column_units = built.merged_units;
+        stats.split_columns = built.split_columns;
         for &bi in &wall {
             for (part, ring) in records.get(&bi).into_iter().flatten() {
                 core_wall.push((*part, ring.clone()));

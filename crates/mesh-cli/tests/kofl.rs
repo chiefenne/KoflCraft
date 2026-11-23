@@ -294,8 +294,19 @@ fn estimates_match_the_built_cell_counts() {
         assert!(ok, "{args:?}");
         let actual = fixed.unwrap_or_else(|| built(&result));
         let predicted = estimate["cells"].as_u64().unwrap();
-        if estimate["cells_basis"] == "exact" {
+        let basis = estimate["cells_basis"].as_str().unwrap();
+        if basis == "exact" {
             assert_eq!(predicted, actual, "{args:?}");
+        } else if basis.starts_with("approximate") {
+            // Voronoi core with wall columns: the column count follows the
+            // built core, so the estimate bounds it from above (AG-15 judges
+            // a build by it) without being far off.
+            assert_eq!(args[4], "polyhedral");
+            assert!(basis.contains("reentrant"));
+            assert!(
+                actual <= predicted && 3 * actual >= predicted,
+                "{args:?}: {actual} {predicted}"
+            );
         } else {
             // Polyhedral duct: cells split or added at reentrant edges come
             // after the estimate (none for the elbow's Voronoi core, 10 for

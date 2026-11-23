@@ -302,6 +302,43 @@ fn channel_exports_both_full_ports_and_rejects_colliding_layers() {
     assert!(!work.path().join("collision").exists());
 }
 
+/// Keep rule (SW-18). Invariant: `"wall_join": "split_cap"` still builds the
+/// join of PR #22 (native wedges plus one split-cap polyhedron per shared
+/// wall triangle) and FoehnCraft accepts it. Breaking the option or the old
+/// branch of the layer build changes these counts; the fixture regression
+/// only builds the default columns.
+#[test]
+fn split_cap_wall_join_stays_available_and_valid_on_the_elbow() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/elbow");
+    let work = WorkDirectory::new();
+    let mut partition: Value =
+        serde_json::from_slice(&fs::read(fixture.join("partition.json")).unwrap()).unwrap();
+    let scaffold = &mut partition["volume_scaffold"];
+    scaffold["file"] = fixture.join("volume-scaffold.msh").to_str().unwrap().into();
+    scaffold["wall_join"] = "split_cap".into();
+    let config = work.path().join("split-cap.json");
+    fs::write(&config, serde_json::to_vec(&partition).unwrap()).unwrap();
+    let (stl, patches) = (fixture.join("elbow.stl"), fixture.join("patches.json"));
+    let args = [
+        "generate-duct",
+        stl.to_str().unwrap(),
+        patches.to_str().unwrap(),
+        config.to_str().unwrap(),
+        "polyhedral",
+        "split-cap",
+    ];
+    let report = work.run(&args)["report"].clone();
+    assert_eq!(report["algorithm"], "volume_clipped_voronoi_cvt_v1");
+    assert_eq!(report["voronoi_core"]["wall_join"], "split_cap");
+    assert_eq!(report["polyhedra"], 603);
+    assert_eq!(report["prisms"], 752);
+    let evidence: Value = serde_json::from_slice(
+        &fs::read(work.path().join("split-cap/mesh-evidence.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(evidence["summary"]["inverted_faces"], 0);
+}
+
 #[test]
 fn median_dual_core_stays_available_and_valid_on_the_elbow() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/elbow");
@@ -366,20 +403,20 @@ fn nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer() {
             let mesh_volume = report["volume"].as_f64().unwrap();
             assert!((mesh_volume / fitted_volume - 1.).abs() < 1e-10);
             assert!((mesh_volume / volume - 1.).abs() < 0.002);
-            // Polyhedral: native wedges only; the innermost wedges shared by
-            // several Voronoi core cells are polyhedra with a split cap.
+            // Polyhedral: a wall triangle covered by one Voronoi core cell
+            // keeps its native wedges; the others are cut into poly-prism
+            // columns under the core cells (none native on the elbow).
             // SolidCraft's Voronoi core repairs its reentrant edge from the
             // site layout, which rounding can shift between platforms, so its
-            // counts are checked within a band (all wall triangles stay
-            // layered: native wedges plus split caps are 3 per triangle).
+            // counts are checked within a band.
             let wall_prisms = match (mode, dir) {
                 ("bulk", _) => 0,
-                ("polyhedral", "elbow") => 752,
+                ("polyhedral", "elbow") => 0,
                 ("polyhedral", _) => report["prisms"].as_i64().unwrap(),
                 _ => wedges,
             };
             if (mode, dir) == ("polyhedral", "solidcraft-vs-foehncraft") {
-                assert!((43_300..43_500).contains(&wall_prisms), "{wall_prisms}");
+                assert!(wall_prisms < 100, "{wall_prisms}");
             }
             assert!(report["minimum_cell_volume"].as_f64().unwrap() > 0.);
             let expected_tets = if mode == "polyhedral" { 0 } else { tets };
@@ -389,10 +426,17 @@ fn nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer() {
                 let polyhedra = report["polyhedra"].as_i64().unwrap();
                 let core_faces = report["prism_core_faces"].as_i64().unwrap();
                 let expected = if dir == "elbow" {
-                    assert_eq!((polyhedra, core_faces), (603, 1362));
-                    603
+                    assert_eq!((polyhedra, core_faces), (1082, 1362));
+                    // Keep: on the elbow's flat walls every core cell's wall
+                    // contact on one wall plane is one column, so a core cell
+                    // sits on one layer cell per layer (FoehnCraft 80° instead
+                    // of 85.9° with split caps). Dropping the coplanar merge
+                    // of wall polygons gives 1,362 columns and 86.9°; no other
+                    // test counts the columns.
+                    assert_eq!(report["voronoi_core"]["layer_columns"], 285);
+                    1082
                 } else {
-                    assert!((48_500..48_800).contains(&polyhedra), "{polyhedra}");
+                    assert!((160_000..165_000).contains(&polyhedra), "{polyhedra}");
                     assert!((69_000..70_000).contains(&core_faces), "{core_faces}");
                     polyhedra
                 };
@@ -457,6 +501,13 @@ fn nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer() {
             )
             .unwrap();
             assert_eq!(evidence["summary"]["inverted_faces"], 0, "{name}");
+            // Keep: the hand-off fans every face about its node average, as
+            // FoehnCraft does, so its volume equals the mesher's only if no
+            // bent wall face was merged into one polygon. Wall columns merged
+            // over curved SolidCraft walls lost 0.14% this way. The checks
+            // above integrate KoflCraft's own faces and cannot see it.
+            let handoff_volume = evidence["summary"]["total_volume"].as_f64().unwrap();
+            assert!((handoff_volume / mesh_volume - 1.).abs() < 1e-10, "{name}");
             for (patch, area) in ["inlet", "outlet"].into_iter().zip(port_areas) {
                 assert!((report["patch_areas"][patch].as_f64().unwrap() / area - 1.).abs() < 1e-10);
                 let layers = report["port_areas_by_layer"][patch].as_array().unwrap();
