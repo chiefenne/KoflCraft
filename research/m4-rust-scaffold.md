@@ -43,7 +43,7 @@ Candidates: Gmsh (classical, separate process, LIC-09) and a Rust pipeline from 
 |---|---:|---:|---|---:|---:|---:|
 | Gmsh 4.12.1 (previous fixture, optimised) | 26,962 | 119,124 | 0.257 / 0.528 / 0.886 | 0 | −0.183 % | separate step |
 | Rust, before sliver removal | 49,763 | 219,116 | 0.002 / 0.124 / 0.771 | 2,851 | −0.028 % | 8 s |
-| Rust, with edge removal | 50,384 | 219,169 | 0.052 / 0.32 / 0.77 | 48 | −0.028 % | 11 s |
+| Rust, with edge removal | about 50,500 | 219,586 | 0.052 / 0.32 / 0.77 | 48 | −0.028 % | 9 s |
 
 The Gmsh scaffold is smoother (Gmsh also relocates vertices); the Rust scaffold is adequate for the Voronoi core, which moves the sites anyway (ten Lloyd iterations), and has twice the points because its wall is 2.6 times finer. Vertex smoothing (ODT, Alliez, Cohen-Steiner, Yvinec & Desbrun 2005) is the obvious next step if the scaffold quality matters for the median-dual core.
 
@@ -54,9 +54,11 @@ Manifold, polyhedral mode, Voronoi core, split-cap join, release build, Linux x8
 | Scaffold | Cells | Wall faces | Inverted (hand-off) | Wall → STL max | Volume vs STL | Build |
 |---|---:|---:|---:|---:|---:|---:|
 | Gmsh fixture | 92,058 | 21,694 | 0 | 0.543 | −0.183 % | 75 s |
-| Rust, ε = 0.05 | 223,216 | 57,630 | 0 | 0.050 | −0.028 % | 188 s |
+| Rust, ε = 0.05 | 223,925 | 57,770 | 0 | 0.050 | −0.028 % | 214 s |
 
-The finer wall needed one fix outside the scaffold: the verifier treated a sliver triangle face of a core cell (two corners 1.3·10⁻⁸ apart) as nonplanar, because its Newell normal is too inaccurate for the offset test. A triangle is planar, so the test now skips triangles.
+The finer wall needed one fix outside the scaffold: the verifier treated a sliver triangle face of a core cell (two corners 1.3·10⁻⁸ apart) as nonplanar, because its Newell normal is too inaccurate for the offset test. A triangle is planar, so the test now skips triangles. FoehnCraft reads the mesh with 0 inverted faces; its largest non-orthogonality is 88.4° (1,961 faces above 70°), at the thin core cells next to the fine wall.
+
+The columns wall join (PR #24) does not yet build on this wall (a nonplanar polyhedron face); the Manifold fixture uses split caps until that is fixed.
 
 ## Limits
 
