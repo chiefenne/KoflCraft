@@ -254,6 +254,8 @@ struct Work<'a> {
     vf: Vec<Vec<usize>>,
     locked: Vec<bool>,
     corner: Vec<bool>,
+    /// Target edge length at each vertex.
+    h: Vec<f64>,
     feature: HashSet<(usize, usize)>,
     surface: &'a ClosestSet,
     lines: &'a ClosestSet,
@@ -270,6 +272,19 @@ fn normal(t: [Vec3; 3]) -> Vec3 {
     (t[1] - t[0]).cross(t[2] - t[0])
 }
 
+/// Triangle shape 4√3 · area / Σ l²: 1 for an equilateral triangle, 0 for
+/// a degenerate one.
+fn shape(t: [Vec3; 3]) -> f64 {
+    let l2 = (t[1] - t[0]).dot(t[1] - t[0]) + (t[2] - t[1]).dot(t[2] - t[1]) + (t[0] - t[2]).dot(t[0] - t[2]);
+    if l2 <= 0.0 {
+        return 0.0;
+    }
+    2.0 * 3f64.sqrt() * normal(t).length() / l2
+}
+
+/// New facets must not be worse than this, or than the worst they replace.
+const MIN_SHAPE: f64 = 0.1;
+
 fn unit(v: Vec3) -> Vec3 {
     let l = v.length();
     if l > 0.0 { v / l } else { v }
@@ -280,6 +295,20 @@ impl Work<'_> {
         self.size
             .envelope(x, self.opts.rate, 0.0, self.opts.max_size)
             .max(self.opts.min_size)
+    }
+
+    /// Target length of edge (a, b): the mean of the vertex targets.
+    fn edge_target(&self, a: usize, b: usize) -> f64 {
+        0.5 * (self.h[a] + self.h[b])
+    }
+
+    fn refresh(&mut self, v: usize) {
+        let h = self.target(self.p[v]);
+        if v < self.h.len() {
+            self.h[v] = h;
+        } else {
+            self.h.push(h);
+        }
     }
 
     fn corners_of(&self, f: usize) -> [Vec3; 3] {
@@ -398,6 +427,7 @@ impl Work<'_> {
         }
         let q = self.project(m, mid);
         self.p[m] = q;
+        self.refresh(m);
         self.stats.splits += 1;
         true
     }
@@ -437,11 +467,12 @@ impl Work<'_> {
             let (n0, n1) = (normal(old), normal(new));
             if n1.length() <= 1e-12 * old[0].length().max(1.0)
                 || unit(n0).dot(unit(n1)) < 0.5
+                || shape(new) < MIN_SHAPE.min(shape(old))
             {
                 return false;
             }
             for v in t {
-                if v != b && (self.p[v] - target).length() > hi * self.target((self.p[v] + target) / 2.0) {
+                if v != b && (self.p[v] - target).length() > hi * self.edge_target(v, b) {
                     return false;
                 }
             }
@@ -514,6 +545,11 @@ impl Work<'_> {
             return false;
         }
         let (t0, t1) = ([c, a, d], [d, b, c]);
+        let worst_old = shape(self.corners_of(f0)).min(shape(self.corners_of(f1)));
+        let worst_new = shape(t0.map(|v| self.p[v])).min(shape(t1.map(|v| self.p[v])));
+        if worst_new < MIN_SHAPE.min(worst_old) {
+            return false;
+        }
         let m = unit(n0 + n1);
         for t in [t0, t1] {
             let n = normal(t.map(|v| self.p[v]));
@@ -576,10 +612,13 @@ impl Work<'_> {
                 let old = self.corners_of(f);
                 let new = self.t[f].map(|u| if u == v { next[v] } else { self.p[u] });
                 let (a, b) = (normal(old), normal(new));
-                b.length() > 0.0 && unit(a).dot(unit(b)) > 0.7
+                b.length() > 0.0
+                    && unit(a).dot(unit(b)) > 0.7
+                    && shape(new) >= MIN_SHAPE.min(shape(old))
             });
             if ok {
                 self.p[v] = next[v];
+                self.refresh(v);
             }
         }
     }
@@ -683,6 +722,7 @@ pub fn remesh(
         keep: keep.to_vec(),
         vf,
         corner: vec![false; vertices.len()],
+        h: Vec::new(),
         locked,
         feature,
         surface: &surface,
@@ -706,6 +746,9 @@ pub fn remesh(
             w.corner[v] = true;
         }
     }
+    for v in 0..vertices.len() {
+        w.refresh(v);
+    }
     w.stats.feature_edges = w.feature.len();
     w.stats.corners = w.corner.iter().filter(|&&c| c).count();
     let (hi, lo) = (4.0 / 3.0, 4.0 / 5.0);
@@ -715,7 +758,7 @@ pub fn remesh(
                 continue;
             }
             let l = (w.p[a] - w.p[b]).length();
-            if l > hi * w.target((w.p[a] + w.p[b]) / 2.0) {
+            if l > hi * w.edge_target(a, b) {
                 w.split(a, b);
             }
         }
@@ -724,7 +767,7 @@ pub fn remesh(
                 continue;
             }
             let l = (w.p[a] - w.p[b]).length();
-            if l < lo * w.target((w.p[a] + w.p[b]) / 2.0) && !w.collapse(a, b, hi) {
+            if l < lo * w.edge_target(a, b) && !w.collapse(a, b, hi) {
                 w.collapse(b, a, hi);
             }
         }
@@ -735,6 +778,16 @@ pub fn remesh(
         }
         w.smooth();
     }
+    // flips can leave long diagonals after the last split pass
+    for (a, b) in w.edges() {
+        if w.vf[a].is_empty() || w.vf[b].is_empty() || w.edge_faces(a, b).len() != 2 {
+            continue;
+        }
+        let l = (w.p[a] - w.p[b]).length();
+        if l > hi * w.edge_target(a, b) {
+            w.split(a, b);
+        }
+    }
     // sliver cleanup: collapse edges far below the target that survived
     // (needles left by the source triangulation) and flip towards valence
     for (a, b) in w.edges() {
@@ -742,8 +795,8 @@ pub fn remesh(
             continue;
         }
         let l = (w.p[a] - w.p[b]).length();
-        if l < 0.25 * w.target((w.p[a] + w.p[b]) / 2.0) && !w.collapse(a, b, 2.0) {
-            w.collapse(b, a, 2.0);
+        if l < 0.25 * w.edge_target(a, b) && !w.collapse(a, b, hi) {
+            w.collapse(b, a, hi);
         }
     }
     // deviation pass: split the longest edge of each facet still too far
@@ -834,4 +887,106 @@ pub fn remesh(
         source,
         stats,
     })
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::sizing::shapes;
+
+    /// Each edge used once in each direction: a closed, consistently
+    /// oriented manifold.
+    pub(crate) fn assert_closed(t: &[[usize; 3]]) {
+        let mut half = HashSet::new();
+        for f in t {
+            for k in 0..3 {
+                assert!(half.insert((f[k], f[(k + 1) % 3])), "edge used twice in one direction");
+            }
+        }
+        for &(a, b) in &half {
+            assert!(half.contains(&(b, a)), "open edge");
+        }
+    }
+
+    pub(crate) fn volume(v: &[Vec3], t: &[[usize; 3]]) -> f64 {
+        t.iter()
+            .map(|f| v[f[0]].dot(v[f[1]].cross(v[f[2]])) / 6.0)
+            .sum()
+    }
+
+    pub(crate) fn sphere(tolerance: f64) -> Remeshed {
+        let (v, t) = shapes::icosphere(Vec3::ZERO, 10.0, 5);
+        let keep = vec![false; t.len()];
+        let opts = RemeshOptions {
+            tolerance,
+            min_size: 0.2,
+            max_size: 4.0,
+            iterations: 8,
+            ..Default::default()
+        };
+        remesh(&v, &t, &keep, opts).unwrap()
+    }
+
+    // Keep rule (SW-18): the remeshed sphere is closed and every sampled
+    // point of every facet is within the tolerance of the source, both ways,
+    // with edges near the chord length sqrt(6 eps r) of the target. A
+    // remesher that drops the projection, the deviation pass or the
+    // curvature size breaks the bound or the edge range; no other test
+    // measures the wall against its source.
+    #[test]
+    fn sphere_meets_the_chord_tolerance() {
+        let eps = 0.02;
+        let r = sphere(eps);
+        assert_closed(&r.triangles);
+        assert!(r.stats.max_deviation <= eps, "{:?}", r.stats);
+        assert!(r.stats.max_reverse_deviation <= 1.5 * eps, "{:?}", r.stats);
+        let chord = chord_length(0.1, eps);
+        let mut lengths: Vec<f64> = r
+            .triangles
+            .iter()
+            .flat_map(|t| (0..3).map(|k| (r.vertices[t[k]] - r.vertices[t[(k + 1) % 3]]).length()))
+            .collect();
+        lengths.sort_by(f64::total_cmp);
+        let median = lengths[lengths.len() / 2];
+        assert!((median / chord - 1.0).abs() < 0.3, "median {median}, chord {chord}");
+        // fewer facets than the 20 480 of the source
+        assert!(r.triangles.len() < 10_000, "{}", r.triangles.len());
+    }
+
+    // Keep rule (SW-18): on a box with one kept side, the twelve edges
+    // survive as feature lines (the volume stays exact and every vertex
+    // stays on a side), the eight corners stay, and the kept side keeps its
+    // two triangles. Moving a feature vertex off its line, flipping a
+    // feature edge or touching a kept facet changes the volume or the kept
+    // triangles.
+    #[test]
+    fn box_keeps_features_and_kept_facets() {
+        let (v, t) = shapes::cuboid(Vec3::new(3.0, 2.0, 1.0));
+        let mut keep = vec![false; t.len()];
+        keep[0] = true;
+        keep[1] = true;
+        let opts = RemeshOptions {
+            tolerance: 0.01,
+            min_size: 0.2,
+            max_size: 0.4,
+            rim_size: Some(0.4),
+            ..Default::default()
+        };
+        let r = remesh(&v, &t, &keep, opts).unwrap();
+        assert_closed(&r.triangles);
+        assert!((volume(&r.vertices, &r.triangles) - 6.0).abs() < 1e-9);
+        let kept: Vec<usize> = r.source.iter().filter_map(|s| *s).collect();
+        assert_eq!(kept.len(), 2);
+        for corner in &v {
+            assert!(r.vertices.iter().any(|p| (*p - *corner).length() < 1e-12));
+        }
+        for p in &r.vertices {
+            let on = [p.x, p.x - 3.0, p.y, p.y - 2.0, p.z, p.z - 1.0]
+                .iter()
+                .any(|d| d.abs() < 1e-9);
+            assert!(on, "{p:?} off the box");
+        }
+        assert_eq!(r.stats.corners, 8);
+        assert!(r.triangles.len() > 100);
+    }
 }

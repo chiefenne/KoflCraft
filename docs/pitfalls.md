@@ -27,6 +27,31 @@ preparations of the same `.geo` file. Pin the checked-in scaffold and its
 SHA-256 in the partition file; regenerate only on purpose, and update the
 digest in the same commit.
 
+## A fine cell size does not mean a fine wall
+
+The polyhedral duct takes its wall from the volume scaffold, not from the
+STL. The Gmsh scaffold of SolidCraft remeshed the 1-unit STL wall into
+triangles of about 6 units (curvature sizing off), and every finer core or
+layer cell sits on those flat triangles: 0.54 units off the STL, about seven
+first-layer thicknesses. Gmsh's curvature sizing had no effect on the
+discrete charts, and a chord size field made it worse (0.72: the
+reparametrisation of long pipe charts stretches triangles to 12 units). Using
+the STL triangles directly inverts tetrahedra at the wall offset (28-unit
+slivers). Measure the wall against the source both ways
+(`report.scaffold.wall_deviation`) and bound it with
+`max_wall_deviation`; build the scaffold in Rust (`volume_scaffold.build`),
+which remeshes the wall to a chord tolerance.
+
+## Delaunay wall slivers survive refinement
+
+A Delaunay tetrahedralization of a curved, finely remeshed wall has flat
+tetrahedra whose four corners are all on the wall (two wall triangles and
+the opposite diagonal). Their circumspheres bulge outward, so no interior
+point removes them, and inserting points just inside the wall only adds
+points. Remove them by edge removal around their diagonal (best
+triangulation of the ring by dynamic programming); on SolidCraft that takes
+the worst mean ratio from 0.002 to 0.05.
+
 ## Fitted volume differs from the STL
 
 The polyhedral duct mode remeshes the wall along curved pipes and fillets.

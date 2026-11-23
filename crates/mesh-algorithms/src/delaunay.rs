@@ -43,7 +43,8 @@ pub struct Delaunay {
 /// Why an insertion did not happen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refused {
-    Duplicate,
+    /// The point is already a vertex (its index).
+    Duplicate(usize),
     Outside,
     Constrained,
 }
@@ -156,8 +157,8 @@ impl Delaunay {
     /// Insert `p` and return its index.
     pub fn insert(&mut self, p: Vec3) -> Result<usize, Refused> {
         let start = self.locate(p).ok_or(Refused::Outside)?;
-        if self.tets[start].iter().any(|&v| self.points[v] == p) {
-            return Err(Refused::Duplicate);
+        if let Some(&v) = self.tets[start].iter().find(|&&v| self.points[v] == p) {
+            return Err(Refused::Duplicate(v));
         }
         let mut in_cavity: HashSet<usize> = HashSet::new();
         let mut stack = vec![start];
@@ -335,37 +336,75 @@ impl Delaunay {
             .map(|&t| quality(self.pos(t)))
             .fold(f64::INFINITY, f64::min);
         let k = ring.len();
+        let vol = |q: [Vec3; 4]| (q[1] - q[0]).dot((q[2] - q[0]).cross(q[3] - q[0]));
+        let before: f64 = tets.iter().map(|&t| vol(self.pos(t))).sum();
         let mut best: Option<(f64, Vec<[usize; 4]>)> = None;
-        for apex in 0..k {
-            let mut new = Vec::new();
-            let mut worst = f64::INFINITY;
-            let mut ok = true;
-            for i in 1..k - 1 {
-                let tri = [ring[apex], ring[(apex + i) % k], ring[(apex + i + 1) % k]];
-                for e in [c, d] {
-                    let mut tet = [tri[0], tri[1], tri[2], e];
-                    let q = tet.map(|x| self.points[x]);
-                    match orient3d(q[0], q[1], q[2], q[3]) {
-                        Ordering::Greater => {}
-                        Ordering::Less => tet.swap(0, 1),
-                        Ordering::Equal => ok = false,
+        // Optimal triangulation of the ring polygon by dynamic programming
+        // over sub-polygons (Klincsek 1980), maximising the worst quality,
+        // for each orientation sign of the ring.
+        for sigma in [Ordering::Greater, Ordering::Less] {
+            let tri = |i: usize, m: usize, j: usize| -> Option<(f64, [[usize; 4]; 2])> {
+                let (a, b, e) = (ring[i], ring[m], ring[j]);
+                let up = [a, b, e, c];
+                let down = [b, a, e, d];
+                let qu = up.map(|x| self.points[x]);
+                let qd = down.map(|x| self.points[x]);
+                if orient3d(qu[0], qu[1], qu[2], qu[3]) != sigma
+                    || orient3d(qd[0], qd[1], qd[2], qd[3]) != sigma
+                {
+                    return None;
+                }
+                let fix = |mut t: [usize; 4]| {
+                    if sigma == Ordering::Less {
+                        t.swap(0, 1);
                     }
-                    let q = tet.map(|x| self.points[x]);
-                    if orient3d(q[0], q[1], q[2], q[3]) != Ordering::Greater {
-                        ok = false;
+                    t
+                };
+                let (fu, fd) = (fix(up), fix(down));
+                let q = quality(fu.map(|x| self.points[x])).min(quality(fd.map(|x| self.points[x])));
+                Some((q, [fu, fd]))
+            };
+            let mut score = vec![vec![f64::INFINITY; k]; k];
+            let mut split = vec![vec![usize::MAX; k]; k];
+            for len in 2..k {
+                for i in 0..k - len {
+                    let j = i + len;
+                    let mut best_v = f64::NEG_INFINITY;
+                    for m in i + 1..j {
+                        let Some((q, _)) = tri(i, m, j) else { continue };
+                        let v = q.min(score[i][m]).min(score[m][j]);
+                        if v > best_v {
+                            best_v = v;
+                            split[i][j] = m;
+                        }
                     }
-                    worst = worst.min(quality(q));
-                    new.push(tet);
+                    score[i][j] = best_v;
                 }
             }
-            if ok && worst > old_worst && best.as_ref().is_none_or(|(w, _)| worst > *w) {
-                best = Some((worst, new));
+            if score[0][k - 1] <= old_worst || !score[0][k - 1].is_finite() {
+                continue;
+            }
+            let mut new = Vec::new();
+            let mut stack = vec![(0, k - 1)];
+            let mut ok = true;
+            while let Some((i, j)) = stack.pop() {
+                if j - i < 2 {
+                    continue;
+                }
+                let m = split[i][j];
+                match (m != usize::MAX).then(|| tri(i, m, j)).flatten() {
+                    Some((_, pair)) => new.extend(pair),
+                    None => ok = false,
+                }
+                stack.push((i, m));
+                stack.push((m, j));
+            }
+            if ok && best.as_ref().is_none_or(|(w, _)| score[0][k - 1] > *w) {
+                best = Some((score[0][k - 1], new));
             }
         }
         let (_, new) = best?;
         // the new tetrahedra must fill the same volume
-        let vol = |q: [Vec3; 4]| (q[1] - q[0]).dot((q[2] - q[0]).cross(q[3] - q[0]));
-        let before: f64 = tets.iter().map(|&t| vol(self.pos(t))).sum();
         let after: f64 = new.iter().map(|t| vol(t.map(|x| self.points[x]))).sum();
         if (after - before).abs() > 1e-9 * before.abs() {
             return None;

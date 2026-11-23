@@ -19,7 +19,7 @@
 mod field;
 #[cfg(test)]
 #[path = "../../../../test-fixtures/shapes.rs"]
-mod shapes;
+pub(crate) mod shapes;
 pub mod surface;
 
 pub use field::{Frame, Shape, SizeField, SizeSource, SizingError, SourceKind};
