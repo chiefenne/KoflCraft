@@ -1,24 +1,79 @@
-# Heat exchanger (placeholder)
+# Shell-and-tube heat exchanger (STEP)
 
-This folder will hold the maintainer's heat-exchanger example, announced on
-2026-11-23 and not yet supplied. It is the M5b acceptance fixture for
-multi-domain meshing ([MD-18](../../docs/requirements.md#multi-domain-meshes)):
-several fluid passes and several solid materials, meshed for conjugate heat
-transfer in FoehnCraft.
+[`SHELL_TUBE_HX.step`](SHELL_TUBE_HX.step) is the maintainer's test case for
+the STEP reader (section 4b, STP-01 to STP-13) and the multi-domain mesher
+(MD-18). It is stored byte for byte.
 
-When the file arrives:
+## Provenance (LIC-10)
 
-1. Store it byte for byte and record its provenance beside it (author, CAD
-   tool and version, licence, SHA-256), as LIC-10 requires.
-2. List its bodies here with the intended domain name, kind (`fluid`,
-   `solid`, `porous`) and material tag (MD-06, MD-07), and the expected
-   interfaces between them (MD-09).
-3. If it is a STEP file, it is also the first STEP fixture (STP-01 to
-   STP-05) and decides OPEN-14; record the file's schema and length unit.
-4. Name the acceptance checks: one zone per fluid pass and solid material,
-   conformal interfaces named on both sides that pass MD-14, and a
-   `foehn mesh` read-back with one region per domain (FC-06, FC-12).
+| Item | Value |
+|---|---|
+| Supplied by | the maintainer (chiefenne), 2026-11-23, as the test file for the STEP reader and the multi-domain mesher |
+| Created | 2026-11-22 in Autodesk Fusion (`originating_system` Autodesk Translation Framework v15.17.0.0, written with ST-Developer v20.2) |
+| Schema | AP214 (`AUTOMOTIVE_DESIGN { 1 0 10303 214 3 1 1 }`), ISO 10303-21 clear text |
+| Size, SHA-256 | 246,554 bytes, `4e073c630cc8d03b5cde7c37d30a6b83f5653df8c81d32396bee54493d28cb9a` |
+| Licence | supplied for use as a KoflCraft test fixture; the geometry is the maintainer's own model |
 
-Until then, a synthetic tube-in-tube case (inner fluid, tube wall, annulus
-fluid, outer shell of a second material) is the first multi-domain fixture,
-because its volumes and interface areas are analytic.
+## What the file contains
+
+Inspected on 2026-11-23 with a throw-away entity count, not with a KoflCraft
+reader. The numbers below are what the reader must reproduce.
+
+- **Units:** length in millimetres (`SI_UNIT(.MILLI.,.METRE.)`), angles in radians,
+  mass in kilograms. Distance accuracy 0.01 mm (`UNCERTAINTY_MEASURE_WITH_UNIT`).
+- **Assembly:** one root product `SHELL_TUBE_HX` with three parts, each used once
+  with an identity placement: `TUBES:1`, `HOUSING:1`, `BAFFLES:1`.
+- **Bodies:** 13 manifold solid B-reps (13 closed shells, 117 faces):
+  `TUBES` has 7 bodies, `HOUSING` has 1 and `BAFFLES` has 5. The body names are
+  Fusion's German defaults `Körper1` to `Körper7`, written with the escape
+  `K\X\F6rper…`. They are **not unique**: `Körper1`, `Körper2`, `Körper4`,
+  `Körper5` and `Körper7` occur in more than one part.
+- **Colours** (one per part, on every body): `TUBES` grey
+  `Kunststoff - glänzend (Grau)`, `HOUSING` red `Farbe - Emaille glänzend (Rot)`,
+  `BAFFLES` yellow `Farbe - Emaille glänzend (Gelb)`.
+- **Material:** each part carries an AP214 material property with the name
+  `Kunststoff` (plastic) and density 1290 kg/m³. All three parts have the **same**
+  material in the file.
+- **Surfaces:** 41 planes, 64 cylinders, 4 cones, 4 tori, 4 B-spline surfaces.
+  **Curves:** 95 lines, 136 circles, 16 B-spline curves.
+- **No fluid bodies.** The two fluids are the empty space of the model.
+
+## Geometry (y is the axis of the exchanger, mm)
+
+| Part | Bodies | Shape |
+|---|---|---|
+| `TUBES` | 7 | Straight tubes, inner radius 7.5, outer 10.5 (wall 3), from y = 0 to 300; one on the axis and six on a circle of radius 30 |
+| `BAFFLES` | 5 | Two tube sheets (y = 0–6 and 294–300) and three segmental baffles (y = 71–77, 147–153, 223–229), all 6 thick, outer radius 45, seven tube holes of radius 10.5. The baffle cuts are at z = −20, +20, −20, so the windows alternate |
+| `HOUSING` | 1 | Shell, inner radius 45, outer 51 (wall 6), with dished heads ending at y = −87 and 387. Two tube-side nozzles along z (inner radius 20, outer 26, at y = −30 and 330, ending at z = 100) and two shell-side nozzles along x (inner radius 15, outer 21, at y = 28, z = 23 ending at x = −100, and at y = 266, z = −23 ending at x = 100) |
+
+## Domains and interfaces the mesher must find
+
+- **Fluid `tube_side`:** the two heads plus the inside of the seven tubes, picked by
+  a material point in a head (MD-06). Inlet and outlet: the two z-nozzles.
+- **Fluid `shell_side`:** the space between the tube sheets, the shell and the tubes,
+  around the baffles, picked by a material point between the tube sheets. Inlet and
+  outlet: the two x-nozzles.
+- The two fluids never touch; they meet only through the tube walls and the tube
+  sheets (MD-08).
+- **Solids:** 13 bodies in three parts. Domains may be one per body or one per part
+  (MD-06); the material tag starts from the file (`Kunststoff`) and is set per part
+  through the domain tools (MD-07, MD-15). The acceptance run gives at least two
+  parts different tags, so that several solid materials are exercised.
+- **Ports:** the nozzle ends are annular faces of the housing wall; the fluid
+  openings inside them (radius 20 and 15) are not faces of the file and are closed
+  by planar caps from their rim circles (MD-19).
+- **Contacts to imprint (MD-10):** tube outer faces in the tube-sheet and baffle
+  holes (coincident cylinders of radius 10.5, partly cut by the baffle windows),
+  tube-sheet and baffle rims against the shell bore (radius 45), tube ends flush
+  with the outer tube-sheet faces.
+- **Thin parts and gaps (MD-11):** tube walls 3, sheets, baffles and shell 6; the
+  gaps between neighbouring tubes are 9, and each shell-side nozzle bore starts
+  7 from the nearest tube-sheet face.
+
+## Analytic checks
+
+Each tube wall has volume π(10.5² − 7.5²)·300 = 16,200π ≈ 50,893.80 mm³, and the
+tube-side fluid inside each tube π·7.5²·300 = 16,875π ≈ 53,014.38 mm³. The
+inner wall of each tube (area 2π·7.5·300) is a fluid–solid interface of
+`tube_side`. These relations take the place of the synthetic tube-in-tube case
+planned before this file arrived.
