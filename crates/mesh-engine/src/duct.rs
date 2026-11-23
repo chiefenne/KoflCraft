@@ -118,8 +118,9 @@ impl CoreKind {
 }
 
 /// Layer cells per wall triangle and layer assumed by the estimate of a
-/// Voronoi core with wall columns (measured 0.76 on the elbow, 2.08 on
-/// Manifold).
+/// Voronoi core with wall columns (measured 0.70 on the elbow, 0.98 on
+/// Manifold). The margin also covers the core cells of the conforming wall
+/// seeds, one per seeded wall triangle in place of one per wall vertex.
 const COLUMN_CELLS_PER_WALL: usize = 2;
 
 /// Rebuilds of a Voronoi core that FoehnCraft would reject.
@@ -735,6 +736,10 @@ fn voronoi_json(v: &duct::VoronoiStats) -> Value {
     });
     let extra = json!({
         "reentrant_splits": v.reentrant_splits,
+        "torn_contacts": v.torn_contacts,
+        "wall_seeds": v.wall_seeds,
+        "seed_flips": v.seed_flips,
+        "unseeded_wall_triangles": v.unseeded_wall_triangles,
         "reassigned_pieces": v.reassigned_pieces,
         "detached_pieces": v.detached_pieces,
         "added_sites": v.added_sites,
@@ -746,6 +751,8 @@ fn voronoi_json(v: &duct::VoronoiStats) -> Value {
         "layer_columns": v.layer_columns,
         "merged_column_units": v.merged_column_units,
         "split_columns": v.split_columns,
+        "absorbed_columns": v.absorbed_columns,
+        "collapsed_pieces": v.collapsed_pieces,
     });
     if let (Some(o), Value::Object(e)) = (out.as_object_mut(), extra) {
         o.extend(e);

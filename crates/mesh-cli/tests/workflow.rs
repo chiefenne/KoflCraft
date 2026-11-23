@@ -345,9 +345,13 @@ fn split_cap_wall_join_stays_available_and_valid_on_the_elbow() {
 /// rejected, and the third (Lloyd 12) hit a core face merge that flattened
 /// a tent of rings (MESH006). Removing the S·d split of merged columns in
 /// `columns.rs` or the all-vertex plane test of `merge_rings` breaks this;
-/// the elbow has neither layout. About 9 minutes, full run only.
+/// the elbow has neither layout. With the conforming wall seeds the first
+/// layout is valid: a retry here means a hand-off failure the fixture
+/// regression (which accepts retries) does not show, as with the two cells
+/// that met in two polygons round the reentrant circle before the repair
+/// of torn contacts. About 3 minutes, full run only.
 #[test]
-#[ignore = "full run: Manifold with the columns join (about 9 minutes)"]
+#[ignore = "full run: Manifold with the columns join (about 3 minutes)"]
 fn columns_wall_join_is_valid_on_the_manifold() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/manifold");
     let work = WorkDirectory::new();
@@ -370,6 +374,7 @@ fn columns_wall_join_is_valid_on_the_manifold() {
     ];
     let report = work.run(&args)["report"].clone();
     assert_eq!(report["voronoi_core"]["wall_join"], "columns");
+    assert_eq!(report["voronoi_core"]["retries"], 0);
     let evidence: Value =
         serde_json::from_slice(&fs::read(work.path().join("columns/mesh-evidence.json")).unwrap())
             .unwrap();
@@ -471,10 +476,11 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
                 _ => wedges,
             };
             if (mode, dir) == ("polyhedral", "manifold") {
-                // Manifold builds its scaffold in Rust and joins with split
-                // caps (the columns leave sliver cells there, follow-up):
-                // native wedges plus split caps are 3 per wall triangle.
-                assert!((115_000..116_500).contains(&wall_prisms), "{wall_prisms}");
+                // Manifold builds its scaffold in Rust and joins with wall
+                // columns: a wall triangle whose core cell covers it whole
+                // (the triangles with a conforming seed) keeps its three
+                // native wedges, about 43,800 of 56,606.
+                assert!((129_000..133_500).contains(&wall_prisms), "{wall_prisms}");
                 // Keep: the scaffold wall follows the STL to the chord
                 // tolerance both ways (the Gmsh scaffold was 0.54 off).
                 // Building the wall at a fixed coarse size, dropping the
@@ -493,29 +499,68 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
                 assert_eq!(report["algorithm"], "volume_clipped_voronoi_cvt_v1");
                 let polyhedra = report["polyhedra"].as_i64().unwrap();
                 let core_faces = report["prism_core_faces"].as_i64().unwrap();
+                let core = &report["voronoi_core"];
                 let expected = if dir == "elbow" {
-                    assert_eq!((polyhedra, core_faces), (1082, 1362));
+                    assert_eq!((polyhedra, core_faces), (1004, 1274));
                     // Keep: on the elbow's flat walls every core cell's wall
                     // contact on one wall plane is one column, so a core cell
-                    // sits on one layer cell per layer (FoehnCraft 80° instead
-                    // of 85.9° with split caps). Dropping the coplanar merge
-                    // of wall polygons gives 1,362 columns and 86.9°; no other
+                    // sits on one layer cell per layer (FoehnCraft 56.6°
+                    // instead of 85.9° with split caps). Dropping the coplanar
+                    // merge of wall polygons gives one column per wall polygon
+                    // (1,274; that was 86.9° before the wall seeds); no other
                     // test counts the columns.
-                    assert_eq!(report["voronoi_core"]["layer_columns"], 285);
-                    1082
+                    assert_eq!(core["layer_columns"], 265);
+                    // Keep: the ten wall triangles at the reentrant edge that
+                    // touch no sharp convex corner get a conforming seed
+                    // (wall_seeds.rs), and the three columns below 5 % of
+                    // their wall triangle join a neighbour in their plane.
+                    // Without the seeds the cells at the reentrant edge cut
+                    // its triangles at random (FoehnCraft 64.8° instead of
+                    // 56.6°); without the merge the smallest cell is 2.5e-5
+                    // instead of 8.6e-5 and the volume ratio 519 instead of
+                    // 77. Seeding the flat walls or the convex corners too
+                    // changes the seed count (and gave 81.9° and 84.9°). The
+                    // unit tests of the seeds do not build a mesh.
+                    assert_eq!(core["wall_seeds"], 10);
+                    assert_eq!(core["unseeded_wall_triangles"], 0);
+                    assert_eq!(core["absorbed_columns"], 3);
+                    assert!(report["minimum_cell_volume"].as_f64().unwrap() > 8e-5);
+                    1004
                 } else {
-                    assert!((107_500..109_000).contains(&polyhedra), "{polyhedra}");
-                    assert!((181_000..183_500).contains(&core_faces), "{core_faces}");
+                    assert!((107_000..109_500).contains(&polyhedra), "{polyhedra}");
+                    assert!((84_000..85_500).contains(&core_faces), "{core_faces}");
+                    // Keep: on curved walls the conforming seeds leave no
+                    // sliver cells. Before, the core cells cut the wall
+                    // triangles at random and the columns join had cells
+                    // down to 9e-13 (volume ratio 1e13 in FoehnCraft, 412
+                    // faces above 70°); now 46,571 of the 46,635 triangles
+                    // offered get a seed and the smallest cell is 1.1e-3.
+                    // Dropping the seeds, the clearance of the free sites
+                    // or the merge of small columns brings the slivers
+                    // back; the elbow has no curved wall.
+                    let seeds = core["wall_seeds"].as_i64().unwrap();
+                    assert!((46_000..47_200).contains(&seeds), "{seeds}");
+                    assert!(core["unseeded_wall_triangles"].as_i64().unwrap() < 200);
+                    assert!(core["whole_wall_triangles"].as_i64().unwrap() > 43_000);
+                    assert!(report["minimum_cell_volume"].as_f64().unwrap() > 5e-4);
                     polyhedra
                 };
                 let shape = &report["core_sphericity"];
                 // The median dual reached 0.48 (elbow) and 0.34 (Manifold).
-                // On Manifold's finer Rust-built wall the least round core
-                // cells (0.12) are pieces detached at the reentrant edges.
+                // On Manifold two thirds of the core cells are the cells of
+                // the conforming wall seeds: low cells over one wall
+                // triangle each (median 0.74). With split caps the core
+                // cells were rounder (0.78 at the 5th percentile, median
+                // 0.85) but cut the wall at random; the least round ones
+                // (0.12) were pieces detached at the reentrant edges. On the
+                // elbow the cells next to the seeds at the reentrant edge
+                // are less round than before the seeds (minimum 0.62 and
+                // 5th percentile 0.70, before 0.73 and 0.78), for 56.6°
+                // instead of 80.1° in FoehnCraft.
                 let thresholds = if dir == "elbow" {
-                    [0.70, 0.75, 0.80]
+                    [0.60, 0.69, 0.80]
                 } else {
-                    [0.10, 0.78, 0.85]
+                    [0.30, 0.60, 0.70]
                 };
                 for (metric, minimum) in ["minimum", "p05", "median"].into_iter().zip(thresholds) {
                     let value = shape[metric].as_f64().unwrap();

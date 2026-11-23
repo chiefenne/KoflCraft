@@ -29,6 +29,9 @@ const LAYER_PLANE_TOL: f64 = 1e-6;
 /// Smallest cosine between a merged column's side face and the line to its
 /// neighbour's centroid (85°); below it the column is split into its units.
 const MIN_SIDE_COS: f64 = 0.087;
+/// A column whose footprint is below this share of its wall triangle joins
+/// a neighbouring column.
+const MIN_COLUMN_SHARE: f64 = 0.05;
 /// Passes that split merged columns whose contacts FoehnCraft would reject.
 const SPLIT_PASSES: usize = 8;
 
@@ -45,6 +48,8 @@ pub(super) struct Columns {
     pub merged_units: usize,
     /// Merged columns split back into units.
     pub split_columns: usize,
+    /// Small columns merged into a neighbour.
+    pub absorbed_columns: usize,
 }
 
 /// A side edge of a column on the innermost surface: its directed ring edge,
@@ -88,6 +93,36 @@ fn one_chain(edges: &[(usize, usize)]) -> bool {
         }
     }
     count == edges.len()
+}
+
+/// Whether wall triangles `t1` and `t2` are coplanar on every layer
+/// surface, so units over them may merge into one column.
+pub(super) fn coplanar(
+    points: &[Vec3],
+    tris: &[[usize; 3]],
+    stack: &[Vec<usize>],
+    t1: usize,
+    t2: usize,
+    scale: f64,
+    thinnest: f64,
+) -> bool {
+    stack.iter().enumerate().all(|(k, level)| {
+        let p = tris[t1].map(|v| points[level[v]]);
+        let q = tris[t2].map(|v| points[level[v]]);
+        let n = (p[1] - p[0]).cross(p[2] - p[0]);
+        let m = (q[1] - q[0]).cross(q[2] - q[0]);
+        let len = n.length();
+        if len.is_nan() || len <= 0.0 || n.dot(m) <= 0.0 {
+            return false;
+        }
+        let unit = n / len;
+        let tol = if k == 0 {
+            WALL_PLANE_TOL * scale
+        } else {
+            LAYER_PLANE_TOL * thinnest
+        };
+        q.iter().all(|x| (*x - p[0]).dot(unit).abs() <= tol)
+    })
 }
 
 /// Build the layer cells of every wall triangle.
@@ -208,25 +243,7 @@ pub(super) fn build(
     let mut coplanar = |t1: usize, t2: usize| -> bool {
         *plane_cache
             .entry((t1.min(t2), t1.max(t2)))
-            .or_insert_with(|| {
-                (0..=layers).all(|k| {
-                    let p = tris[t1].map(|v| points[stack[k][v]]);
-                    let q = tris[t2].map(|v| points[stack[k][v]]);
-                    let n = (p[1] - p[0]).cross(p[2] - p[0]);
-                    let m = (q[1] - q[0]).cross(q[2] - q[0]);
-                    let len = n.length();
-                    if len.is_nan() || len <= 0.0 || n.dot(m) <= 0.0 {
-                        return false;
-                    }
-                    let unit = n / len;
-                    let tol = if k == 0 {
-                        WALL_PLANE_TOL * scale
-                    } else {
-                        LAYER_PLANE_TOL * thinnest
-                    };
-                    q.iter().all(|x| (*x - p[0]).dot(unit).abs() <= tol)
-                })
-            })
+            .or_insert_with(|| coplanar(points, tris, stack, t1, t2, scale, thinnest))
     };
     let mut parent: Vec<usize> = (0..units.len()).collect();
     for u in 0..units.len() {
@@ -253,6 +270,119 @@ pub(super) fn build(
     }
     let mut columns: Vec<Vec<usize>> = by_root.into_values().collect();
 
+    // Small columns join a neighbour in the same plane (cell merging, as for
+    // small cut cells): the neighbour's layer cells grow by the small
+    // footprint and the innermost one touches both core cells.
+    let ring_area = |ring: &[usize]| -> f64 {
+        (1..ring.len() - 1)
+            .fold(Vec3::ZERO, |s, i| {
+                s + (points[ring[i]] - points[ring[0]]).cross(points[ring[i + 1]] - points[ring[0]])
+            })
+            .length()
+            * 0.5
+    };
+    let unit_area: Vec<f64> = units
+        .iter()
+        .map(|u| u.rings.iter().map(|r| ring_area(r)).sum())
+        .collect();
+    let triangle_area: Vec<f64> = units
+        .iter()
+        .map(|u| ring_area(&tris[u.bi].map(|v| stack[layers][v])))
+        .collect();
+    // A column is small below `min_share` of the mean area of its triangles.
+    let small = |members: &[usize], columns: &[Vec<usize>]| -> bool {
+        let list: Vec<usize> = members
+            .iter()
+            .flat_map(|&x| columns[x].iter().copied())
+            .collect();
+        let area: f64 = list.iter().map(|&u| unit_area[u]).sum();
+        let mut seen: Vec<usize> = Vec::new();
+        let mut reference = 0.0;
+        for &u in &list {
+            if !seen.contains(&units[u].bi) {
+                seen.push(units[u].bi);
+                reference += triangle_area[u];
+            }
+        }
+        area < MIN_COLUMN_SHARE * reference / seen.len() as f64
+    };
+    let mut group: Vec<usize> = (0..columns.len()).collect();
+    let mut members: Vec<Vec<usize>> = (0..columns.len()).map(|x| vec![x]).collect();
+    let mut base_of = vec![0; units.len()];
+    for (x, col) in columns.iter().enumerate() {
+        for &u in col {
+            base_of[u] = x;
+        }
+    }
+    let mut order: Vec<usize> = (0..columns.len()).collect();
+    let column_area = |x: usize| -> f64 { columns[x].iter().map(|&u| unit_area[u]).sum() };
+    order.sort_by(|&a, &b| column_area(a).total_cmp(&column_area(b)).then(a.cmp(&b)));
+    let mut absorbed_columns = 0;
+    loop {
+        let mut changed = false;
+        for &x in &order {
+            let gx = find(&mut group, x);
+            if !small(&members[gx], &columns) {
+                continue;
+            }
+            // The neighbour with the longest shared edge, as in cell merging
+            // for cut cells. Only columns in the same plane: a cap bent over
+            // two wall triangles puts the centroid of a thin layer cell
+            // behind one of its wall faces.
+            let mut shared: BTreeMap<usize, f64> = BTreeMap::new();
+            for &u in members[gx].iter().flat_map(|&m| &columns[m]) {
+                for ring in &units[u].rings {
+                    for k in 0..ring.len() {
+                        let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+                        let Some(&w) = edge_unit.get(&(b, a)) else {
+                            continue;
+                        };
+                        let gy = find(&mut group, base_of[w]);
+                        if gy != gx
+                            && (units[w].bi == units[u].bi || coplanar(units[u].bi, units[w].bi))
+                        {
+                            *shared.entry(gy).or_default() += (points[a] - points[b]).length();
+                        }
+                    }
+                }
+            }
+            let mut best: Option<(f64, usize)> = None;
+            for (gy, length) in shared {
+                if best.is_none_or(|(l, _)| length > l) {
+                    best = Some((length, gy));
+                }
+            }
+            let Some((_, gy)) = best else {
+                continue;
+            };
+            let (keep, gone) = (gx.min(gy), gx.max(gy));
+            group[gone] = keep;
+            let moved = std::mem::take(&mut members[gone]);
+            members[keep].extend(moved);
+            absorbed_columns += 1;
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
+    // The columns a merged column was made of, to undo a merge that fails
+    // the contact checks below.
+    let mut bases: Vec<Vec<Vec<usize>>> = Vec::new();
+    for list in members {
+        if !list.is_empty() {
+            let mut list = list;
+            list.sort_unstable();
+            bases.push(
+                list.into_iter()
+                    .map(|x| std::mem::take(&mut columns[x]))
+                    .collect(),
+            );
+        }
+    }
+    let mut columns: Vec<Vec<usize>> = bases.iter().map(|b| b.concat()).collect();
+    let mut undone_columns = 0;
+
     // FoehnCraft allows one face per cell pair: a merged column must be one
     // disk, and its contact with each neighbouring column one chain.
     let mut split_columns = 0;
@@ -271,6 +401,23 @@ pub(super) fn build(
             let rings: Vec<&Vec<usize>> = col.iter().flat_map(|&u| &units[u].rings).collect();
             if col.len() > 1 && !one_loop(&rings) {
                 bad.insert(x);
+            }
+            // the wall polygons of each core cell on the column are one
+            // face of its innermost layer cell
+            if bases[x].len() > 1 {
+                let mut parts: Vec<usize> = col.iter().map(|&u| units[u].part).collect();
+                parts.sort_unstable();
+                parts.dedup();
+                for part in parts {
+                    let rings: Vec<&Vec<usize>> = col
+                        .iter()
+                        .filter(|&&u| units[u].part == part)
+                        .flat_map(|&u| &units[u].rings)
+                        .collect();
+                    if !one_loop(&rings) {
+                        bad.insert(x);
+                    }
+                }
             }
             let mut edges = Vec::new();
             let mut by: BTreeMap<Option<usize>, Vec<(usize, usize)>> = BTreeMap::new();
@@ -372,16 +519,29 @@ pub(super) fn build(
         if pass > SPLIT_PASSES {
             return Err("merged wall columns kept failing the contact check".into());
         }
-        split_columns += bad.len();
         let mut next = Vec::with_capacity(columns.len());
-        for (x, col) in columns.into_iter().enumerate() {
-            if bad.contains(&x) {
-                next.extend(col.into_iter().map(|u| vec![u]));
-            } else {
+        let mut next_bases = Vec::with_capacity(columns.len());
+        for (x, (col, base)) in columns.into_iter().zip(bases).enumerate() {
+            if !bad.contains(&x) {
                 next.push(col);
+                next_bases.push(base);
+            } else if base.len() > 1 {
+                // undo the merge of small columns first
+                undone_columns += base.len() - 1;
+                for b in base {
+                    next.push(b.clone());
+                    next_bases.push(vec![b]);
+                }
+            } else {
+                split_columns += 1;
+                for u in col {
+                    next.push(vec![u]);
+                    next_bases.push(vec![vec![u]]);
+                }
             }
         }
         columns = next;
+        bases = next_bases;
     }
 
     // Cells, level by level.
@@ -494,6 +654,7 @@ pub(super) fn build(
         }
     }
     let merged_units = columns.iter().filter(|c| c.len() > 1).map(Vec::len).sum();
+    let absorbed_columns = absorbed_columns - undone_columns;
     Ok(Columns {
         cells,
         boundary,
@@ -502,6 +663,7 @@ pub(super) fn build(
         columns: native.iter().filter(|&&n| !n).count(),
         merged_units,
         split_columns,
+        absorbed_columns,
     })
 }
 

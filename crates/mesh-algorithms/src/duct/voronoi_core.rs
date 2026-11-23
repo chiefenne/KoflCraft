@@ -77,6 +77,15 @@ pub struct VoronoiStats {
     pub merged_core_faces: usize,
     /// Cells split at reentrant wall edges.
     pub reentrant_splits: usize,
+    /// Wall triangles with a conforming seed (their core cell meets the
+    /// wall in the whole triangle), edge flips to the regular triangulation
+    /// of the wall balls, and wall triangles left without a seed.
+    pub wall_seeds: usize,
+    pub seed_flips: usize,
+    pub unseeded_wall_triangles: usize,
+    /// Cells split or replaced by two sites at a reentrant wall edge
+    /// because they met a neighbouring cell in more than one polygon.
+    pub torn_contacts: usize,
     /// Wall pieces handed to a neighbouring cell at reentrant edges.
     pub reassigned_pieces: usize,
     /// Rebuilds with one more Lloyd iteration after a layout FoehnCraft
@@ -94,8 +103,12 @@ pub struct VoronoiStats {
     pub merged_column_units: usize,
     /// Merged columns split back because of their contacts.
     pub split_columns: usize,
+    /// Small columns merged into a neighbouring column.
+    pub absorbed_columns: usize,
     /// The wall join used.
     pub wall_join: WallJoin,
+    /// Pieces thinner than the weld tolerance that left the diagram.
+    pub collapsed_pieces: usize,
 }
 
 /// Rebuilds of the final diagram with sites added at reentrant edges.
@@ -115,6 +128,9 @@ const DETACH_SHARE: f64 = 0.3;
 const REENTRANT_CLEARANCE: f64 = 0.05;
 /// Wall faces within 30° belong to one plane of a reentrant split.
 const REENTRANT_PLANE_COS: f64 = 0.866_025_403_784_438_6;
+/// Cosine of the angle between two wall triangles from which a convex wall
+/// edge counts as sharp for the wall seeds (40°).
+const SEED_CORNER_COS: f64 = 0.766_044_443_118_978;
 const SECURITY_MARGIN: f64 = 1.0 + 1e-9;
 const INITIAL_NEIGHBOURS: usize = 32;
 
@@ -399,7 +415,7 @@ fn merge_rings(points: &[Vec3], rings: Vec<Vec<usize>>) -> Vec<Vec<usize>> {
         return rings;
     }
     let (n, c) = super::convex::ring_plane(points, &ring);
-    let unit = n / n.length();
+    let unit = super::convex::fitted_normal(points, &ring, n, c);
     let size = ring
         .iter()
         .map(|&v| (points[v] - c).length())
@@ -533,11 +549,167 @@ fn build(
         tol: scale * 1e-12,
     };
 
+    // Layer nodes of every surface vertex, level by level (0 is the wall).
+    let facets = surface.facets();
+    let wall: Vec<usize> = (0..facets.len()).filter(|&i| patches[i] == 3).collect();
+    let mut stack = vec![vec![usize::MAX; surface.vertices().len()]; layers + 1];
+    for (v, s0) in stack[0].iter_mut().enumerate() {
+        *s0 = v;
+    }
+    let mut thickness = vec![[f64::INFINITY, 0.0_f64]; layers];
+    let mut minimum_j = f64::INFINITY;
+    for level in 0..layers {
+        for (r, &bi) in wall.iter().enumerate() {
+            let [a, b, c] = facets[bi].triangle.vertices;
+            let Element::Wedge(n) = front.cells[level * wall.len() + r].element else {
+                return Err("expected a layer prism".into());
+            };
+            stack[level][a] = n[0];
+            stack[level][c] = n[1];
+            stack[level][b] = n[2];
+            stack[level + 1][a] = n[3];
+            stack[level + 1][c] = n[4];
+            stack[level + 1][b] = n[5];
+            let (jac, _, range) = verify::wedge(n.map(|i| front.points[i]));
+            minimum_j = minimum_j.min(jac);
+            thickness[level][0] = thickness[level][0].min(range[0]);
+            thickness[level][1] = thickness[level][1].max(range[1]);
+        }
+    }
+    let tris: Vec<[usize; 3]> = facets.iter().map(|f| f.triangle.vertices).collect();
+    let thinnest = thickness.iter().map(|r| r[0]).fold(f64::INFINITY, f64::min);
+    // Wall edges that end columns: the triangles beside them are not
+    // coplanar on every layer surface, or one of them is a port.
+    let mut by_edge: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    for (i, t) in tris.iter().enumerate() {
+        for k in 0..3 {
+            let (u, v) = (t[k], t[(k + 1) % 3]);
+            by_edge.entry((u.min(v), u.max(v))).or_default().push(i);
+        }
+    }
+    let hard_edges: Vec<[bool; 3]> = wall
+        .iter()
+        .map(|&bi| {
+            let t = tris[bi];
+            std::array::from_fn(|k| {
+                let (u, v) = (t[k], t[(k + 1) % 3]);
+                layers > 0
+                    && by_edge[&(u.min(v), u.max(v))].iter().any(|&o| {
+                        o != bi
+                            && (patches[o] != 3
+                                || !super::columns::coplanar(
+                                    &front.points,
+                                    &tris,
+                                    &stack,
+                                    bi,
+                                    o,
+                                    scale,
+                                    thinnest,
+                                ))
+                    })
+            })
+        })
+        .collect();
+
+    // Conforming wall seeds (wall_seeds.rs): one seed per wall triangle of
+    // the innermost surface, placed on the balls of its corners, so each
+    // seed's cell cuts the wall in exactly its triangle. A wall vertex with
+    // a ball has no site of its own, and no free site may enter a ball.
+    let mut seed_sites: Vec<(Vec3, f64)> = Vec::new();
+    let mut balls: Vec<(Vec3, f64)> = Vec::new();
+    let mut seeded_vertex = vec![false; surface.vertices().len()];
+    if layers > 0 && options.wall_join == WallJoin::Columns {
+        // No seed at a sharp convex wall edge: seeds on its two sides
+        // would each have to stay below the plane that halves the corner,
+        // so the corner keeps cells that touch both walls.
+        let q = |v: usize| front.points[stack[layers][v]];
+        let unit_normal = |bi: usize| {
+            let t = tris[bi];
+            let n = (q(t[1]) - q(t[0])).cross(q(t[2]) - q(t[0]));
+            n / n.length()
+        };
+        let mut corner = vec![false; surface.vertices().len()];
+        for &bi in &wall {
+            let t = tris[bi];
+            for k in 0..3 {
+                let (u, v) = (t[k], t[(k + 1) % 3]);
+                for &o in &by_edge[&(u.min(v), u.max(v))] {
+                    if o == bi || patches[o] != 3 {
+                        continue;
+                    }
+                    let apex = tris[o].into_iter().find(|&x| x != u && x != v).unwrap_or(u);
+                    let n = unit_normal(bi);
+                    if n.dot(unit_normal(o)) < SEED_CORNER_COS && (q(apex) - q(u)).dot(n) < 0.0 {
+                        corner[u] = true;
+                        corner[v] = true;
+                    }
+                }
+            }
+        }
+        let mut local = vec![usize::MAX; surface.vertices().len()];
+        let mut wall_vertices: Vec<usize> = Vec::new();
+        let mut wall_tris: Vec<[usize; 3]> = Vec::with_capacity(wall.len());
+        for (r, &bi) in wall.iter().enumerate() {
+            if !hard_edges[r].contains(&true) || tris[bi].iter().any(|&v| corner[v]) {
+                continue;
+            }
+            wall_tris.push(tris[bi].map(|v| {
+                if local[v] == usize::MAX {
+                    local[v] = wall_vertices.len();
+                    wall_vertices.push(v);
+                }
+                local[v]
+            }));
+        }
+        let inner: Vec<Vec3> = wall_vertices
+            .iter()
+            .map(|&v| front.points[stack[layers][v]])
+            .collect();
+        let found = super::wall_seeds::wall_seeds(&inner, &wall_tris);
+        for (i, &v) in wall_vertices.iter().enumerate() {
+            if found.radius[i] > 0.0 {
+                seeded_vertex[v] = true;
+                balls.push((inner[i], found.radius[i]));
+            }
+        }
+        seed_sites = found.seeds;
+        stats.wall_seeds = found.stats.seeds;
+        stats.seed_flips = found.stats.flips;
+        stats.unseeded_wall_triangles = found.stats.dropped;
+    }
+    let ball_tree = KdTree::new(&balls.iter().map(|b| b.0).collect::<Vec<_>>());
+    let outside_balls = |mut p: Vec3| -> Vec3 {
+        for _ in 0..8 {
+            let mut moved = false;
+            for (d2, j) in ball_tree.nearest_to(p, 12) {
+                let (c, r) = balls[j];
+                let keep = r * super::wall_seeds::CLEARANCE;
+                if d2 < keep * keep {
+                    let d = d2.sqrt();
+                    if d > 0.0 {
+                        p = c + (p - c) * (keep * 1.001 / d);
+                        moved = true;
+                    }
+                }
+            }
+            if !moved {
+                break;
+            }
+        }
+        p
+    };
+
     // Initial sites: the moved scaffold nodes that some tetrahedron uses.
     let mut used = vec![false; scaffold.points.len()];
     for t in &scaffold.tetrahedra {
         for &n in t {
             used[n] = true;
+        }
+    }
+    // a wall vertex with a ball has no site of its own
+    for (&n, &v) in &surface_ids {
+        if seeded_vertex[v] {
+            used[n] = false;
         }
     }
     let mut sites: Vec<Vec3> = (0..scaffold.points.len())
@@ -548,6 +720,45 @@ fn build(
         .filter(|&n| used[n])
         .map(|n| h[n])
         .collect();
+    // Under wall columns the site of a wall vertex stays on the line its
+    // layer nodes were marched along (base point and direction): the cells
+    // then cut the innermost surface like the Voronoi dual of the wall
+    // triangles, each triangle into three parts around its circumcentre,
+    // instead of at random.
+    let mut anchor: Vec<Option<(Vec3, Vec3)>> = vec![None; scaffold.points.len()];
+    if layers > 0 && options.wall_join == WallJoin::Columns {
+        let mut on_wall = vec![false; surface.vertices().len()];
+        for (r, &bi) in wall.iter().enumerate() {
+            for k in 0..3 {
+                if hard_edges[r][k] {
+                    on_wall[tris[bi][k]] = true;
+                    on_wall[tris[bi][(k + 1) % 3]] = true;
+                }
+            }
+        }
+        for (&n, &v) in &surface_ids {
+            let base = front.points[front.inner[v]];
+            let direction = base - surface.vertices()[v];
+            let length = direction.length();
+            if on_wall[v] && length > 0.0 {
+                anchor[n] = Some((base, direction / length));
+            }
+        }
+    }
+    let mut site_anchor: Vec<Option<(Vec3, Vec3)>> = (0..scaffold.points.len())
+        .filter(|&n| used[n])
+        .map(|n| anchor[n])
+        .collect();
+    for p in &mut sites {
+        *p = outside_balls(*p);
+    }
+    let mut site_fixed = vec![false; sites.len()];
+    for &(p, l) in &seed_sites {
+        sites.push(p);
+        site_h.push(l);
+        site_anchor.push(None);
+        site_fixed.push(true);
+    }
 
     let lloyd = if let Some((fixed, previous)) = seeds {
         sites = fixed;
@@ -584,18 +795,35 @@ fn build(
         let mut shift = 0.0_f64;
         let mut next_sites = Vec::with_capacity(sites.len());
         let mut next_h = Vec::with_capacity(sites.len());
+        let mut next_anchor = Vec::with_capacity(sites.len());
+        let mut next_fixed = Vec::with_capacity(sites.len());
         for i in 0..sites.len() {
             if mass[i] > 0.0 {
                 let c = moment[i] / mass[i];
+                let c = match site_anchor[i] {
+                    Some((base, direction)) => {
+                        base + direction * (c - base).dot(direction).max(0.0)
+                    }
+                    None => c,
+                };
+                let c = if site_fixed[i] {
+                    sites[i]
+                } else {
+                    outside_balls(c)
+                };
+                next_fixed.push(site_fixed[i]);
                 shift = shift.max((c - sites[i]).length() / site_h[i].max(f64::MIN_POSITIVE));
                 next_sites.push(c);
                 next_h.push(site_h[i]);
+                next_anchor.push(site_anchor[i]);
             } else {
                 stats.empty_sites += 1;
             }
         }
         sites = next_sites;
         site_h = next_h;
+        site_anchor = next_anchor;
+        site_fixed = next_fixed;
         stats.lloyd_iterations += 1;
         stats.last_relative_shift = shift;
     }
@@ -624,13 +852,20 @@ fn build(
                     .iter()
                     .map(|&p| weld.id(&mut front.points, p))
                     .collect();
-                let faces = c
+                let faces: Vec<(Src, Vec<usize>)> = c
                     .faces
                     .iter()
                     .filter_map(|(src, ring)| {
                         clean_ring(ring.iter().map(|&v| ids[v]).collect()).map(|r| (*src, r))
                     })
                     .collect();
+                if faces.is_empty() {
+                    // Thinner than the weld tolerance in two directions (a
+                    // needle along a Voronoi edge through a wall vertex or
+                    // edge): every face collapsed, on its neighbours too.
+                    stats.collapsed_pieces += 1;
+                    continue;
+                }
                 site_tet.insert((site, t), pieces.len());
                 pieces.push(Piece {
                     site,
@@ -847,6 +1082,61 @@ fn build(
             .collect()
     };
     let behind = |group: &[usize]| behind_walls(group).len();
+    let wall_piece = |i: usize| !wall_rings(&[i]).is_empty();
+    // FoehnCraft allows one face between two cells, so the contact of a
+    // part with each neighbouring cell (and with the wall cell over each
+    // wall triangle) must be a single polygon.
+    let contacts = |group: &[usize], owner: &dyn Fn(usize) -> usize, walls: bool| -> bool {
+        let mut by: BTreeMap<(bool, usize), Vec<&Vec<usize>>> = BTreeMap::new();
+        for &i in group {
+            let p = &pieces[i];
+            for (src, ring) in &p.faces {
+                let other = match *src {
+                    Src::Bis(o) => site_tet.get(&(o as usize, p.tet)).copied(),
+                    Src::Tet(k) => match across(p.tet, k) {
+                        Some(o) => site_tet.get(&(p.site, o)).copied(),
+                        None => {
+                            if walls
+                                && let Some(&bi) =
+                                    boundary_index.get(&local_face(&scaffold.tetrahedra[p.tet], k))
+                                && scaffold.boundary[bi].1 == 3
+                            {
+                                by.entry((true, bi)).or_default().push(ring);
+                            }
+                            continue;
+                        }
+                    },
+                    Src::Cut => None,
+                };
+                if let Some(j) = other
+                    && !group.contains(&j)
+                {
+                    by.entry((false, owner(j))).or_default().push(ring);
+                }
+            }
+        }
+        by.values().all(|rings| one_loop(rings))
+    };
+    let simple_contacts =
+        |group: &[usize], owner: &dyn Fn(usize) -> usize| contacts(group, owner, true);
+    // The directions of the wall planes a part touches, one per cluster.
+    let wall_planes = |group: &[usize]| -> Vec<Vec3> {
+        let mut planes: Vec<Vec3> = Vec::new();
+        for (n, _, _) in wall_rings(group) {
+            if !planes.iter().any(|m| m.dot(n) > REENTRANT_PLANE_COS) {
+                planes.push(n);
+            }
+        }
+        planes
+    };
+    // A part that touches two wall planes and meets a neighbouring cell in
+    // more than one polygon: two cells that both reach round a reentrant
+    // wall edge touch on either side of it, with a third cell between them
+    // at the edge. FoehnCraft cannot take the pair, so such a part is
+    // treated like one behind its wall and is split at the edge.
+    let torn = |group: &[usize], owner: &dyn Fn(usize) -> usize| -> bool {
+        wall_planes(group).len() > 1 && !contacts(group, owner, false)
+    };
     // First repair: hand the pieces with such a wall face to a neighbouring
     // cell whose centroid is in front of it (a small wall contact of a cell
     // that lies mostly beyond a reentrant edge).
@@ -858,8 +1148,15 @@ fn build(
     if !last {
         let mut drop = vec![false; sites.len()];
         let mut extra = Vec::new();
+        let mut owner_of = vec![usize::MAX; pieces.len()];
+        for (id, (group, _)) in parts.iter().enumerate() {
+            for &i in group {
+                owner_of[i] = id;
+            }
+        }
+        let whole = |j: usize| owner_of[j];
         for (group, _) in &parts {
-            if behind(group) == 0 {
+            if behind(group) == 0 && !torn(group, &whole) {
                 continue;
             }
             let site = pieces[group[0]].site;
@@ -898,6 +1195,9 @@ fn build(
             }
             let (na, pa) = (planes[0].0, planes[0].1 / planes[0].2);
             let (nb, pb) = (planes[1].0, planes[1].1 / planes[1].2);
+            if behind(group) == 0 {
+                stats.torn_contacts += 1;
+            }
             let g = na - nb;
             let len = g.length();
             if len.is_nan() || len <= 1e-6 {
@@ -927,54 +1227,23 @@ fn build(
         }
     }
 
-    let wall_piece = |i: usize| !wall_rings(&[i]).is_empty();
-    // FoehnCraft allows one face between two cells, so the contact of a
-    // part with each neighbouring cell (and with the wall cell over each
-    // wall triangle) must be a single polygon.
-    let simple_contacts = |group: &[usize], owner: &dyn Fn(usize) -> usize| -> bool {
-        let mut by: BTreeMap<(bool, usize), Vec<&Vec<usize>>> = BTreeMap::new();
-        for &i in group {
-            let p = &pieces[i];
-            for (src, ring) in &p.faces {
-                let other = match *src {
-                    Src::Bis(o) => site_tet.get(&(o as usize, p.tet)).copied(),
-                    Src::Tet(k) => match across(p.tet, k) {
-                        Some(o) => site_tet.get(&(p.site, o)).copied(),
-                        None => {
-                            if let Some(&bi) =
-                                boundary_index.get(&local_face(&scaffold.tetrahedra[p.tet], k))
-                                && scaffold.boundary[bi].1 == 3
-                            {
-                                by.entry((true, bi)).or_default().push(ring);
-                            }
-                            continue;
-                        }
-                    },
-                    Src::Cut => None,
-                };
-                if let Some(j) = other
-                    && !group.contains(&j)
-                {
-                    by.entry((false, owner(j))).or_default().push(ring);
-                }
-            }
-        }
-        by.values().all(|rings| one_loop(rings))
-    };
     // The local repairs run until no cell is behind a wall or a pass
     // changes nothing; a split part can still need a second repair.
     for _ in 0..REPAIR_PASSES {
-        if parts.iter().all(|(g, _)| behind(g) == 0) {
-            break;
-        }
-        let count = parts.len();
-        let moved = stats.reassigned_pieces + stats.detached_pieces + stats.reentrant_splits;
         let mut owner_of = vec![usize::MAX; pieces.len()];
         for (id, (group, _)) in parts.iter().enumerate() {
             for &i in group {
                 owner_of[i] = id;
             }
         }
+        if parts
+            .iter()
+            .all(|(g, _)| behind(g) == 0 && !torn(g, &|j| owner_of[j]))
+        {
+            break;
+        }
+        let count = parts.len();
+        let moved = stats.reassigned_pieces + stats.detached_pieces + stats.reentrant_splits;
         for id in 0..parts.len() {
             for _ in 0..4 {
                 let before = behind(&parts[id].0);
@@ -1136,19 +1405,18 @@ fn build(
                 }
             }
         }
+        // Parts split in this pass get labels of their own, so a later
+        // split sees them as the separate cells they now are.
+        let mut label = parts.len();
         let mut repaired = Vec::with_capacity(parts.len());
         for (group, kernel) in parts {
             let before = behind(&group);
-            if before == 0 {
+            let apart = torn(&group, &|j| owner_of[j]);
+            if before == 0 && !apart {
                 repaired.push((group, kernel));
                 continue;
             }
-            let mut planes: Vec<Vec3> = Vec::new();
-            for (n, _, _) in wall_rings(&group) {
-                if !planes.iter().any(|m| m.dot(n) > REENTRANT_PLANE_COS) {
-                    planes.push(n);
-                }
-            }
+            let planes = wall_planes(&group);
             let c = centre(&group);
             let mut by_plane = vec![Vec::new(); planes.len()];
             for &i in &group {
@@ -1189,8 +1457,17 @@ fn build(
                     .map_or(owner_of[j], |k| usize::MAX - k)
             };
             ok = ok && split.iter().all(|(g, _)| simple_contacts(g, &owner));
-            if ok && split.len() > 1 && after < before {
+            if ok && split.len() > 1 && (after < before || (apart && after <= before)) {
                 stats.reentrant_splits += 1;
+                if before == 0 {
+                    stats.torn_contacts += 1;
+                }
+                for (g, _) in &split {
+                    for &j in g {
+                        owner_of[j] = label;
+                    }
+                    label += 1;
+                }
                 repaired.extend(split);
             } else {
                 repaired.push((group, kernel));
@@ -1325,34 +1602,8 @@ fn build(
     }
 
     // Layers.
-    let facets = surface.facets();
-    let wall: Vec<usize> = (0..facets.len()).filter(|&i| patches[i] == 3).collect();
     let coarse = std::mem::take(&mut front.cells);
     let old_boundary = std::mem::take(&mut front.boundary);
-    let mut stack = vec![vec![usize::MAX; surface.vertices().len()]; layers + 1];
-    for (v, s0) in stack[0].iter_mut().enumerate() {
-        *s0 = v;
-    }
-    let mut thickness = vec![[f64::INFINITY, 0.0_f64]; layers];
-    let mut minimum_j = f64::INFINITY;
-    for level in 0..layers {
-        for (r, &bi) in wall.iter().enumerate() {
-            let [a, b, c] = facets[bi].triangle.vertices;
-            let Element::Wedge(n) = coarse[level * wall.len() + r].element else {
-                return Err("expected a layer prism".into());
-            };
-            stack[level][a] = n[0];
-            stack[level][c] = n[1];
-            stack[level][b] = n[2];
-            stack[level + 1][a] = n[3];
-            stack[level + 1][c] = n[4];
-            stack[level + 1][b] = n[5];
-            let (jac, _, range) = verify::wedge(n.map(|i| points[i]));
-            minimum_j = minimum_j.min(jac);
-            thickness[level][0] = thickness[level][0].min(range[0]);
-            thickness[level][1] = thickness[level][1].max(range[1]);
-        }
-    }
     let mut rim: HashMap<(usize, usize), usize> = HashMap::new();
     for (i, f) in facets.iter().enumerate() {
         if patches[i] == 3 {
@@ -1516,6 +1767,7 @@ fn build(
         stats.layer_columns = built.columns;
         stats.merged_column_units = built.merged_units;
         stats.split_columns = built.split_columns;
+        stats.absorbed_columns = built.absorbed_columns;
         for &bi in &wall {
             for (part, ring) in records.get(&bi).into_iter().flatten() {
                 core_wall.push((*part, ring.clone()));
