@@ -102,6 +102,14 @@ pub struct RemeshStats {
     pub min_wall: f64,
     /// Thickness pieces that asked for less than their `min_size`.
     pub thickness_clamped: usize,
+    /// Remeshing rounds run, and the edges still below a quarter of their
+    /// target length when they stopped.
+    pub rounds: usize,
+    pub short_edges: usize,
+    /// Feature edges split because a facet apex lay in their diametral
+    /// ball, and apexes merged into the split point.
+    pub feature_ball_splits: usize,
+    pub feature_ball_merges: usize,
     /// Facets split in the final deviation pass.
     pub deviation_splits: usize,
     /// Largest sampled distance of a new facet from the source surface.
@@ -315,6 +323,9 @@ fn shape(t: [Vec3; 3]) -> f64 {
     2.0 * 3f64.sqrt() * normal(t).length() / l2
 }
 
+/// Edges below this share of their target length count as not converged.
+const SHORT: f64 = 0.25;
+
 /// New facets must not be worse than this, or than the worst they replace.
 const MIN_SHAPE: f64 = 0.1;
 
@@ -442,12 +453,17 @@ impl Work<'_> {
 
     /// Split edge (a, b) at its midpoint projected onto the source.
     fn split(&mut self, a: usize, b: usize) -> bool {
+        let mid = (self.p[a] + self.p[b]) / 2.0;
+        self.split_at(a, b, mid).is_some()
+    }
+
+    /// Split edge (a, b) at `mid` projected onto the source; the new vertex.
+    fn split_at(&mut self, a: usize, b: usize, mid: Vec3) -> Option<usize> {
         let faces = self.edge_faces(a, b);
         if faces.len() != 2 || self.touches_keep(&faces) {
-            return false;
+            return None;
         }
         let is_feature = self.feature.contains(&key(a, b));
-        let mid = (self.p[a] + self.p[b]) / 2.0;
         let m = self.p.len();
         self.p.push(mid);
         self.vf.push(Vec::new());
@@ -470,7 +486,63 @@ impl Work<'_> {
         self.p[m] = q;
         self.refresh(m);
         self.stats.splits += 1;
-        true
+        Some(m)
+    }
+
+    /// Keep the diametral ball of every feature edge free of the apexes of
+    /// its two facets (the segment rule of Ruppert 1995 and Chew 1993 on
+    /// the surface): an apex that sees the edge under more than 90° lies
+    /// in the ball, so the edge is split at the foot of the apex, and an
+    /// apex nearer to the foot than `SNAP` of the shorter half is merged
+    /// into it. A wall vertex just beside a long sharp edge would
+    /// otherwise keep that edge out of every Delaunay tetrahedralization
+    /// of the wall vertices. Returns the number of edges split.
+    fn clear_feature_balls(&mut self) -> usize {
+        /// An apex this close to its foot, relative to the shorter half of
+        /// the split edge, is merged into the foot.
+        const SNAP: f64 = 0.5;
+        let mut edges: Vec<(usize, usize)> = self.feature.iter().copied().collect();
+        edges.sort_unstable();
+        let mut count = 0;
+        for (a, b) in edges {
+            if !self.feature.contains(&key(a, b)) {
+                continue;
+            }
+            let faces = self.edge_faces(a, b);
+            if faces.len() != 2 || self.touches_keep(&faces) {
+                continue;
+            }
+            let (pa, pb) = (self.p[a], self.p[b]);
+            let ab = pb - pa;
+            // the apex deepest in the ball
+            let mut worst: Option<(f64, usize)> = None;
+            for &f in &faces {
+                let Some(c) = self.t[f].into_iter().find(|&v| v != a && v != b) else {
+                    continue;
+                };
+                let pc = self.p[c];
+                let cosine = unit(pa - pc).dot(unit(pb - pc));
+                if cosine < -1e-9 && worst.is_none_or(|(w, _)| cosine < w) {
+                    worst = Some((cosine, c));
+                }
+            }
+            let Some((_, c)) = worst else { continue };
+            let s = ((self.p[c] - pa).dot(ab) / ab.dot(ab)).clamp(0.05, 0.95);
+            let Some(m) = self.split_at(a, b, pa + ab * s) else {
+                continue;
+            };
+            self.stats.feature_ball_splits += 1;
+            count += 1;
+            let half = (self.p[m] - pa).length().min((self.p[m] - pb).length());
+            if !self.is_feature_vertex(c)
+                && !self.fixed(c)
+                && (self.p[c] - self.p[m]).length() < SNAP * half
+                && self.collapse(c, m, f64::INFINITY)
+            {
+                self.stats.feature_ball_merges += 1;
+            }
+        }
+        count
     }
 
     /// Collapse vertex a into b, if topology, features and geometry allow.
@@ -897,7 +969,29 @@ pub fn remesh(
     w.stats.thickness_clamped = thickness_stats.clamped;
     w.stats.corners = w.corner.iter().filter(|&&c| c).count();
     let (hi, lo) = (4.0 / 3.0, 4.0 / 5.0);
-    for _ in 0..opts.iterations {
+    // The rounds go on past `iterations` while edges far below their
+    // target remain (a strongly graded target needs more rounds than a
+    // uniform one), up to four times as many.
+    let mut round = 0;
+    loop {
+        let short = w
+            .edges()
+            .iter()
+            .filter(|&&(a, b)| (w.p[a] - w.p[b]).length() < SHORT * w.edge_target(a, b))
+            .count();
+        if crate::trace_enabled() {
+            eprintln!(
+                "kofl trace: remesh round {round}: {} edges, {short} far below their target",
+                w.edges().len()
+            );
+        }
+        if round >= opts.iterations && (short == 0 || round >= 4 * opts.iterations) {
+            w.stats.rounds = round;
+            w.stats.short_edges = short;
+            break;
+        }
+        round += 1;
+
         for (a, b) in w.edges() {
             if w.vf[a].is_empty() || w.vf[b].is_empty() || w.edge_faces(a, b).len() != 2 {
                 continue;
@@ -971,15 +1065,21 @@ pub fn remesh(
             }
         }
     }
-    // Delaunay flips (see `delaunay_flip`)
-    for _ in 0..20 {
-        let before = w.stats.delaunay_flips;
-        for (a, b) in w.edges() {
-            if !w.vf[a].is_empty() && !w.vf[b].is_empty() {
-                w.delaunay_flip(a, b);
+    // Delaunay flips (see `delaunay_flip`), then sharp edges: no facet apex
+    // in a feature edge's diametral ball; a split can ask for new flips
+    for _ in 0..32 {
+        for _ in 0..20 {
+            let before = w.stats.delaunay_flips;
+            for (a, b) in w.edges() {
+                if !w.vf[a].is_empty() && !w.vf[b].is_empty() {
+                    w.delaunay_flip(a, b);
+                }
+            }
+            if w.stats.delaunay_flips == before {
+                break;
             }
         }
-        if w.stats.delaunay_flips == before {
+        if w.clear_feature_balls() == 0 {
             break;
         }
     }
