@@ -479,8 +479,8 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
                 // Manifold builds its scaffold in Rust and joins with wall
                 // columns: a wall triangle whose core cell covers it whole
                 // (the triangles with a conforming seed) keeps its three
-                // native wedges, about 43,800 of 56,606.
-                assert!((129_000..133_500).contains(&wall_prisms), "{wall_prisms}");
+                // native wedges, about 43,800 of 56,606 (Delaunay wall flips: a few more).
+                assert!((129_000..136_000).contains(&wall_prisms), "{wall_prisms}");
                 // Keep: the scaffold wall follows the STL to the chord
                 // tolerance both ways (the Gmsh scaffold was 0.54 off).
                 // Building the wall at a fixed coarse size, dropping the
