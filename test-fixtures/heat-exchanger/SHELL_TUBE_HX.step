@@ -5,19 +5,21 @@ HEADER;
  */
 
 FILE_DESCRIPTION(
-/* description */ (''),
+/* description */ ('',
+'CAx-IF Rec.Pracs.---Representation and Presentation of Product Manufa
+cturing Information (PMI)---4.0---2014-10-13'),
 /* implementation_level */ '2;1');
 
 FILE_NAME(
 /* name */ 'SHELL_TUBE_HX.step',
-/* time_stamp */ '2026-11-22T13:10:03+01:00',
+/* time_stamp */ '2026-11-23T09:53:22+01:00',
 /* author */ (''),
 /* organization */ (''),
 /* preprocessor_version */ 'ST-DEVELOPER v20.2',
 /* originating_system */ 'Autodesk Translation Framework v15.17.0.0',
 /* authorisation */ '');
 
-FILE_SCHEMA (('AUTOMOTIVE_DESIGN { 1 0 10303 214 3 1 1 }'));
+FILE_SCHEMA (('AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF { 1 0 10303 442 2 1 4 }'));
 ENDSEC;
 
 DATA;
@@ -287,19 +289,19 @@ SHAPE_REPRESENTATION_RELATIONSHIP()
 #67=STYLED_ITEM('',(#4389),#80);
 #68=STYLED_ITEM('',(#4389),#81);
 #69=STYLED_ITEM('',(#4389),#82);
-#70=MANIFOLD_SOLID_BREP('K\X\F6rper1',#1936);
-#71=MANIFOLD_SOLID_BREP('K\X\F6rper2',#1937);
-#72=MANIFOLD_SOLID_BREP('K\X\F6rper3',#1938);
-#73=MANIFOLD_SOLID_BREP('K\X\F6rper4',#1939);
-#74=MANIFOLD_SOLID_BREP('K\X\F6rper5',#1940);
-#75=MANIFOLD_SOLID_BREP('K\X\F6rper6',#1941);
-#76=MANIFOLD_SOLID_BREP('K\X\F6rper7',#1942);
-#77=MANIFOLD_SOLID_BREP('K\X\F6rper4',#1943);
-#78=MANIFOLD_SOLID_BREP('K\X\F6rper1',#1944);
-#79=MANIFOLD_SOLID_BREP('K\X\F6rper2',#1945);
-#80=MANIFOLD_SOLID_BREP('K\X\F6rper4',#1946);
-#81=MANIFOLD_SOLID_BREP('K\X\F6rper5',#1947);
-#82=MANIFOLD_SOLID_BREP('K\X\F6rper7',#1948);
+#70=MANIFOLD_SOLID_BREP('tube_bottom_left',#1936);
+#71=MANIFOLD_SOLID_BREP('tube_top_right',#1937);
+#72=MANIFOLD_SOLID_BREP('tube_center',#1938);
+#73=MANIFOLD_SOLID_BREP('tube_mid_right',#1939);
+#74=MANIFOLD_SOLID_BREP('tube_top_left',#1940);
+#75=MANIFOLD_SOLID_BREP('tube_mid_left',#1941);
+#76=MANIFOLD_SOLID_BREP('tube_bottom_right',#1942);
+#77=MANIFOLD_SOLID_BREP('housing',#1943);
+#78=MANIFOLD_SOLID_BREP('tube_sheet_inlet',#1944);
+#79=MANIFOLD_SOLID_BREP('tube_sheet_outlet',#1945);
+#80=MANIFOLD_SOLID_BREP('baffle_2',#1946);
+#81=MANIFOLD_SOLID_BREP('baffle_1',#1947);
+#82=MANIFOLD_SOLID_BREP('baffle_3',#1948);
 #83=FACE_BOUND('',#328,.T.);
 #84=FACE_BOUND('',#330,.T.);
 #85=FACE_BOUND('',#334,.T.);
@@ -4672,9 +4674,8 @@ SOLID_ANGLE_UNIT()
 #4378=PRODUCT_RELATED_PRODUCT_CATEGORY('HOUSING','HOUSING',(#4385));
 #4379=PRODUCT_RELATED_PRODUCT_CATEGORY('BAFFLES','BAFFLES',(#4386));
 #4380=APPLICATION_PROTOCOL_DEFINITION('international standard',
-'automotive_design',2009,#4381);
-#4381=APPLICATION_CONTEXT(
-'Core Data for Automotive Mechanical Design Process');
+'ap242_managed_model_based_3d_engineering',2011,#4381);
+#4381=APPLICATION_CONTEXT('Managed model based 3d engineering');
 #4382=PRODUCT_CONTEXT('part definition',#4381,'mechanical');
 #4383=PRODUCT('2026-11-21-19-52-06-139','SHELL_TUBE_HX',$,(#4382));
 #4384=PRODUCT('2026-11-21-19-53-04-021','TUBES',$,(#4382));
