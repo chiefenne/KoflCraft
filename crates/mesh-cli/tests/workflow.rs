@@ -303,6 +303,36 @@ fn channel_exports_both_full_ports_and_rejects_colliding_layers() {
 }
 
 #[test]
+fn median_dual_core_stays_available_and_valid_on_the_elbow() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/elbow");
+    let work = WorkDirectory::new();
+    let mut partition: Value =
+        serde_json::from_slice(&fs::read(fixture.join("partition.json")).unwrap()).unwrap();
+    let scaffold = &mut partition["volume_scaffold"];
+    scaffold["file"] = fixture.join("volume-scaffold.msh").to_str().unwrap().into();
+    scaffold["core"] = "median_dual".into();
+    let config = work.path().join("median.json");
+    fs::write(&config, serde_json::to_vec(&partition).unwrap()).unwrap();
+    let (stl, patches) = (fixture.join("elbow.stl"), fixture.join("patches.json"));
+    let args = [
+        "generate-duct",
+        stl.to_str().unwrap(),
+        patches.to_str().unwrap(),
+        config.to_str().unwrap(),
+        "polyhedral",
+        "median",
+    ];
+    let report = work.run(&args)["report"].clone();
+    assert_eq!(report["algorithm"], "volume_median_dual_v2");
+    assert_eq!(report["polyhedra"], 237);
+    assert_eq!(report["prisms"], 6768);
+    let evidence: Value =
+        serde_json::from_slice(&fs::read(work.path().join("median/mesh-evidence.json")).unwrap())
+            .unwrap();
+    assert_eq!(evidence["summary"]["inverted_faces"], 0);
+}
+
+#[test]
 fn nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer() {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures");
     let work = WorkDirectory::new();
@@ -336,31 +366,48 @@ fn nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer() {
             let mesh_volume = report["volume"].as_f64().unwrap();
             assert!((mesh_volume / fitted_volume - 1.).abs() < 1e-10);
             assert!((mesh_volume / volume - 1.).abs() < 0.002);
+            // Polyhedral: native wedges only; the innermost wedges shared by
+            // several Voronoi core cells are polyhedra with a split cap.
+            // SolidCraft's Voronoi core repairs its reentrant edge from the
+            // site layout, which rounding can shift between platforms, so its
+            // counts are checked within a band (all wall triangles stay
+            // layered: native wedges plus split caps are 3 per triangle).
             let wall_prisms = match (mode, dir) {
                 ("bulk", _) => 0,
-                ("polyhedral", "elbow") => 6768,
-                ("polyhedral", _) => 390492,
+                ("polyhedral", "elbow") => 752,
+                ("polyhedral", _) => report["prisms"].as_i64().unwrap(),
                 _ => wedges,
             };
+            if (mode, dir) == ("polyhedral", "solidcraft-vs-foehncraft") {
+                assert!((43_300..43_500).contains(&wall_prisms), "{wall_prisms}");
+            }
             assert!(report["minimum_cell_volume"].as_f64().unwrap() > 0.);
             let expected_tets = if mode == "polyhedral" { 0 } else { tets };
             assert_eq!(report["tetrahedra"], expected_tets);
             if mode == "polyhedral" {
-                assert_eq!(report["algorithm"], "volume_median_dual_v2");
-                let expected = if dir == "elbow" { 237 } else { 26965 };
-                let shape = &report["core_sphericity"];
-                // The elbow minimum was 0.50 until the split of reentrant-edge
-                // cells (inverted faces): its thinner halves reach 0.476.
-                let thresholds = if dir == "elbow" {
-                    [0.45, 0.55, 0.75]
+                assert_eq!(report["algorithm"], "volume_clipped_voronoi_cvt_v1");
+                let polyhedra = report["polyhedra"].as_i64().unwrap();
+                let core_faces = report["prism_core_faces"].as_i64().unwrap();
+                let expected = if dir == "elbow" {
+                    assert_eq!((polyhedra, core_faces), (603, 1362));
+                    603
                 } else {
-                    [0.33, 0.68, 0.82]
+                    assert!((48_500..48_800).contains(&polyhedra), "{polyhedra}");
+                    assert!((69_000..70_000).contains(&core_faces), "{core_faces}");
+                    polyhedra
+                };
+                let shape = &report["core_sphericity"];
+                // The median dual reached 0.48 (elbow) and 0.34 (SolidCraft).
+                // SolidCraft's minimum is a cell detached at the box-to-pipe
+                // reentrant edge.
+                let thresholds = if dir == "elbow" {
+                    [0.70, 0.75, 0.80]
+                } else {
+                    [0.30, 0.78, 0.85]
                 };
                 for (metric, minimum) in ["minimum", "p05", "median"].into_iter().zip(thresholds) {
-                    assert!(shape[metric].as_f64().unwrap() > minimum);
+                    assert!(shape[metric].as_f64().unwrap() > minimum, "{name} {metric}");
                 }
-                assert_eq!(report["polyhedra"], expected);
-                assert_eq!(report["prism_core_faces"], wall_prisms / 3);
                 let vtu = fs::read_to_string(work.path().join(&name).join("volume.vtu")).unwrap();
                 let types = vtu_array(&vtu, "types");
                 if dir == "solidcraft-vs-foehncraft" {
@@ -389,7 +436,7 @@ fn nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer() {
                         cursor += 1;
                         for _ in 0..count {
                             let n = faces[cursor];
-                            assert!(matches!(n, 3 | 4));
+                            assert!(n >= 3);
                             cursor += 1 + n as usize;
                         }
                         assert_eq!(cursor as i64, end);
@@ -400,10 +447,11 @@ fn nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer() {
             assert_eq!(report["prisms"], wall_prisms);
             // Keep: FoehnCraft rejects a mesh with any interior face whose
             // area vector points against the owner-to-neighbour centroid
-            // vector (S·d <= 0). Median-dual cells at reentrant wall edges
-            // had 10 such faces on the elbow and 18 on SolidCraft until they
-            // were split; undoing the split brings them back. The shell
-            // checks above do not look at centroids, so only this catches it.
+            // vector (S·d <= 0). Cells at reentrant wall edges had 10 such
+            // faces on the elbow and 18 on SolidCraft until they were split
+            // (median dual) or their sites split in pairs (Voronoi core);
+            // undoing that brings them back. The shell checks above do not
+            // look at centroids, so only this catches it.
             let evidence: Value = serde_json::from_slice(
                 &fs::read(work.path().join(&name).join("mesh-evidence.json")).unwrap(),
             )

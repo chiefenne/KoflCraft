@@ -297,9 +297,9 @@ fn estimates_match_the_built_cell_counts() {
         if estimate["cells_basis"] == "exact" {
             assert_eq!(predicted, actual, "{args:?}");
         } else {
-            // Polyhedral duct: the elbow splits 10 dual cells at its
-            // reentrant edge after the estimate (research note
-            // m4-reentrant-dual-split); the basis must say so.
+            // Polyhedral duct: cells split or added at reentrant edges come
+            // after the estimate (none for the elbow's Voronoi core, 10 for
+            // its median dual); the basis must say so.
             assert_eq!(args[4], "polyhedral");
             assert!(
                 estimate["cells_basis"]
@@ -307,7 +307,7 @@ fn estimates_match_the_built_cell_counts() {
                     .unwrap()
                     .contains("reentrant")
             );
-            assert_eq!(actual, predicted + 10, "{args:?}");
+            assert_eq!(actual, predicted, "{args:?}");
         }
     }
     let (ok, _) = kofl_in(&dir, &["--check", "check", "m.json"]);

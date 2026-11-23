@@ -2,8 +2,8 @@
 //! it runs. The cell count is exact: each generator counts its cells from
 //! the inputs (sites, the channel grid, the swept 2D section, the duct
 //! surface or scaffold) without building the volume mesh. The one exception
-//! is labelled in `cells_basis`: a polyhedral duct splits a few dual cells
-//! at reentrant wall edges, which only the built wall layers decide. Memory and
+//! is labelled in `cells_basis`: a polyhedral duct splits or adds a few
+//! cells at reentrant wall edges, which only the built wall layers decide. Memory and
 //! output bytes are rough per-cell figures, labelled as such.
 
 use std::path::Path;
@@ -38,8 +38,9 @@ pub struct EstimateInput {
 /// `cells_basis` of a count that is exact.
 const EXACT: &str = "exact";
 /// `cells_basis` of a polyhedral duct with a volume scaffold.
-const SPLIT_BASIS: &str = "exact before the split of dual cells at reentrant wall edges, \
-    which adds a few cells (10 on the elbow fixture, 3 on SolidCraft) and needs the built layers";
+const SPLIT_BASIS: &str = "exact before cells are split or added at reentrant wall edges, \
+    which needs the built layers (Voronoi core: none on the elbow fixture, 14 on SolidCraft; \
+    median dual: 10 and 3)";
 
 /// The cell count of one build call and its basis.
 pub(crate) fn cells(

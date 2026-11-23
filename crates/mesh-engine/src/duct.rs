@@ -29,7 +29,36 @@ pub struct ScaffoldConfig {
     pub file: String,
     sha256: String,
     max_relative_geometry_error: f64,
+    /// Polyhedral core built on the scaffold.
+    #[serde(default, skip_serializing_if = "CoreKind::is_default")]
+    pub core: CoreKind,
+    /// Lloyd iterations of the Voronoi core.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lloyd_iterations: Option<usize>,
 }
+
+/// The polyhedral core of a scaffold mesh.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CoreKind {
+    /// Clipped Voronoi diagram restricted to the scaffold, Lloyd-relaxed (M4).
+    #[default]
+    Voronoi,
+    /// Vertex-centred median dual of the scaffold (M1b).
+    MedianDual,
+}
+
+impl CoreKind {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Rebuilds of a Voronoi core that FoehnCraft would reject.
+const VORONOI_RETRIES: usize = 2;
+
+/// Most Lloyd iterations a partition may request.
+pub const MAX_LLOYD_ITERATIONS: usize = 200;
 
 impl Partition {
     pub fn scaffold_file(&self, mode: Mode) -> Option<&str> {
@@ -132,6 +161,7 @@ pub fn generate(
         .collect();
     let validated = |e: String| EngineError::new(ErrorCode::ValidationFailed, e);
     let mut scaffold_volume = None;
+    let mut voronoi: Option<duct::VoronoiStats> = None;
     let mut source_areas = [0.; 3];
     let scale = surface.bounds().extent().max_abs_component();
     for (f, &tag) in surface.facets().iter().zip(&patches) {
@@ -147,7 +177,45 @@ pub fn generate(
             return Err(invalid("invalid scaffold geometry error limit"));
         }
         let input = scaffold::read(bytes).map_err(validated)?;
-        let (mesh, shell) = duct::build_volume_dual(input, &steps).map_err(validated)?;
+        let (mesh, shell) = match spec.core {
+            CoreKind::MedianDual => duct::build_volume_dual(input, &steps).map_err(validated)?,
+            CoreKind::Voronoi => {
+                let lloyd_iterations = spec
+                    .lloyd_iterations
+                    .unwrap_or(duct::DEFAULT_LLOYD_ITERATIONS);
+                if lloyd_iterations > MAX_LLOYD_ITERATIONS {
+                    return Err(invalid("too many Lloyd iterations"));
+                }
+                // The repairs at reentrant wall edges are local and can
+                // miss a face on a rare site layout; FoehnCraft's own test
+                // (one face per cell pair, S·d > 0) decides, and a failed
+                // layout is rebuilt with one more Lloyd iteration.
+                let mut input = Some(input);
+                let mut attempt = 0;
+                loop {
+                    let scaffold = match input.take() {
+                        Some(s) => s,
+                        None => scaffold::read(bytes).map_err(validated)?,
+                    };
+                    let (mesh, shell, mut stats) = duct::build_voronoi_core(
+                        scaffold,
+                        &steps,
+                        duct::VoronoiOptions {
+                            lloyd_iterations: lloyd_iterations + attempt,
+                        },
+                    )
+                    .map_err(validated)?;
+                    let valid =
+                        mesh_io::duct::handoff(&mesh).is_ok_and(|h| h.inverted_faces() == 0);
+                    if valid || attempt == VORONOI_RETRIES {
+                        stats.retries = attempt;
+                        voronoi = Some(stats);
+                        break (mesh, shell);
+                    }
+                    attempt += 1;
+                }
+            }
+        };
         scaffold_volume = Some(shell.volume());
         if (shell.volume() / surface.volume() - 1.).abs() > limit
             || source_areas
@@ -211,7 +279,7 @@ pub fn generate(
     }
     let report = json!({
         "schema_version": 1,
-        "algorithm": if scaffold_volume.is_some() {"volume_median_dual_v2"} else if polyhedra > 0 {"stl_partitioned_dual_v1"} else {"stl_partitioned_star_v1"},
+        "algorithm": if voronoi.is_some() {"volume_clipped_voronoi_cvt_v1"} else if scaffold_volume.is_some() {"volume_median_dual_v2"} else if polyhedra > 0 {"stl_partitioned_dual_v1"} else {"stl_partitioned_star_v1"},
         "mode": mode,
         "source_sha256": source_digest,
         "config_sha256": digest(&(patch_map, plan, mode))?,
@@ -236,6 +304,7 @@ pub fn generate(
         "port_areas_by_layer": {"inlet": m.port_layer_areas[0], "outlet": m.port_layer_areas[1]},
         "thicknesses": steps,
         "normal_thickness_ranges": m.normal_thickness_ranges,
+        "voronoi_core": voronoi.as_ref().map(voronoi_json),
         "generation_seconds": start.elapsed().as_secs_f64()
     });
     let mut volume = Vec::new();
@@ -329,8 +398,9 @@ fn prepare(
 /// The number of cells `generate` builds (AG-15), counted from the inputs:
 /// bulk: one tetrahedron per facet and two per edge of a region interface;
 /// layered: plus one prism per wall facet and layer; polyhedral: one
-/// polyhedron per scaffold node plus six prisms per wall triangle of the
-/// scaffold and layer. Inputs `generate` refuses are refused here too.
+/// polyhedron per scaffold node plus one (Voronoi core) or six (median
+/// dual) prisms per wall triangle of the scaffold and layer. Inputs
+/// `generate` refuses are refused here too.
 pub fn cell_count(
     data: &[u8],
     patch_map: &PatchMap,
@@ -350,14 +420,29 @@ pub fn cell_count(
             "layer count, growth and thickness must be positive",
         ));
     }
-    if let (Mode::Polyhedral, Some(_)) = (mode, &plan.volume_scaffold) {
+    if let (Mode::Polyhedral, Some(config)) = (mode, &plan.volume_scaffold) {
         let bytes = scaffold_data.ok_or_else(|| invalid("missing configured volume scaffold"))?;
         let scaffold =
             scaffold::read(bytes).map_err(|e| EngineError::new(ErrorCode::ValidationFailed, e))?;
         let walls = scaffold.boundary.iter().filter(|(_, p)| *p == 3).count();
+        // median dual: six subprisms per wall triangle and layer; Voronoi
+        // core: one wedge (or split-cap polyhedron) per wall triangle and
+        // layer, one cell per site (the scaffold nodes the tetrahedra use)
+        let (per_wall, core) = match config.core {
+            CoreKind::MedianDual => (6, scaffold.points.len()),
+            CoreKind::Voronoi => {
+                let mut used = vec![false; scaffold.points.len()];
+                for t in &scaffold.tetrahedra {
+                    for &n in t {
+                        used[n] = true;
+                    }
+                }
+                (1, used.iter().filter(|&&u| u).count())
+            }
+        };
         return walls
-            .checked_mul(6 * layers)
-            .and_then(|v| v.checked_add(scaffold.points.len()))
+            .checked_mul(per_wall * layers)
+            .and_then(|v| v.checked_add(core))
             .ok_or_else(|| invalid("cell count overflow"));
     }
     // region of each facet, from the partition's facet ranges
@@ -393,4 +478,32 @@ pub fn cell_count(
         .checked_add(2 * seam)
         .and_then(|v| v.checked_add(walls.checked_mul(layers)?))
         .ok_or_else(|| invalid("cell count overflow"))
+}
+
+fn voronoi_json(v: &duct::VoronoiStats) -> Value {
+    let mut out = json!({
+        "sites": v.sites,
+        "core_cells": v.core_cells,
+        "split_sites": v.split_sites,
+        "empty_sites": v.empty_sites,
+        "pieces": v.pieces,
+        "lloyd_iterations": v.lloyd_iterations,
+        "last_relative_shift": v.last_relative_shift,
+        "merged_core_faces": v.merged_core_faces,
+    });
+    let extra = json!({
+        "reentrant_splits": v.reentrant_splits,
+        "reassigned_pieces": v.reassigned_pieces,
+        "detached_pieces": v.detached_pieces,
+        "added_sites": v.added_sites,
+        "merged_slivers": v.merged_slivers,
+        "retries": v.retries,
+        "whole_wall_triangles": v.whole_wall_triangles,
+        "split_wall_triangles": v.split_wall_triangles,
+        "layer_pieces": v.layer_pieces,
+    });
+    if let (Some(o), Value::Object(e)) = (out.as_object_mut(), extra) {
+        o.extend(e);
+    }
+    out
 }

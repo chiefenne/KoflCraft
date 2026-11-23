@@ -1,11 +1,16 @@
 //! Boundary-fitted tetrahedra on an explicitly partitioned shell, with optional
 //! isoparametric wedge layers. Region interfaces follow existing STL edges.
+mod convex;
 mod front;
 mod intersection;
 mod polyhedral;
 mod verify;
 mod volume_dual;
+mod voronoi_core;
 pub use volume_dual::{Scaffold, build_volume_dual};
+pub use voronoi_core::{
+    DEFAULT_LLOYD_ITERATIONS, VoronoiOptions, VoronoiStats, build_voronoi_core,
+};
 
 use mesh_core::geometry::Vec3;
 use mesh_geometry::ClosedSurface;

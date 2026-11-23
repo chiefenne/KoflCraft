@@ -147,10 +147,12 @@ grade = "partial"
 how = "Elbow volume and patch areas to 1e-9; every layer reaches both ports; no face with S·d ≤ 0 in any mode of the elbow or SolidCraft"
 tests = [
   "crates/mesh-cli/tests/workflow.rs::nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer",
+  "crates/mesh-cli/tests/workflow.rs::median_dual_core_stays_available_and_valid_on_the_elbow",
+  "crates/mesh-algorithms/src/duct/convex.rs::halving_a_cube_keeps_half_the_volume_and_tags_the_cut",
   "crates/mesh-algorithms/src/duct/intersection.rs::rejects_transverse_coplanar_and_shared_vertex_overlaps",
 ]
 commands = []
-gaps = "Needs a Gmsh scaffold and a Python preparation script (OPEN-07); fitted volume 0.183 % below the STL; `foehn mesh` measures polyhedral non-orthogonality up to 87° (elbow) and 89.6° (SolidCraft), so some faces pass S·d > 0 with little margin; flow accuracy untested"
+gaps = "Needs a Gmsh scaffold and a Python preparation script (OPEN-07); fitted volume 0.183 % below the STL; the Voronoi core still reaches 85.9° (elbow) and 87.7° (SolidCraft) non-orthogonality at the join to the wall layers (columns per core cell are follow-up); SolidCraft builds in about 75 s; flow accuracy untested"
 
 [[feature]]
 id = "foehncraft-handoff"

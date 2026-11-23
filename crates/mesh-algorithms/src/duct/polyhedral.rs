@@ -13,6 +13,10 @@ pub struct Polyhedron {
     pub interior: Vec3,
     /// A dual cone can be exported to Gmsh as one pyramid per base quad.
     pub cone_apex: Option<usize>,
+    /// A poly-prism layer piece: its exact decomposition into linear wedges
+    /// (a fan of its cap polygon), each as `Element::Wedge` nodes. Such a
+    /// cell is checked by the wedge Jacobians instead of a kernel point.
+    pub prism: Option<Vec<[usize; 6]>>,
     pub(super) expected_volume: f64,
 }
 
@@ -31,6 +35,7 @@ impl Polyhedron {
             faces,
             interior,
             cone_apex,
+            prism: None,
             expected_volume,
         }
     }

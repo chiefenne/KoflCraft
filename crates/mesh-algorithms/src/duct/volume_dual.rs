@@ -417,7 +417,11 @@ fn offset_interior(
 
 // Interior scaffold vertices locate the dual cells, but only their surrounding
 // midpoints and centroids belong to the final mesh connectivity.
-fn compact_points(points: &mut Vec<Vec3>, cells: &mut [Cell], boundary: &mut [BoundaryFace]) {
+pub(super) fn compact_points(
+    points: &mut Vec<Vec3>,
+    cells: &mut [Cell],
+    boundary: &mut [BoundaryFace],
+) {
     let mut ids = vec![usize::MAX; points.len()];
     for cell in cells.iter() {
         for &i in cell.element.nodes() {
@@ -447,6 +451,9 @@ fn compact_points(points: &mut Vec<Vec3>, cells: &mut [Cell], boundary: &mut [Bo
                     *n = ids[*n];
                 }
                 p.cone_apex = p.cone_apex.map(|v| ids[v]);
+                for w in p.prism.iter_mut().flatten() {
+                    *w = w.map(|v| ids[v]);
+                }
             }
             Element::Wedge(n) => *n = n.map(|v| ids[v]),
             Element::Tet(n) => *n = n.map(|v| ids[v]),
@@ -457,10 +464,18 @@ fn compact_points(points: &mut Vec<Vec3>, cells: &mut [Cell], boundary: &mut [Bo
     }
 }
 
-pub fn build_volume_dual(
-    scaffold: Scaffold,
-    steps: &[f64],
-) -> Result<(DuctMesh, ClosedSurface), String> {
+pub(super) struct Prepared {
+    pub surface: ClosedSurface,
+    /// Patch tag (1 inlet, 2 outlet, 3 walls) of every scaffold boundary
+    /// triangle, in scaffold order; the surface facets keep that order.
+    pub patches: Vec<usize>,
+    pub front: front::Front,
+    /// Scaffold node id to surface vertex id for boundary nodes.
+    pub surface_ids: BTreeMap<usize, usize>,
+}
+
+/// Check the scaffold, build its boundary surface and the wall layers.
+pub(super) fn prepare(scaffold: &Scaffold, steps: &[f64]) -> Result<Prepared, String> {
     if scaffold
         .boundary
         .iter()
@@ -526,10 +541,23 @@ pub fn build_volume_dual(
     for ((a, b), tag) in port_edges {
         rims[tag - 1].push((b, a));
     }
-    let mut front = front::advance(&surface, &patches, &vec![0; ts.len()], &rims, steps)?;
-    let mut cuts = Subdivision::default();
-    split_layers(&mut front, &mut cuts)?;
-    let displacement = offset_interior(&scaffold, &surface_ids, &front)?;
+    let front = front::advance(&surface, &patches, &vec![0; ts.len()], &rims, steps)?;
+    Ok(Prepared {
+        surface,
+        patches,
+        front,
+        surface_ids,
+    })
+}
+
+/// Move the interior scaffold nodes with the wall offset and return the
+/// front point id of every scaffold node.
+pub(super) fn map_scaffold(
+    scaffold: &Scaffold,
+    surface_ids: &BTreeMap<usize, usize>,
+    front: &mut front::Front,
+) -> Result<Vec<usize>, String> {
+    let displacement = offset_interior(scaffold, surface_ids, front)?;
     let mut mapped = Vec::with_capacity(scaffold.points.len());
     for (id, &pos) in scaffold.points.iter().enumerate() {
         mapped.push(if let Some(&v) = surface_ids.get(&id) {
@@ -540,6 +568,22 @@ pub fn build_volume_dual(
             i
         });
     }
+    Ok(mapped)
+}
+
+pub fn build_volume_dual(
+    scaffold: Scaffold,
+    steps: &[f64],
+) -> Result<(DuctMesh, ClosedSurface), String> {
+    let Prepared {
+        surface,
+        patches,
+        mut front,
+        surface_ids,
+    } = prepare(&scaffold, steps)?;
+    let mut cuts = Subdivision::default();
+    split_layers(&mut front, &mut cuts)?;
+    let mapped = map_scaffold(&scaffold, &surface_ids, &mut front)?;
     let p = &mut front.points;
     let mut dual: Vec<Dual> = (0..mapped.len()).map(|_| Dual::default()).collect();
     for (index, t) in scaffold.tetrahedra.iter().enumerate() {
