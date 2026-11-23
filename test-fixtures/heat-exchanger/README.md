@@ -70,10 +70,20 @@ reader. These are the values the reader must reproduce.
 | cap faces | — | `Kunststoff - glänzend (Grau)` |
 
   So the reader must report `Kunststoff` as the file's material for all parts
-  (STP-13). The intended material tags of the solids are still to be confirmed
-  by the maintainer and are recorded here when they are. The fluids have no
-  material in the file; the cap names suggest `water` on the tube side and `air`
-  on the shell side.
+  (STP-13). The **intended material tags** (maintainer, 2026-11-23) are set
+  through the domain tools (MD-07, MD-15) and are the expected values:
+
+| Bodies | Material tag |
+|---|---|
+| the seven `tube_*` bodies | `copper` |
+| `housing` | `steel` |
+| `tube_sheet_inlet`, `tube_sheet_outlet` | `steel` |
+| `baffle_1`, `baffle_2`, `baffle_3` | `copper` |
+
+  The tube sheets and the baffles belong to the same part (`BAFFLES`) but have
+  different materials, so the solid domains must be defined per body, not per
+  part (MD-06). The fluids have no material in the file; the cap names suggest
+  `water` on the tube side and `air` on the shell side.
 
 - **Surfaces:** planes, cylinders, cones, tori and B-spline surfaces (41, 64, 4, 4, 4
   in the open file; the closed file adds the 4 cap planes). **Curves:** lines,
@@ -94,7 +104,7 @@ reader. These are the values the reader must reproduce.
 |---|---|---|---|
 | `tube_side` | fluid | material point in a head, or the region bounded by the water caps | `water_inlet`, `water_outlet` |
 | `shell_side` | fluid | material point between the tube sheets, or the region bounded by the air caps | `air_inlet`, `air_outlet` |
-| one per solid body, named as in the file (or one per part, MD-06) | solid | body | — |
+| one per solid body, named as in the file | solid, tagged `copper` or `steel` as above | body | — |
 
 - In the closed file the port names come from the cap faces. In the open file the
   caps are proposed from the rim circles of the nozzle openings (MD-19) and given
