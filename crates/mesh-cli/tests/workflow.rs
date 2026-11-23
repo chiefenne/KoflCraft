@@ -463,7 +463,8 @@ fn nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer() {
                     [0.10, 0.78, 0.85]
                 };
                 for (metric, minimum) in ["minimum", "p05", "median"].into_iter().zip(thresholds) {
-                    assert!(shape[metric].as_f64().unwrap() > minimum, "{name} {metric}");
+                    let value = shape[metric].as_f64().unwrap();
+                    assert!(value > minimum, "{name} {metric} {value}");
                 }
                 let vtu = fs::read_to_string(work.path().join(&name).join("volume.vtu")).unwrap();
                 let types = vtu_array(&vtu, "types");
