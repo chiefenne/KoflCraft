@@ -65,6 +65,11 @@ pub struct VoronoiStats {
     pub reentrant_splits: usize,
     /// Wall pieces handed to a neighbouring cell at reentrant edges.
     pub reassigned_pieces: usize,
+    /// Rebuilds with one more Lloyd iteration after a layout FoehnCraft
+    /// would reject (set by the engine).
+    pub retries: usize,
+    /// Sliver parts merged into a neighbouring cell.
+    pub merged_slivers: usize,
     /// Sites split into a pair at reentrant wall edges.
     pub added_sites: usize,
     /// Wall pieces at a reentrant edge made cells of their own.
@@ -76,6 +81,11 @@ const SITE_ROUNDS: usize = 3;
 /// Distance of a split site pair from the halving plane of a reentrant
 /// edge, relative to the size of the cell it replaces.
 const REENTRANT_SITE_OFFSET: f64 = 0.3;
+/// Passes of the local reentrant repairs.
+const REPAIR_PASSES: usize = 3;
+/// A part smaller than this share of its neighbours' mean volume is merged
+/// into one of them.
+const SLIVER_SHARE: f64 = 0.01;
 /// Volume share of its cell up to which a detached reentrant cell grows.
 const DETACH_SHARE: f64 = 0.3;
 /// A core cell whose centroid is closer than this (relative to its size)
@@ -219,6 +229,41 @@ fn per_tet<T: Send>(
         out.extend(r?);
     }
     Ok(out)
+}
+
+/// Whether polygons that share edges pairwise tile one disk: after the
+/// shared edges cancel, the rest must be a single closed loop.
+fn one_loop(rings: &[&Vec<usize>]) -> bool {
+    if rings.len() < 2 {
+        return true;
+    }
+    let mut edges: Vec<(usize, usize)> = Vec::new();
+    for ring in rings {
+        for k in 0..ring.len() {
+            let e = (ring[k], ring[(k + 1) % ring.len()]);
+            if let Some(i) = edges.iter().position(|&f| f == (e.1, e.0)) {
+                edges.swap_remove(i);
+            } else {
+                edges.push(e);
+            }
+        }
+    }
+    if edges.len() < 3 {
+        return false;
+    }
+    let start = edges[0].0;
+    let mut at = start;
+    for step in 0..edges.len() {
+        let mut next = edges.iter().filter(|e| e.0 == at);
+        let (Some(&(_, b)), None) = (next.next(), next.next()) else {
+            return false;
+        };
+        at = b;
+        if at == start {
+            return step + 1 == edges.len();
+        }
+    }
+    false
 }
 
 /// Merge vertices closer than the tolerance into one id.
@@ -852,213 +897,347 @@ fn build(
         }
     }
 
-    let mut owner_of = vec![usize::MAX; pieces.len()];
-    for (id, (group, _)) in parts.iter().enumerate() {
-        for &i in group {
-            owner_of[i] = id;
-        }
-    }
     let wall_piece = |i: usize| !wall_rings(&[i]).is_empty();
-    for id in 0..parts.len() {
-        for _ in 0..4 {
-            let before = behind(&parts[id].0);
-            if before == 0 {
-                break;
+    // FoehnCraft allows one face between two cells, so the contact of a
+    // part with each neighbouring cell (and with the wall cell over each
+    // wall triangle) must be a single polygon.
+    let simple_contacts = |group: &[usize], owner: &dyn Fn(usize) -> usize| -> bool {
+        let mut by: BTreeMap<(bool, usize), Vec<&Vec<usize>>> = BTreeMap::new();
+        for &i in group {
+            let p = &pieces[i];
+            for (src, ring) in &p.faces {
+                let other = match *src {
+                    Src::Bis(o) => site_tet.get(&(o as usize, p.tet)).copied(),
+                    Src::Tet(k) => match across(p.tet, k) {
+                        Some(o) => site_tet.get(&(p.site, o)).copied(),
+                        None => {
+                            if let Some(&bi) =
+                                boundary_index.get(&local_face(&scaffold.tetrahedra[p.tet], k))
+                                && scaffold.boundary[bi].1 == 3
+                            {
+                                by.entry((true, bi)).or_default().push(ring);
+                            }
+                            continue;
+                        }
+                    },
+                    Src::Cut => None,
+                };
+                if let Some(j) = other
+                    && !group.contains(&j)
+                {
+                    by.entry((false, owner(j))).or_default().push(ring);
+                }
             }
-            let offenders: Vec<usize> = parts[id]
-                .0
-                .iter()
-                .copied()
-                .filter(|&i| wall_piece(i))
-                .collect();
-            let mut done = false;
-            'pieces: for i in offenders {
-                let p = &pieces[i];
-                let mut candidates: Vec<usize> = p
-                    .faces
+        }
+        by.values().all(|rings| one_loop(rings))
+    };
+    // The local repairs run until no cell is behind a wall or a pass
+    // changes nothing; a split part can still need a second repair.
+    for _ in 0..REPAIR_PASSES {
+        if parts.iter().all(|(g, _)| behind(g) == 0) {
+            break;
+        }
+        let count = parts.len();
+        let moved = stats.reassigned_pieces + stats.detached_pieces + stats.reentrant_splits;
+        let mut owner_of = vec![usize::MAX; pieces.len()];
+        for (id, (group, _)) in parts.iter().enumerate() {
+            for &i in group {
+                owner_of[i] = id;
+            }
+        }
+        for id in 0..parts.len() {
+            for _ in 0..4 {
+                let before = behind(&parts[id].0);
+                if before == 0 {
+                    break;
+                }
+                let offenders: Vec<usize> = parts[id]
+                    .0
                     .iter()
-                    .filter_map(|(src, _)| match *src {
-                        Src::Bis(o) => site_tet.get(&(o as usize, p.tet)).map(|&q| owner_of[q]),
-                        _ => None,
-                    })
+                    .copied()
+                    .filter(|&i| wall_piece(i))
                     .collect();
-                candidates.sort_unstable();
-                candidates.dedup();
-                for q in candidates {
-                    if q == id {
-                        continue;
+                let mut done = false;
+                'pieces: for i in offenders {
+                    let p = &pieces[i];
+                    let mut candidates: Vec<usize> = p
+                        .faces
+                        .iter()
+                        .filter_map(|(src, _)| match *src {
+                            Src::Bis(o) => site_tet.get(&(o as usize, p.tet)).map(|&q| owner_of[q]),
+                            _ => None,
+                        })
+                        .collect();
+                    candidates.sort_unstable();
+                    candidates.dedup();
+                    for q in candidates {
+                        if q == id {
+                            continue;
+                        }
+                        let rest: Vec<usize> =
+                            parts[id].0.iter().copied().filter(|&j| j != i).collect();
+                        if rest.is_empty() {
+                            continue;
+                        }
+                        let mut grown = parts[q].0.clone();
+                        grown.push(i);
+                        grown.sort_unstable();
+                        if behind(&grown) > behind(&parts[q].0) || behind(&rest) >= before {
+                            continue;
+                        }
+                        let (Some(kq), Some(kr)) = (
+                            kernel_point(points, &exposed(&grown)),
+                            kernel_point(points, &exposed(&rest)),
+                        ) else {
+                            continue;
+                        };
+                        // the rest must stay connected
+                        let mut reach = vec![rest[0]];
+                        let mut k = 0;
+                        while k < reach.len() {
+                            for n in neighbours_of(reach[k]) {
+                                if rest.contains(&n) && !reach.contains(&n) {
+                                    reach.push(n);
+                                }
+                            }
+                            k += 1;
+                        }
+                        if reach.len() != rest.len() {
+                            continue;
+                        }
+                        let owner = |j: usize| if j == i { q } else { owner_of[j] };
+                        if !simple_contacts(&grown, &owner) || !simple_contacts(&rest, &owner) {
+                            continue;
+                        }
+                        parts[id] = (rest, kr);
+                        parts[q] = (grown, kq);
+                        owner_of[i] = q;
+                        stats.reassigned_pieces += 1;
+                        done = true;
+                        break 'pieces;
                     }
-                    let rest: Vec<usize> =
-                        parts[id].0.iter().copied().filter(|&j| j != i).collect();
-                    if rest.is_empty() {
-                        continue;
-                    }
-                    let mut grown = parts[q].0.clone();
-                    grown.push(i);
-                    grown.sort_unstable();
-                    if behind(&grown) > behind(&parts[q].0) || behind(&rest) >= before {
-                        continue;
-                    }
-                    let (Some(kq), Some(kr)) = (
-                        kernel_point(points, &exposed(&grown)),
-                        kernel_point(points, &exposed(&rest)),
-                    ) else {
+                    // No neighbour can take it: the piece wedged into the
+                    // reentrant edge seeds a cell of its own, grown over
+                    // neighbouring pieces of the part while it stays
+                    // star-shaped and in front of its wall faces, so it does
+                    // not end up a sliver.
+                    let split_ok = |cluster: &[usize]| -> Option<(Vec<usize>, Vec3, Vec3)> {
+                        let rest: Vec<usize> = parts[id]
+                            .0
+                            .iter()
+                            .copied()
+                            .filter(|j| !cluster.contains(j))
+                            .collect();
+                        if rest.is_empty() || behind(&rest) >= before || behind(cluster) > 0 {
+                            return None;
+                        }
+                        let kc = kernel_point(points, &exposed(cluster))?;
+                        let kr = kernel_point(points, &exposed(&rest))?;
+                        let mut reach = vec![rest[0]];
+                        let mut k = 0;
+                        while k < reach.len() {
+                            for n in neighbours_of(reach[k]) {
+                                if rest.contains(&n) && !reach.contains(&n) {
+                                    reach.push(n);
+                                }
+                            }
+                            k += 1;
+                        }
+                        if reach.len() != rest.len() {
+                            return None;
+                        }
+                        let owner = |j: usize| {
+                            if cluster.contains(&j) {
+                                usize::MAX
+                            } else {
+                                owner_of[j]
+                            }
+                        };
+                        (simple_contacts(cluster, &owner) && simple_contacts(&rest, &owner))
+                            .then_some((rest, kr, kc))
+                    };
+                    let Some(mut best) = split_ok(&[i]) else {
                         continue;
                     };
-                    // the rest must stay connected
-                    let mut reach = vec![rest[0]];
-                    let mut k = 0;
-                    while k < reach.len() {
-                        for n in neighbours_of(reach[k]) {
-                            if rest.contains(&n) && !reach.contains(&n) {
-                                reach.push(n);
+                    let mut cluster = vec![i];
+                    let total: f64 = parts[id].0.iter().map(|&j| pieces[j].volume).sum();
+                    loop {
+                        let vol: f64 = cluster.iter().map(|&j| pieces[j].volume).sum();
+                        if vol > DETACH_SHARE * total {
+                            break;
+                        }
+                        let mut front: Vec<usize> = cluster
+                            .iter()
+                            .flat_map(|&j| neighbours_of(j))
+                            .filter(|n| owner_of[*n] == id && !cluster.contains(n))
+                            .collect();
+                        front.sort_unstable();
+                        front.dedup();
+                        // largest neighbour first
+                        front.sort_by(|&x, &y| pieces[y].volume.total_cmp(&pieces[x].volume));
+                        let mut grown = false;
+                        for n in front {
+                            let mut next = cluster.clone();
+                            next.push(n);
+                            next.sort_unstable();
+                            if let Some(r) = split_ok(&next) {
+                                cluster = next;
+                                best = r;
+                                grown = true;
+                                break;
                             }
                         }
-                        k += 1;
-                    }
-                    if reach.len() != rest.len() {
-                        continue;
-                    }
-                    parts[id] = (rest, kr);
-                    parts[q] = (grown, kq);
-                    owner_of[i] = q;
-                    stats.reassigned_pieces += 1;
-                    done = true;
-                    break 'pieces;
-                }
-                // No neighbour can take it: the piece wedged into the
-                // reentrant edge seeds a cell of its own, grown over
-                // neighbouring pieces of the part while it stays
-                // star-shaped and in front of its wall faces, so it does
-                // not end up a sliver.
-                let split_ok = |cluster: &[usize]| -> Option<(Vec<usize>, Vec3, Vec3)> {
-                    let rest: Vec<usize> = parts[id]
-                        .0
-                        .iter()
-                        .copied()
-                        .filter(|j| !cluster.contains(j))
-                        .collect();
-                    if rest.is_empty() || behind(&rest) >= before || behind(cluster) > 0 {
-                        return None;
-                    }
-                    let kc = kernel_point(points, &exposed(cluster))?;
-                    let kr = kernel_point(points, &exposed(&rest))?;
-                    let mut reach = vec![rest[0]];
-                    let mut k = 0;
-                    while k < reach.len() {
-                        for n in neighbours_of(reach[k]) {
-                            if rest.contains(&n) && !reach.contains(&n) {
-                                reach.push(n);
-                            }
-                        }
-                        k += 1;
-                    }
-                    (reach.len() == rest.len()).then_some((rest, kr, kc))
-                };
-                let Some(mut best) = split_ok(&[i]) else {
-                    continue;
-                };
-                let mut cluster = vec![i];
-                let total: f64 = parts[id].0.iter().map(|&j| pieces[j].volume).sum();
-                loop {
-                    let vol: f64 = cluster.iter().map(|&j| pieces[j].volume).sum();
-                    if vol > DETACH_SHARE * total {
-                        break;
-                    }
-                    let mut front: Vec<usize> = cluster
-                        .iter()
-                        .flat_map(|&j| neighbours_of(j))
-                        .filter(|n| owner_of[*n] == id && !cluster.contains(n))
-                        .collect();
-                    front.sort_unstable();
-                    front.dedup();
-                    // largest neighbour first
-                    front.sort_by(|&x, &y| pieces[y].volume.total_cmp(&pieces[x].volume));
-                    let mut grown = false;
-                    for n in front {
-                        let mut next = cluster.clone();
-                        next.push(n);
-                        next.sort_unstable();
-                        if let Some(r) = split_ok(&next) {
-                            cluster = next;
-                            best = r;
-                            grown = true;
+                        if !grown {
                             break;
                         }
                     }
-                    if !grown {
-                        break;
+                    let (rest, kr, ki) = best;
+                    parts[id] = (rest, kr);
+                    for &j in &cluster {
+                        owner_of[j] = parts.len();
                     }
+                    parts.push((cluster, ki));
+                    stats.detached_pieces += 1;
+                    done = true;
+                    break 'pieces;
                 }
-                let (rest, kr, ki) = best;
-                parts[id] = (rest, kr);
-                for &j in &cluster {
-                    owner_of[j] = parts.len();
+                if !done {
+                    break;
                 }
-                parts.push((cluster, ki));
-                stats.detached_pieces += 1;
-                done = true;
-                break 'pieces;
-            }
-            if !done {
-                break;
             }
         }
+        let mut repaired = Vec::with_capacity(parts.len());
+        for (group, kernel) in parts {
+            let before = behind(&group);
+            if before == 0 {
+                repaired.push((group, kernel));
+                continue;
+            }
+            let mut planes: Vec<Vec3> = Vec::new();
+            for (n, _, _) in wall_rings(&group) {
+                if !planes.iter().any(|m| m.dot(n) > REENTRANT_PLANE_COS) {
+                    planes.push(n);
+                }
+            }
+            let c = centre(&group);
+            let mut by_plane = vec![Vec::new(); planes.len()];
+            for &i in &group {
+                let r = pieces[i].centroid - c;
+                let k = (0..planes.len())
+                    .min_by(|&a, &b| r.dot(planes[a]).total_cmp(&r.dot(planes[b])))
+                    .unwrap_or(0);
+                by_plane[k].push(i);
+            }
+            let mut split = Vec::new();
+            let mut ok = planes.len() > 1;
+            for list in by_plane {
+                let mut left = list;
+                while ok && !left.is_empty() {
+                    let mut comp = vec![left[0]];
+                    let mut k = 0;
+                    while k < comp.len() {
+                        for n in neighbours_of(comp[k]) {
+                            if left.contains(&n) && !comp.contains(&n) {
+                                comp.push(n);
+                            }
+                        }
+                        k += 1;
+                    }
+                    left.retain(|i| !comp.contains(i));
+                    comp.sort_unstable();
+                    match kernel_point(points, &exposed(&comp)) {
+                        Some(kp) => split.push((comp, kp)),
+                        None => ok = false,
+                    }
+                }
+            }
+            let after: usize = split.iter().map(|(g, _)| behind(g)).sum();
+            let owner = |j: usize| {
+                split
+                    .iter()
+                    .position(|(g, _)| g.contains(&j))
+                    .map_or(owner_of[j], |k| usize::MAX - k)
+            };
+            ok = ok && split.iter().all(|(g, _)| simple_contacts(g, &owner));
+            if ok && split.len() > 1 && after < before {
+                stats.reentrant_splits += 1;
+                repaired.extend(split);
+            } else {
+                repaired.push((group, kernel));
+            }
+        }
+        parts = repaired;
+        if parts.len() == count
+            && stats.reassigned_pieces + stats.detached_pieces + stats.reentrant_splits == moved
+        {
+            break;
+        }
     }
-    let mut repaired = Vec::with_capacity(parts.len());
-    for (group, kernel) in parts {
-        let before = behind(&group);
-        if before == 0 {
-            repaired.push((group, kernel));
+    // Slivers: a part far smaller than its neighbours (a fragment of a
+    // kernel split or a detached wall piece) joins the neighbour it shares
+    // the largest contact with, if the union stays star-shaped, in front of
+    // its walls and with one face per neighbour.
+    let mut owner: Vec<usize> = vec![usize::MAX; pieces.len()];
+    for (id, (group, _)) in parts.iter().enumerate() {
+        for &i in group {
+            owner[i] = id;
+        }
+    }
+    let volume_of = |group: &[usize]| group.iter().map(|&i| pieces[i].volume).sum::<f64>();
+    for id in 0..parts.len() {
+        let vol = volume_of(&parts[id].0);
+        let mut contact: BTreeMap<usize, f64> = BTreeMap::new();
+        for &i in &parts[id].0 {
+            for (src, ring) in &pieces[i].faces {
+                let j = match *src {
+                    Src::Bis(o) => site_tet.get(&(o as usize, pieces[i].tet)).copied(),
+                    Src::Tet(k) => across(pieces[i].tet, k)
+                        .and_then(|o| site_tet.get(&(pieces[i].site, o)).copied()),
+                    Src::Cut => None,
+                };
+                if let Some(j) = j
+                    && owner[j] != id
+                {
+                    *contact.entry(owner[j]).or_default() +=
+                        super::convex::ring_plane(points, ring).0.length();
+                }
+            }
+        }
+        if contact.is_empty() {
             continue;
         }
-        let mut planes: Vec<Vec3> = Vec::new();
-        for (n, _, _) in wall_rings(&group) {
-            if !planes.iter().any(|m| m.dot(n) > REENTRANT_PLANE_COS) {
-                planes.push(n);
+        let mean =
+            contact.keys().map(|&q| volume_of(&parts[q].0)).sum::<f64>() / contact.len() as f64;
+        if vol >= SLIVER_SHARE * mean {
+            continue;
+        }
+        let mut order: Vec<(usize, f64)> = contact.into_iter().collect();
+        order.sort_by(|a, b| b.1.total_cmp(&a.1));
+        for (q, _) in order {
+            let mut grown = parts[q].0.clone();
+            grown.extend(parts[id].0.iter().copied());
+            grown.sort_unstable();
+            if behind(&grown) > behind(&parts[q].0) {
+                continue;
             }
-        }
-        let c = centre(&group);
-        let mut by_plane = vec![Vec::new(); planes.len()];
-        for &i in &group {
-            let r = pieces[i].centroid - c;
-            let k = (0..planes.len())
-                .min_by(|&a, &b| r.dot(planes[a]).total_cmp(&r.dot(planes[b])))
-                .unwrap_or(0);
-            by_plane[k].push(i);
-        }
-        let mut split = Vec::new();
-        let mut ok = planes.len() > 1;
-        for list in by_plane {
-            let mut left = list;
-            while ok && !left.is_empty() {
-                let mut comp = vec![left[0]];
-                let mut k = 0;
-                while k < comp.len() {
-                    for n in neighbours_of(comp[k]) {
-                        if left.contains(&n) && !comp.contains(&n) {
-                            comp.push(n);
-                        }
-                    }
-                    k += 1;
-                }
-                left.retain(|i| !comp.contains(i));
-                comp.sort_unstable();
-                match kernel_point(points, &exposed(&comp)) {
-                    Some(kp) => split.push((comp, kp)),
-                    None => ok = false,
-                }
+            let Some(kq) = kernel_point(points, &exposed(&grown)) else {
+                continue;
+            };
+            let moved = &parts[id].0;
+            let map = |j: usize| if moved.contains(&j) { q } else { owner[j] };
+            if !simple_contacts(&grown, &map) {
+                continue;
             }
-        }
-        let after: usize = split.iter().map(|(g, _)| behind(g)).sum();
-        if ok && split.len() > 1 && after < before {
-            stats.reentrant_splits += 1;
-            repaired.extend(split);
-        } else {
-            repaired.push((group, kernel));
+            for &i in &parts[id].0 {
+                owner[i] = q;
+            }
+            parts[q] = (grown, kq);
+            parts[id].0.clear();
+            stats.merged_slivers += 1;
+            break;
         }
     }
-    let parts = repaired;
+    parts.retain(|(group, _)| !group.is_empty());
     for (id, (group, _)) in parts.iter().enumerate() {
         for &i in group {
             part_of[i] = id;

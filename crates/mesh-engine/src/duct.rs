@@ -54,6 +54,9 @@ impl CoreKind {
     }
 }
 
+/// Rebuilds of a Voronoi core that FoehnCraft would reject.
+const VORONOI_RETRIES: usize = 2;
+
 /// Most Lloyd iterations a partition may request.
 pub const MAX_LLOYD_ITERATIONS: usize = 200;
 
@@ -183,14 +186,34 @@ pub fn generate(
                 if lloyd_iterations > MAX_LLOYD_ITERATIONS {
                     return Err(invalid("too many Lloyd iterations"));
                 }
-                let (mesh, shell, stats) = duct::build_voronoi_core(
-                    input,
-                    &steps,
-                    duct::VoronoiOptions { lloyd_iterations },
-                )
-                .map_err(validated)?;
-                voronoi = Some(stats);
-                (mesh, shell)
+                // The repairs at reentrant wall edges are local and can
+                // miss a face on a rare site layout; FoehnCraft's own test
+                // (one face per cell pair, S·d > 0) decides, and a failed
+                // layout is rebuilt with one more Lloyd iteration.
+                let mut input = Some(input);
+                let mut attempt = 0;
+                loop {
+                    let scaffold = match input.take() {
+                        Some(s) => s,
+                        None => scaffold::read(bytes).map_err(validated)?,
+                    };
+                    let (mesh, shell, mut stats) = duct::build_voronoi_core(
+                        scaffold,
+                        &steps,
+                        duct::VoronoiOptions {
+                            lloyd_iterations: lloyd_iterations + attempt,
+                        },
+                    )
+                    .map_err(validated)?;
+                    let valid =
+                        mesh_io::duct::handoff(&mesh).is_ok_and(|h| h.inverted_faces() == 0);
+                    if valid || attempt == VORONOI_RETRIES {
+                        stats.retries = attempt;
+                        voronoi = Some(stats);
+                        break (mesh, shell);
+                    }
+                    attempt += 1;
+                }
             }
         };
         scaffold_volume = Some(shell.volume());
@@ -473,6 +496,8 @@ fn voronoi_json(v: &duct::VoronoiStats) -> Value {
         "reassigned_pieces": v.reassigned_pieces,
         "detached_pieces": v.detached_pieces,
         "added_sites": v.added_sites,
+        "merged_slivers": v.merged_slivers,
+        "retries": v.retries,
         "whole_wall_triangles": v.whole_wall_triangles,
         "split_wall_triangles": v.split_wall_triangles,
         "layer_pieces": v.layer_pieces,

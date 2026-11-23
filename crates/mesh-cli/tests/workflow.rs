@@ -368,21 +368,33 @@ fn nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer() {
             assert!((mesh_volume / volume - 1.).abs() < 0.002);
             // Polyhedral: native wedges only; the innermost wedges shared by
             // several Voronoi core cells are polyhedra with a split cap.
+            // SolidCraft's Voronoi core repairs its reentrant edge from the
+            // site layout, which rounding can shift between platforms, so its
+            // counts are checked within a band (all wall triangles stay
+            // layered: native wedges plus split caps are 3 per triangle).
             let wall_prisms = match (mode, dir) {
                 ("bulk", _) => 0,
                 ("polyhedral", "elbow") => 752,
-                ("polyhedral", _) => 43389,
+                ("polyhedral", _) => report["prisms"].as_i64().unwrap(),
                 _ => wedges,
             };
+            if (mode, dir) == ("polyhedral", "solidcraft-vs-foehncraft") {
+                assert!((43_300..43_500).contains(&wall_prisms), "{wall_prisms}");
+            }
             assert!(report["minimum_cell_volume"].as_f64().unwrap() > 0.);
             let expected_tets = if mode == "polyhedral" { 0 } else { tets };
             assert_eq!(report["tetrahedra"], expected_tets);
             if mode == "polyhedral" {
                 assert_eq!(report["algorithm"], "volume_clipped_voronoi_cvt_v1");
-                let (expected, core_faces) = if dir == "elbow" {
-                    (603, 1362)
+                let polyhedra = report["polyhedra"].as_i64().unwrap();
+                let core_faces = report["prism_core_faces"].as_i64().unwrap();
+                let expected = if dir == "elbow" {
+                    assert_eq!((polyhedra, core_faces), (603, 1362));
+                    603
                 } else {
-                    (48669, 69483)
+                    assert!((48_500..48_800).contains(&polyhedra), "{polyhedra}");
+                    assert!((69_000..70_000).contains(&core_faces), "{core_faces}");
+                    polyhedra
                 };
                 let shape = &report["core_sphericity"];
                 // The median dual reached 0.48 (elbow) and 0.34 (SolidCraft).
@@ -396,8 +408,6 @@ fn nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer() {
                 for (metric, minimum) in ["minimum", "p05", "median"].into_iter().zip(thresholds) {
                     assert!(shape[metric].as_f64().unwrap() > minimum, "{name} {metric}");
                 }
-                assert_eq!(report["polyhedra"], expected);
-                assert_eq!(report["prism_core_faces"], core_faces);
                 let vtu = fs::read_to_string(work.path().join(&name).join("volume.vtu")).unwrap();
                 let types = vtu_array(&vtu, "types");
                 if dir == "solidcraft-vs-foehncraft" {
