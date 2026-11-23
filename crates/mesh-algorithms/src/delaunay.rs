@@ -14,6 +14,8 @@
 //! Eight corners of an enlarged bounding box start the triangulation, so
 //! every point inserted inside the box has a containing tetrahedron.
 
+#![allow(clippy::needless_range_loop)] // parallel per-vertex and per-face arrays
+
 use crate::predicates::{insphere, orient3d};
 use mesh_core::geometry::Vec3;
 use std::cmp::Ordering;
@@ -311,7 +313,10 @@ impl Delaunay {
             let (a, b) = others(tet);
             let next = if a == cur { b } else { a };
             let iu = tet.iter().position(|&x| x == cur)?;
-            if self.constrained.contains(&sorted(FACES[iu].map(|k| tet[k]))) {
+            if self
+                .constrained
+                .contains(&sorted(FACES[iu].map(|k| tet[k])))
+            {
                 return None;
             }
             let n = self.neighbours[t][iu];
@@ -361,7 +366,8 @@ impl Delaunay {
                     t
                 };
                 let (fu, fd) = (fix(up), fix(down));
-                let q = quality(fu.map(|x| self.points[x])).min(quality(fd.map(|x| self.points[x])));
+                let q =
+                    quality(fu.map(|x| self.points[x])).min(quality(fd.map(|x| self.points[x])));
                 Some((q, [fu, fd]))
             };
             let mut score = vec![vec![f64::INFINITY; k]; k];

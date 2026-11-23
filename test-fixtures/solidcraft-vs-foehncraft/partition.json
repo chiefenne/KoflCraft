@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "source_sha256": "e3f1ac5f0be7e6a2042e514da7e683c186b1efd2f6e2ae2c3469dbfad2bd2be0",
-  "volume_scaffold": {"file": "volume-scaffold.msh", "sha256": "e0678357c125191184cfce3b80186cf543c4b3ddd84cd3016af854632b269abe", "max_relative_geometry_error": 0.002},
+  "volume_scaffold": {"build": {"tolerance": 0.05, "min_size": 0.65, "max_size": 6, "rate": 0.4, "rim_size": 0.85}, "max_relative_geometry_error": 0.002, "max_wall_deviation": 0.06},
   "regions": [
     {"kernel":[179.88,360,40], "facets":[[0,16368]]},
     {"kernel":[25,360,40], "facets":[[16368,21680]]},

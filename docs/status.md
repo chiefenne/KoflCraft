@@ -5,7 +5,7 @@
 The verification grade of every feature (AG-17), how it was checked and what is still missing. A partial result is never presented as success; every tool result also carries a `limitations` list.
 
 - **verified** (9): checked against an exact or independent reference by a named test
-- **partial** (8): works on the named fixtures, with known gaps
+- **partial** (9): works on the named fixtures, with known gaps
 - **unverified** (1): built, not yet checked
 - **open** (0): not built
 
@@ -20,6 +20,7 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 | Swept block and pipe with prism layers | partial | Exact block volume; pipe volume 0.0564 % below the cylinder; refinement and grading checks (docs/analytic-development.md) | Analytic shapes only | BL-01, BL-03 |
 | Straight channel with port-terminated layers (M3, BL-10) | partial | Native prisms and the Gmsh core subdivision share the tagged boundary; both full ports exported; colliding layers rejected (research/open-port-layers.md) | Planar walls only | BL-10 |
 | Nonconvex duct, bulk, layered and polyhedral (M4/M5 prototype) | partial | Elbow volume and patch areas to 1e-9; every layer reaches both ports; no face with S·d ≤ 0 in any mode of the elbow or SolidCraft; the hand-off's fanned volume equals the mesher's exact volume | Needs a Gmsh scaffold and a Python preparation script (OPEN-07); fitted volume 0.183 % below the STL; the wall columns reach 80.1° (elbow) and 82.8° (SolidCraft) non-orthogonality; on curved walls they leave sliver cells where a core cell clips a wall triangle (smallest cell about 5e-11 on SolidCraft); SolidCraft builds in about 80 s; flow accuracy untested | M4, M5 |
+| Rust scaffold for nonconvex ducts: wall remeshed to a chord tolerance, Delaunay tetrahedralization (OPEN-07) | partial | A remeshed sphere stays within the chord tolerance both ways with edges at the chord length; a box keeps its twelve feature edges, eight corners, kept facets and exact volume; exact orientation and in-sphere signs on coplanar and cospherical input; a Delaunay grid has empty spheres and fills its box; scaffolds of a sphere and a nonconvex box pair every interior face, use every wall triangle once and fill the enclosed volume to 1e-12; the SolidCraft wall built from the STL is within 0.05 of it both ways and its polyhedral mesh is valid in the hand-off | Ports are kept as they are (the elbow, with two-triangle ports, keeps its Gmsh scaffold); scaffold mean ratio floor 0.05 against Gmsh's 0.26, no vertex smoothing; features by dihedral angle only; a finer wall makes the SolidCraft mesh 2.4 times larger and its build about 3 minutes | M4, GEO-04, ALG-11 |
 | FoehnCraft hand-off: MSH 4.1, single-file VTU, names, evidence (FC-01, FC-02, FC-04 to FC-06) | partial | CI reads 35 exports back with `foehn mesh` (elbow and SolidCraft ducts in all three modes among them): every one valid, counts, volume, closure and patch areas agree to 1e-12 | Binary MSH open | FC-01, FC-02, FC-04, FC-05, FC-06 |
 | OpenFOAM polyMesh export (FC-03) | unverified | Written for every mesh type from the hand-off mesh, with patch types and cellZones; boundary ranges tile the faces | No independent reader in tests or CI; the box round trip is an ignored test | FC-03 |
 | Tool registry, result envelope and diagnostic codes (AG-12, AG-18, FC-07) | verified | Ids unique and dotted, schemas closed, docs/tools.md regenerated and compared, `kofl commands` and `kofl call` agree, codes unique and every engine code registered | — | AG-12, AG-18, FC-07 |
@@ -105,6 +106,17 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 - `only_flat_boundary_polygons_merge` in [crates/mesh-io/src/duct.rs](../crates/mesh-io/src/duct.rs)
 - `halving_a_cube_keeps_half_the_volume_and_tags_the_cut` in [crates/mesh-algorithms/src/duct/convex.rs](../crates/mesh-algorithms/src/duct/convex.rs)
 - `rejects_transverse_coplanar_and_shared_vertex_overlaps` in [crates/mesh-algorithms/src/duct/intersection.rs](../crates/mesh-algorithms/src/duct/intersection.rs)
+
+### Rust scaffold for nonconvex ducts: wall remeshed to a chord tolerance, Delaunay tetrahedralization (OPEN-07)
+
+- `sphere_meets_the_chord_tolerance` in [crates/mesh-algorithms/src/remesh.rs](../crates/mesh-algorithms/src/remesh.rs)
+- `box_keeps_features_and_kept_facets` in [crates/mesh-algorithms/src/remesh.rs](../crates/mesh-algorithms/src/remesh.rs)
+- `orientation_signs_are_exact` in [crates/mesh-algorithms/src/predicates.rs](../crates/mesh-algorithms/src/predicates.rs)
+- `insphere_signs_are_exact` in [crates/mesh-algorithms/src/predicates.rs](../crates/mesh-algorithms/src/predicates.rs)
+- `grid_is_delaunay` in [crates/mesh-algorithms/src/delaunay.rs](../crates/mesh-algorithms/src/delaunay.rs)
+- `sphere_scaffold_fills_the_wall` in [crates/mesh-algorithms/src/scaffold.rs](../crates/mesh-algorithms/src/scaffold.rs)
+- `nonconvex_box_is_recovered` in [crates/mesh-algorithms/src/scaffold.rs](../crates/mesh-algorithms/src/scaffold.rs)
+- `nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
 
 ### FoehnCraft hand-off: MSH 4.1, single-file VTU, names, evidence (FC-01, FC-02, FC-04 to FC-06)
 

@@ -131,7 +131,9 @@ pub const MAX_LLOYD_ITERATIONS: usize = 200;
 impl Partition {
     pub fn scaffold_file(&self, mode: Mode) -> Option<&str> {
         if matches!(mode, Mode::Polyhedral) {
-            self.volume_scaffold.as_ref().and_then(|s| s.file.as_deref())
+            self.volume_scaffold
+                .as_ref()
+                .and_then(|s| s.file.as_deref())
         } else {
             None
         }
@@ -618,8 +620,11 @@ fn load_scaffold(
                 return Err(invalid("invalid scaffold build settings"));
             }
             let start = Instant::now();
-            let triangles: Vec<[usize; 3]> =
-                surface.facets().iter().map(|f| f.triangle.vertices).collect();
+            let triangles: Vec<[usize; 3]> = surface
+                .facets()
+                .iter()
+                .map(|f| f.triangle.vertices)
+                .collect();
             let keep: Vec<bool> = patches.iter().map(|&p| p != 3).collect();
             let wall = remesh::remesh(
                 surface.vertices(),
@@ -674,7 +679,9 @@ fn load_scaffold(
                 })),
             ))
         }
-        _ => Err(invalid("volume scaffold needs exactly one of file or build")),
+        _ => Err(invalid(
+            "volume scaffold needs exactly one of file or build",
+        )),
     }
 }
 
@@ -700,7 +707,8 @@ fn wall_deviation(
         .filter(|(_, p)| *p == 3)
         .map(|(t, _)| t.map(|v| scaffold.points[v]))
         .collect();
-    let one_way = |from: &[[mesh_core::geometry::Vec3; 3]], to: &[[mesh_core::geometry::Vec3; 3]]| {
+    let one_way = |from: &[[mesh_core::geometry::Vec3; 3]],
+                   to: &[[mesh_core::geometry::Vec3; 3]]| {
         let set = remesh::ClosestSet::new(to.iter().map(|&t| Primitive::Triangle(t)).collect());
         from.iter()
             .flat_map(|&t| remesh::samples(t))

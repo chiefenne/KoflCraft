@@ -23,6 +23,8 @@
 //! source still exceeds the tolerance, so the reported deviation is the
 //! measured one, not only the estimate.
 
+#![allow(clippy::needless_range_loop)] // parallel per-vertex and per-face arrays
+
 use crate::sizing::surface::{
     Primitive, SurfaceGeometry, Weighted, WeightedSet, normal_cycle_curvature,
 };
@@ -177,7 +179,12 @@ impl ClosestSet {
     }
 }
 
-fn build_closest(items: &mut [Primitive], nodes: &mut Vec<Node>, start: usize, end: usize) -> usize {
+fn build_closest(
+    items: &mut [Primitive],
+    nodes: &mut Vec<Node>,
+    start: usize,
+    end: usize,
+) -> usize {
     let mut min = corners(&items[start])[0];
     let mut max = min;
     for item in &items[start..end] {
@@ -275,7 +282,9 @@ fn normal(t: [Vec3; 3]) -> Vec3 {
 /// Triangle shape 4√3 · area / Σ l²: 1 for an equilateral triangle, 0 for
 /// a degenerate one.
 fn shape(t: [Vec3; 3]) -> f64 {
-    let l2 = (t[1] - t[0]).dot(t[1] - t[0]) + (t[2] - t[1]).dot(t[2] - t[1]) + (t[0] - t[2]).dot(t[0] - t[2]);
+    let l2 = (t[1] - t[0]).dot(t[1] - t[0])
+        + (t[2] - t[1]).dot(t[2] - t[1])
+        + (t[0] - t[2]).dot(t[0] - t[2]);
     if l2 <= 0.0 {
         return 0.0;
     }
@@ -518,7 +527,8 @@ impl Work<'_> {
         }
         // orient: f0 = [a, b, c], f1 = [b, a, d]
         let (mut f0, mut f1) = (faces[0], faces[1]);
-        let has = |t: [usize; 3], x: usize, y: usize| (0..3).any(|i| t[i] == x && t[(i + 1) % 3] == y);
+        let has =
+            |t: [usize; 3], x: usize, y: usize| (0..3).any(|i| t[i] == x && t[(i + 1) % 3] == y);
         if !has(self.t[f0], a, b) {
             std::mem::swap(&mut f0, &mut f1);
         }
@@ -849,7 +859,11 @@ pub fn remesh(
             map[v]
         });
         out_t.push(tt);
-        source.push(if w.keep[f] { origin.get(t).copied() } else { None });
+        source.push(if w.keep[f] {
+            origin.get(t).copied()
+        } else {
+            None
+        });
     }
     let mut stats = w.stats;
     stats.max_deviation = (0..w.t.len())
@@ -872,7 +886,12 @@ pub fn remesh(
         .map(|x| new_wall.closest(x).map_or(0.0, |(_, d)| d))
         .fold(0.0, f64::max);
     let (mut min_e, mut max_e) = (f64::INFINITY, 0.0f64);
-    for t in out_t.iter().zip(&source).filter(|(_, s)| s.is_none()).map(|(t, _)| t) {
+    for t in out_t
+        .iter()
+        .zip(&source)
+        .filter(|(_, s)| s.is_none())
+        .map(|(t, _)| t)
+    {
         for k in 0..3 {
             let l = (out_v[t[k]] - out_v[t[(k + 1) % 3]]).length();
             min_e = min_e.min(l);
@@ -900,7 +919,10 @@ pub(crate) mod tests {
         let mut half = HashSet::new();
         for f in t {
             for k in 0..3 {
-                assert!(half.insert((f[k], f[(k + 1) % 3])), "edge used twice in one direction");
+                assert!(
+                    half.insert((f[k], f[(k + 1) % 3])),
+                    "edge used twice in one direction"
+                );
             }
         }
         for &(a, b) in &half {
@@ -948,7 +970,10 @@ pub(crate) mod tests {
             .collect();
         lengths.sort_by(f64::total_cmp);
         let median = lengths[lengths.len() / 2];
-        assert!((median / chord - 1.0).abs() < 0.3, "median {median}, chord {chord}");
+        assert!(
+            (median / chord - 1.0).abs() < 0.3,
+            "median {median}, chord {chord}"
+        );
         // fewer facets than the 20 480 of the source
         assert!(r.triangles.len() < 10_000, "{}", r.triangles.len());
     }

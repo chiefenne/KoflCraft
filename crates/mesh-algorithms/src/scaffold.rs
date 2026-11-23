@@ -18,6 +18,8 @@
 //!    lies inside the domain and not too close to the wall. Insertions never
 //!    cross a surface triangle, so the boundary stays recovered.
 
+#![allow(clippy::needless_range_loop)] // parallel per-vertex and per-face arrays
+
 use crate::delaunay::{Delaunay, FACES, NONE, Refused, circumsphere};
 use crate::duct::Scaffold;
 use crate::remesh::ClosestSet;
@@ -102,7 +104,10 @@ pub fn build(
     if triangles.len() != tags.len() || triangles.iter().flatten().any(|&v| v >= vertices.len()) {
         return Err("invalid scaffold surface".into());
     }
-    if !(opts.max_size > 0.0 && opts.rate > 0.0 && opts.radius_edge > 1.0 && opts.max_size.is_finite())
+    if !(opts.max_size > 0.0
+        && opts.rate > 0.0
+        && opts.radius_edge > 1.0
+        && opts.max_size.is_finite())
     {
         return Err("invalid scaffold options".into());
     }
@@ -208,7 +213,8 @@ pub fn build(
         .iter()
         .map(|(t, _)| {
             let p = t.map(|v| dt.points[v]);
-            let l = ((p[0] - p[1]).length() + (p[1] - p[2]).length() + (p[2] - p[0]).length()) / 3.0;
+            let l =
+                ((p[0] - p[1]).length() + (p[1] - p[2]).length() + (p[2] - p[0]).length()) / 3.0;
             Weighted {
                 primitive: Primitive::Triangle(p),
                 size: l.min(opts.max_size),
@@ -284,7 +290,9 @@ pub fn build(
     let on_wall: HashSet<usize> = surface.iter().flat_map(|(t, _)| *t).collect();
     let surface_edges: HashSet<(usize, usize)> = surface
         .iter()
-        .flat_map(|(t, _)| (0..3).map(move |k| (t[k].min(t[(k + 1) % 3]), t[k].max(t[(k + 1) % 3]))))
+        .flat_map(|(t, _)| {
+            (0..3).map(move |k| (t[k].min(t[(k + 1) % 3]), t[k].max(t[(k + 1) % 3])))
+        })
         .collect();
     let mut rng = 0x2545_F491_4F6C_DD1Du64;
     let mut random = move || {
@@ -294,15 +302,23 @@ pub fn build(
         (rng >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
     };
     for _ in 0..opts.sliver_passes {
-        remove_slivers(&mut dt, &mut inside, &surface_edges, opts.sliver_quality, &mut stats);
+        remove_slivers(
+            &mut dt,
+            &mut inside,
+            &surface_edges,
+            opts.sliver_quality,
+            &mut stats,
+        );
         let slivers: Vec<usize> = (0..dt.tets.len())
-            .filter(|&t| dt.alive[t] && inside[t] && quality(dt.tets[t].map(|v| dt.points[v])) < opts.sliver_quality)
+            .filter(|&t| {
+                dt.alive[t]
+                    && inside[t]
+                    && quality(dt.tets[t].map(|v| dt.points[v])) < opts.sliver_quality
+            })
             .collect();
         if slivers.is_empty() {
             break;
         }
-        if std::env::var_os("KOFL_DEBUG").is_some() { eprintln!("pass: {} slivers", slivers.len()); }
-        let (mut d_loc, mut d_clear, mut d_ref, mut d_kept) = (0, 0, 0, 0);
         let mut fixed = 0;
         for t in slivers {
             if !dt.alive[t] || !inside[t] {
@@ -325,17 +341,11 @@ pub fn build(
                 }
             }
             for c in candidates {
-                let Some(home) = dt.locate(c) else { d_loc += 1; continue };
-                if !inside[home]
-                    || wall.closest(c).is_none_or(|(_, d)| d < 0.15 * target)
-                {
-                    d_clear += 1;
+                let Some(home) = dt.locate(c) else { continue };
+                if !inside[home] || wall.closest(c).is_none_or(|(_, d)| d < 0.15 * target) {
                     continue;
                 }
-                let r = dt.insert(c);
-                if r.is_err() { d_ref += 1; }
-                if r.is_ok() {
-                    if dt.alive[t] && dt.tets[t] == tet { d_kept += 1; }
+                if dt.insert(c).is_ok() {
                     for &n in &dt.created.clone() {
                         if n >= inside.len() {
                             inside.resize(n + 1, false);
@@ -348,14 +358,23 @@ pub fn build(
                 }
             }
         }
-        if std::env::var_os("KOFL_DEBUG").is_some() { eprintln!("  fixed {fixed} loc {d_loc} clear {d_clear} refused {d_ref} kept {d_kept}"); }
         if fixed == 0 {
             break;
         }
     }
-    remove_slivers(&mut dt, &mut inside, &surface_edges, opts.sliver_quality, &mut stats);
+    remove_slivers(
+        &mut dt,
+        &mut inside,
+        &surface_edges,
+        opts.sliver_quality,
+        &mut stats,
+    );
     stats.slivers = (0..dt.tets.len())
-        .filter(|&t| dt.alive[t] && inside[t] && quality(dt.tets[t].map(|v| dt.points[v])) < opts.sliver_quality)
+        .filter(|&t| {
+            dt.alive[t]
+                && inside[t]
+                && quality(dt.tets[t].map(|v| dt.points[v])) < opts.sliver_quality
+        })
         .count();
     stats.min_quality = (0..dt.tets.len())
         .filter(|&t| dt.alive[t] && inside[t])
@@ -411,7 +430,11 @@ fn remove_slivers(
     for _ in 0..4 {
         let mut removed = 0;
         let slivers: Vec<usize> = (0..dt.tets.len())
-            .filter(|&t| dt.alive[t] && inside[t] && quality(dt.tets[t].map(|v| dt.points[v])) < sliver_quality)
+            .filter(|&t| {
+                dt.alive[t]
+                    && inside[t]
+                    && quality(dt.tets[t].map(|v| dt.points[v])) < sliver_quality
+            })
             .collect();
         for t in slivers {
             if !dt.alive[t] || !inside[t] {
@@ -446,7 +469,6 @@ fn remove_slivers(
                 }
             }
         }
-        if std::env::var_os("KOFL_DEBUG").is_some() { eprintln!("edge removal: {removed}"); }
         if removed == 0 {
             break;
         }
@@ -506,7 +528,12 @@ mod tests {
     use crate::sizing::shapes;
     use std::collections::HashMap;
 
-    fn check(surface_v: &[Vec3], surface_t: &[[usize; 3]], tags: &[usize], opts: ScaffoldOptions) -> (Scaffold, ScaffoldStats) {
+    fn check(
+        surface_v: &[Vec3],
+        surface_t: &[[usize; 3]],
+        tags: &[usize],
+        opts: ScaffoldOptions,
+    ) -> (Scaffold, ScaffoldStats) {
         let (s, st) = build(surface_v, surface_t, tags, opts).unwrap();
         let boundary: Vec<[usize; 3]> = s.boundary.iter().map(|(t, _)| *t).collect();
         assert_closed(&boundary);
@@ -529,7 +556,10 @@ mod tests {
         }
         assert!(wall.iter().all(|f| faces.contains_key(f)));
         let enclosed = volume(&s.points, &boundary);
-        assert!((total / enclosed - 1.0).abs() < 1e-12, "{total} vs {enclosed}");
+        assert!(
+            (total / enclosed - 1.0).abs() < 1e-12,
+            "{total} vs {enclosed}"
+        );
         (s, st)
     }
 
@@ -577,14 +607,26 @@ mod tests {
         t = r.triangles;
         v = r.vertices;
         let tags: Vec<usize> = (0..t.len()).map(|i| 1 + i % 3).collect();
-        let (s, _) = check(&v, &t, &tags, ScaffoldOptions { max_size: 0.3, ..Default::default() });
+        let (s, _) = check(
+            &v,
+            &t,
+            &tags,
+            ScaffoldOptions {
+                max_size: 0.3,
+                ..Default::default()
+            },
+        );
         let expected = 2.0 - 0.5 * 0.7 * 1.0; // box minus the cut wedge... computed below
         let _ = expected;
         let enclosed = volume(&v, &t);
-        let tets: f64 = s.tetrahedra.iter().map(|t| {
-            let q = t.map(|i| s.points[i]);
-            (q[1] - q[0]).dot((q[2] - q[0]).cross(q[3] - q[0])) / 6.0
-        }).sum();
+        let tets: f64 = s
+            .tetrahedra
+            .iter()
+            .map(|t| {
+                let q = t.map(|i| s.points[i]);
+                (q[1] - q[0]).dot((q[2] - q[0]).cross(q[3] - q[0])) / 6.0
+            })
+            .sum();
         assert!((tets - enclosed).abs() < 1e-12 * enclosed);
         let mut seen = [false; 4];
         for (_, g) in &s.boundary {

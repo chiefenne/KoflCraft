@@ -87,16 +87,12 @@ fn face_integral(
     let coordinate_scale = centre.max_abs_component().max(diameter);
     // a triangle is planar; on a sliver its Newell normal is too inaccurate
     // for the offset test
-    let planar = face.len() == 3 || face.iter().all(|&v| {
-        (points[v] - centre).dot(unit).abs()
-            <= 1e-10 * diameter + 256.0 * f64::EPSILON * coordinate_scale
-    });
+    let planar = face.len() == 3
+        || face.iter().all(|&v| {
+            (points[v] - centre).dot(unit).abs()
+                <= 1e-10 * diameter + 256.0 * f64::EPSILON * coordinate_scale
+        });
     if !planar {
-        if face.len() != 4 && std::env::var_os("KOFL_DEBUG").is_some() {
-            let off: Vec<f64> = face.iter().map(|&v| (points[v] - centre).dot(unit)).collect();
-            eprintln!("nonplanar face n={} diameter={diameter:e} centre={centre:?} offsets={off:?} ids={face:?}", face.len());
-            for &v in face { eprintln!("  {v}: {:?}", points[v]); }
-        }
         if face.len() != 4 {
             return Err("nonplanar polyhedron face");
         }

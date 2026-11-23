@@ -158,6 +158,25 @@ commands = []
 gaps = "Needs a Gmsh scaffold and a Python preparation script (OPEN-07); fitted volume 0.183 % below the STL; the wall columns reach 80.1° (elbow) and 82.8° (SolidCraft) non-orthogonality; on curved walls they leave sliver cells where a core cell clips a wall triangle (smallest cell about 5e-11 on SolidCraft); SolidCraft builds in about 80 s; flow accuracy untested"
 
 [[feature]]
+id = "duct-scaffold"
+title = "Rust scaffold for nonconvex ducts: wall remeshed to a chord tolerance, Delaunay tetrahedralization (OPEN-07)"
+requirements = ["M4", "GEO-04", "ALG-11"]
+grade = "partial"
+how = "A remeshed sphere stays within the chord tolerance both ways with edges at the chord length; a box keeps its twelve feature edges, eight corners, kept facets and exact volume; exact orientation and in-sphere signs on coplanar and cospherical input; a Delaunay grid has empty spheres and fills its box; scaffolds of a sphere and a nonconvex box pair every interior face, use every wall triangle once and fill the enclosed volume to 1e-12; the SolidCraft wall built from the STL is within 0.05 of it both ways and its polyhedral mesh is valid in the hand-off"
+tests = [
+  "crates/mesh-algorithms/src/remesh.rs::sphere_meets_the_chord_tolerance",
+  "crates/mesh-algorithms/src/remesh.rs::box_keeps_features_and_kept_facets",
+  "crates/mesh-algorithms/src/predicates.rs::orientation_signs_are_exact",
+  "crates/mesh-algorithms/src/predicates.rs::insphere_signs_are_exact",
+  "crates/mesh-algorithms/src/delaunay.rs::grid_is_delaunay",
+  "crates/mesh-algorithms/src/scaffold.rs::sphere_scaffold_fills_the_wall",
+  "crates/mesh-algorithms/src/scaffold.rs::nonconvex_box_is_recovered",
+  "crates/mesh-cli/tests/workflow.rs::nonconvex_elbow_and_solidcraft_preserve_volume_and_expose_each_port_layer",
+]
+commands = []
+gaps = "Ports are kept as they are (the elbow, with two-triangle ports, keeps its Gmsh scaffold); scaffold mean ratio floor 0.05 against Gmsh's 0.26, no vertex smoothing; features by dihedral angle only; a finer wall makes the SolidCraft mesh 2.4 times larger and its build about 3 minutes"
+
+[[feature]]
 id = "foehncraft-handoff"
 title = "FoehnCraft hand-off: MSH 4.1, single-file VTU, names, evidence (FC-01, FC-02, FC-04 to FC-06)"
 requirements = ["FC-01", "FC-02", "FC-04", "FC-05", "FC-06"]

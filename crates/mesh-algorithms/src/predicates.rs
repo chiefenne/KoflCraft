@@ -9,6 +9,8 @@
 //! generous multiple of the paper's first-stage bound, so the filter only
 //! falls through more often than needed, never less.
 
+#![allow(clippy::needless_range_loop)] // parallel per-vertex and per-face arrays
+
 use mesh_core::geometry::Vec3;
 use std::cmp::Ordering;
 
@@ -151,7 +153,8 @@ pub fn insphere(a: Vec3, b: Vec3, c: Vec3, d: Vec3, e: Vec3) -> Ordering {
     };
     // det of rows (x, y, z, l) expanded along the lifted column
     let det = -l[0] * m3(1, 2, 3) + l[1] * m3(0, 2, 3) - l[2] * m3(0, 1, 3) + l[3] * m3(0, 1, 2);
-    let perm = l[0] * pm3(1, 2, 3) + l[1] * pm3(0, 2, 3) + l[2] * pm3(0, 1, 3) + l[3] * pm3(0, 1, 2);
+    let perm =
+        l[0] * pm3(1, 2, 3) + l[1] * pm3(0, 2, 3) + l[2] * pm3(0, 1, 3) + l[3] * pm3(0, 1, 2);
     // With rows a−e … d−e, det < 0 means inside for positive orientation.
     if det.abs() > BOUND * perm {
         return (-det).total_cmp(&0.0);
@@ -162,7 +165,12 @@ pub fn insphere(a: Vec3, b: Vec3, c: Vec3, d: Vec3, e: Vec3) -> Ordering {
         .collect();
     let lift: Vec<Expansion> = rows
         .iter()
-        .map(|r| add(&add(&mul(&r[0], &r[0]), &mul(&r[1], &r[1])), &mul(&r[2], &r[2])))
+        .map(|r| {
+            add(
+                &add(&mul(&r[0], &r[0]), &mul(&r[1], &r[1])),
+                &mul(&r[2], &r[2]),
+            )
+        })
         .collect();
     let minor = |i: usize, j: usize, k: usize| {
         det3([
@@ -208,7 +216,10 @@ mod tests {
             let _ = exact;
         }
         assert_eq!(orient3d(a, b, c, v(0.5, 0.25, 0.0)), Ordering::Equal);
-        assert_eq!(orient3d(a, b, v(2., 0., 0.), v(1e-300, 1., 0.)), Ordering::Equal);
+        assert_eq!(
+            orient3d(a, b, v(2., 0., 0.), v(1e-300, 1., 0.)),
+            Ordering::Equal
+        );
     }
 
     /// Invariant: the centroid is inside, a far point outside, and a fifth
