@@ -87,6 +87,26 @@ pub struct ScaffoldBuild {
     pub feature_angle: f64,
     #[serde(default = "default_remesh_iterations")]
     pub iterations: usize,
+    /// Wall spacing from the local thickness of gaps and thin walls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thickness: Option<ThicknessBuild>,
+}
+
+/// Wall spacing = local thickness / `across`, not below `min_size` (which
+/// may lie below the build's `min_size`). The thickness is the medial-ball
+/// diameter between opposite walls, on the fluid and on the solid side.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ThicknessBuild {
+    pub across: f64,
+    pub min_size: f64,
+    /// Walls within this angle (degrees) of opposite count as a gap.
+    #[serde(default = "default_wedge_angle")]
+    pub wedge_angle: f64,
+}
+
+fn default_wedge_angle() -> f64 {
+    45.0
 }
 
 fn default_feature_angle() -> f64 {
@@ -613,6 +633,7 @@ pub fn setup(
                 rim_size: Some(round(h / 29.4)),
                 feature_angle: default_feature_angle(),
                 iterations: default_remesh_iterations(),
+                thickness: None,
             }),
             max_relative_geometry_error: 0.002,
             max_wall_deviation: Some(round(1.5 * tolerance)),
@@ -832,7 +853,14 @@ fn load_scaffold(
                 && b.rim_size.is_none_or(positive)
                 && b.feature_angle > 0.0
                 && b.feature_angle < 180.0
-                && b.iterations <= MAX_REMESH_ITERATIONS)
+                && b.iterations <= MAX_REMESH_ITERATIONS
+                && b.thickness.is_none_or(|t| {
+                    positive(t.across)
+                        && positive(t.min_size)
+                        && t.min_size <= b.max_size
+                        && t.wedge_angle > 0.0
+                        && t.wedge_angle < 90.0
+                }))
             {
                 return Err(invalid("invalid scaffold build settings"));
             }
@@ -855,10 +883,27 @@ fn load_scaffold(
                     feature_angle: b.feature_angle.to_radians(),
                     iterations: b.iterations,
                     rim_size: b.rim_size,
+                    thickness: b.thickness.map(|t| remesh::ThicknessSizing {
+                        across: t.across,
+                        min_size: t.min_size,
+                        wedge_angle: t.wedge_angle.to_radians(),
+                    }),
                 },
             )
             .map_err(validated)?;
             let remesh_seconds = start.elapsed().as_secs_f64();
+            if mesh_algorithms::trace_enabled() {
+                let w = wall.stats;
+                eprintln!(
+                    "kofl trace: wall remesh {remesh_seconds:.1} s: {} triangles, edges {:.3e} to {:.3e}, min gap {:.3e}, min wall {:.3e}, {} thickness pieces at the floor",
+                    wall.triangles.len(),
+                    w.min_edge,
+                    w.max_edge,
+                    w.min_gap,
+                    w.min_wall,
+                    w.thickness_clamped
+                );
+            }
             let tags: Vec<usize> = wall
                 .source
                 .iter()
@@ -886,6 +931,9 @@ fn load_scaffold(
                     "feature_corners": w.corners,
                     "wall_edge_range": [w.min_edge, w.max_edge],
                     "deviation_splits": w.deviation_splits,
+                    "min_gap": w.min_gap.is_finite().then_some(w.min_gap),
+                    "min_wall": w.min_wall.is_finite().then_some(w.min_wall),
+                    "thickness_clamped": w.thickness_clamped,
                     "surface_points": st.surface_points,
                     "recovery_points": st.recovery_points,
                     "interior_points": st.interior_points,

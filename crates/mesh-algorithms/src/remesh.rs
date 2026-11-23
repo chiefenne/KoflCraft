@@ -46,6 +46,20 @@ pub struct RemeshOptions {
     pub iterations: usize,
     /// Target length at the rims of the kept facets (`None`: no rim source).
     pub rim_size: Option<f64>,
+    /// Size from the local thickness (gaps and thin walls); `None`: off.
+    pub thickness: Option<ThicknessSizing>,
+}
+
+/// Wall edges follow the local thickness t of the gap or solid wall at
+/// the wall point (`sizing::thickness`): length = t / `across`, not below
+/// `min_size` (which may lie below the remesh `min_size`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ThicknessSizing {
+    pub across: f64,
+    pub min_size: f64,
+    /// Walls whose normals are within this angle (radians) of opposite
+    /// count as a gap or a thin wall.
+    pub wedge_angle: f64,
 }
 
 impl Default for RemeshOptions {
@@ -58,6 +72,7 @@ impl Default for RemeshOptions {
             feature_angle: 30f64.to_radians(),
             iterations: 10,
             rim_size: None,
+            thickness: None,
         }
     }
 }
@@ -81,6 +96,12 @@ pub struct RemeshStats {
     /// Flips that made an edge locally Delaunay on the surface.
     pub delaunay_flips: usize,
     pub flips: usize,
+    /// Smallest gap and smallest solid wall found by the thickness source
+    /// (`INFINITY`: none below `across`·`max_size`, or the source is off).
+    pub min_gap: f64,
+    pub min_wall: f64,
+    /// Thickness pieces that asked for less than their `min_size`.
+    pub thickness_clamped: usize,
     /// Facets split in the final deviation pass.
     pub deviation_splits: usize,
     /// Largest sampled distance of a new facet from the source surface.
@@ -269,6 +290,7 @@ struct Work<'a> {
     surface: &'a ClosestSet,
     lines: &'a ClosestSet,
     size: &'a WeightedSet,
+    thin: Option<&'a WeightedSet>,
     opts: RemeshOptions,
     stats: RemeshStats,
 }
@@ -303,9 +325,17 @@ fn unit(v: Vec3) -> Vec3 {
 
 impl Work<'_> {
     fn target(&self, x: Vec3) -> f64 {
-        self.size
+        let h = self
+            .size
             .envelope(x, self.opts.rate, 0.0, self.opts.max_size)
-            .max(self.opts.min_size)
+            .max(self.opts.min_size);
+        match (self.thin, self.opts.thickness) {
+            (Some(thin), Some(t)) => thin
+                .envelope(x, self.opts.rate, 0.0, h)
+                .max(t.min_size)
+                .min(h),
+            _ => h,
+        }
     }
 
     /// Target length of edge (a, b): the mean of the vertex targets.
@@ -781,6 +811,37 @@ pub fn remesh(
     let surface = ClosestSet::new(wall);
     let lines = ClosestSet::new(line_items);
     let size = WeightedSet::new(sizes);
+    let mut thickness_stats = crate::sizing::thickness::ThicknessStats {
+        min_gap: f64::INFINITY,
+        min_wall: f64::INFINITY,
+        ..Default::default()
+    };
+    let thin = match opts.thickness {
+        Some(t) => {
+            if !(t.across > 0.0
+                && t.across.is_finite()
+                && t.min_size > 0.0
+                && t.min_size <= opts.max_size
+                && t.wedge_angle > 0.0
+                && t.wedge_angle < std::f64::consts::FRAC_PI_2)
+            {
+                return Err("invalid thickness sizing".into());
+            }
+            let (items, st) = crate::sizing::thickness::thickness_primitives(
+                &geometry,
+                keep,
+                crate::sizing::thickness::ThicknessOptions {
+                    across: t.across,
+                    wedge_angle: t.wedge_angle,
+                    min_size: t.min_size,
+                    max_size: opts.max_size,
+                },
+            );
+            thickness_stats = st;
+            (!items.is_empty()).then(|| WeightedSet::new(items))
+        }
+        None => None,
+    };
     let mut vf = vec![Vec::new(); vertices.len()];
     for (f, t) in triangles.iter().enumerate() {
         for &v in t {
@@ -808,6 +869,7 @@ pub fn remesh(
         surface: &surface,
         lines: &lines,
         size: &size,
+        thin: thin.as_ref(),
         opts,
         stats: RemeshStats::default(),
     };
@@ -830,6 +892,9 @@ pub fn remesh(
         w.refresh(v);
     }
     w.stats.feature_edges = w.feature.len();
+    w.stats.min_gap = thickness_stats.min_gap;
+    w.stats.min_wall = thickness_stats.min_wall;
+    w.stats.thickness_clamped = thickness_stats.clamped;
     w.stats.corners = w.corner.iter().filter(|&&c| c).count();
     let (hi, lo) = (4.0 / 3.0, 4.0 / 5.0);
     for _ in 0..opts.iterations {

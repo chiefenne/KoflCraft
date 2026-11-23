@@ -163,7 +163,8 @@ pub fn build(
     // 2. boundary recovery
     let input: HashSet<usize> = id.iter().copied().collect();
     let mut recovered = false;
-    for _ in 0..64 {
+    let trace = crate::trace_enabled();
+    for pass in 0..64 {
         let edges = dt.edge_set();
         let faces = dt.face_set();
         let mut split: HashSet<(usize, usize)> = HashSet::default();
@@ -195,6 +196,17 @@ pub fn build(
         }
         let mut split: Vec<_> = split.into_iter().collect();
         split.sort_unstable();
+        if trace {
+            let shortest = split
+                .iter()
+                .map(|&(a, b)| (dt.points[a] - dt.points[b]).length())
+                .fold(f64::INFINITY, f64::min);
+            eprintln!(
+                "kofl trace: recovery pass {pass}: {} edges to split, shortest {shortest:.3e}, {} points",
+                split.len(),
+                dt.points.len()
+            );
+        }
         let mut midpoint = HashMap::default();
         for (a, b) in split {
             let m = shell_point(&dt.points, &input, a, b);

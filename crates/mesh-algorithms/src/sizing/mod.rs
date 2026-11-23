@@ -21,6 +21,7 @@ mod field;
 #[path = "../../../../test-fixtures/shapes.rs"]
 pub(crate) mod shapes;
 pub mod surface;
+pub mod thickness;
 
 pub use field::{Frame, Shape, SizeField, SizeSource, SizingError, SourceKind};
 
