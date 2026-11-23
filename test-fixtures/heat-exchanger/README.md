@@ -66,8 +66,8 @@ reader. The numbers below are what the reader must reproduce.
   sheets (MD-08).
 - **Solids:** 13 bodies in three parts. Domains may be one per body or one per part
   (MD-06); the material tag starts from the file (`Kunststoff`) and is set per part
-  through the domain tools (MD-07, MD-15). The acceptance run gives at least two
-  parts different tags, so that several solid materials are exercised.
+  through the domain tools (MD-07, MD-15). The corrected file is expected to name
+  different materials per part, which then become the expected tags.
 - **Ports:** the nozzle ends are annular faces of the housing wall; the fluid
   openings inside them (radius 20 and 15) are not faces of the file and are closed
   by planar caps from their rim circles (MD-19).
