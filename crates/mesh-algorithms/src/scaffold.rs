@@ -21,11 +21,11 @@
 #![allow(clippy::needless_range_loop)] // parallel per-vertex and per-face arrays
 
 use crate::delaunay::{Delaunay, FACES, NONE, Refused, circumsphere};
+use crate::delaunay::{HashMap, HashSet};
 use crate::duct::Scaffold;
 use crate::remesh::ClosestSet;
 use crate::sizing::surface::{Primitive, Weighted, WeightedSet};
 use mesh_core::geometry::Vec3;
-use crate::delaunay::{HashMap, HashSet};
 use std::collections::VecDeque;
 
 #[derive(Clone, Copy, Debug, PartialEq)]

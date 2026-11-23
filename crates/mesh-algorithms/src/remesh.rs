@@ -25,12 +25,12 @@
 
 #![allow(clippy::needless_range_loop)] // parallel per-vertex and per-face arrays
 
+use crate::delaunay::{HashMap, HashSet};
 use crate::sizing::surface::{
     Primitive, SurfaceGeometry, Weighted, WeightedSet, normal_cycle_curvature,
 };
 use mesh_core::geometry::Vec3;
 use mesh_geometry::patches::closest_point;
-use crate::delaunay::{HashMap, HashSet};
 
 /// The settings of a wall remesh.
 #[derive(Clone, Copy, Debug, PartialEq)]

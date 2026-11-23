@@ -25,8 +25,7 @@ use std::hash::BuildHasherDefault;
 /// Hash containers with a fixed hasher: insertion and walk order depend on
 /// their iteration order, so a per-process random seed would make the
 /// scaffold differ from run to run.
-pub(crate) type HashMap<K, V> =
-    std::collections::HashMap<K, V, BuildHasherDefault<DefaultHasher>>;
+pub(crate) type HashMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<DefaultHasher>>;
 /// See [`HashMap`].
 pub(crate) type HashSet<K> = std::collections::HashSet<K, BuildHasherDefault<DefaultHasher>>;
 
