@@ -23,7 +23,7 @@ fn det(a: Vec3, b: Vec3, c: Vec3) -> f64 {
 /// At fixed height the linear-wedge determinant is affine over the reference
 /// triangle. On each of its three vertical edges it is quadratic in height.
 /// Integrate that polynomial exactly to obtain the physical wedge volume.
-fn wedge(p: [Vec3; 6]) -> (f64, f64, [f64; 2]) {
+pub(super) fn wedge(p: [Vec3; 6]) -> (f64, f64, [f64; 2]) {
     let [a, b, c, d, e, f] = p;
     let (u, v) = (b - a, c - a);
     let (du, dv) = ((e - d) - u, (f - d) - v);
@@ -47,9 +47,8 @@ fn wedge(p: [Vec3; 6]) -> (f64, f64, [f64; 2]) {
     (minimum, volume, thickness)
 }
 
-fn key(ring: &[usize]) -> [usize; 4] {
-    let mut k = [usize::MAX; 4];
-    k[..ring.len()].copy_from_slice(ring);
+fn key(ring: &[usize]) -> Vec<usize> {
+    let mut k = ring.to_vec();
     k.sort_unstable();
     k
 }
@@ -60,44 +59,92 @@ fn same_ring(a: &[usize], b: &[usize], reverse: bool) -> bool {
             (0..n).all(|i| a[(start + if reverse { n - i } else { i }) % n] == b[i])
         })
 }
+/// Two-point Gauss rule on [0, 1].
+const GAUSS: [f64; 2] = [0.211_324_865_405_187_1, 0.788_675_134_594_812_9];
+
+/// A face integrated from `origin`: (six times the cone volume, area), and
+/// whether every part of it is seen strictly from the front.
+///
+/// Planar polygons are fanned from their vertex mean, as FoehnCraft does. A
+/// quadrilateral that is not planar is the bilinear patch of a layer prism
+/// side (as in a linear wedge); its cone volume is integrated exactly by the
+/// 2×2 Gauss rule (the integrand has degree two per parameter).
+fn face_integral(
+    points: &[Vec3],
+    face: &[usize],
+    origin: Vec3,
+) -> Result<(f64, f64, bool), &'static str> {
+    let (newell, centre) = super::convex::ring_plane(points, face);
+    let norm = newell.length();
+    if norm.is_nan() || norm <= 0.0 {
+        return Err("degenerate polyhedron face");
+    }
+    let unit = newell / norm;
+    let diameter = face
+        .iter()
+        .map(|&v| (points[v] - centre).length())
+        .fold(0.0, f64::max);
+    let coordinate_scale = centre.max_abs_component().max(diameter);
+    let planar = face.iter().all(|&v| {
+        (points[v] - centre).dot(unit).abs()
+            <= 1e-10 * diameter + 256.0 * f64::EPSILON * coordinate_scale
+    });
+    if !planar {
+        if face.len() != 4 {
+            return Err("nonplanar polyhedron face");
+        }
+        let [p0, p1, p2, p3] = [0, 1, 2, 3].map(|i| points[face[i]]);
+        let mut v6 = 0.0;
+        let mut area = 0.0;
+        let mut front = true;
+        let at = |u: f64, v: f64| {
+            let x = p0 * ((1. - u) * (1. - v))
+                + p1 * (u * (1. - v))
+                + p2 * (u * v)
+                + p3 * ((1. - u) * v);
+            let xu = (p1 - p0) * (1. - v) + (p2 - p3) * v;
+            let xv = (p3 - p0) * (1. - u) + (p2 - p1) * u;
+            (x, xu.cross(xv))
+        };
+        for &u in &GAUSS {
+            for &v in &GAUSS {
+                let (x, n) = at(u, v);
+                // 2 = 6 / 3 for the cone, 1/4 for the Gauss weights
+                v6 += 0.5 * (x - origin).dot(n);
+                area += 0.25 * n.length();
+                front &= (x - origin).dot(n) > 0.0;
+            }
+        }
+        for (u, v) in [(0., 0.), (1., 0.), (1., 1.), (0., 1.)] {
+            let (x, n) = at(u, v);
+            front &= (x - origin).dot(n) > 0.0;
+        }
+        return Ok((v6, area, front));
+    }
+    let mut v6 = 0.0;
+    let mut area = 0.0;
+    let mut front = true;
+    for k in 0..face.len() {
+        let (a, b) = (points[face[k]], points[face[(k + 1) % face.len()]]);
+        let cross = (a - centre).cross(b - centre);
+        let signed = cross.dot(centre - origin);
+        front &= signed > 0.0 && cross.dot(newell) > 0.0;
+        v6 += signed;
+        area += 0.5 * cross.length();
+    }
+    Ok((v6, area, front))
+}
+
 /// Integrate the oriented shell from its certified interior point. The expected
 /// volume is computed independently from the source tetrahedron partitions.
-fn poly_volume(poly: &Polyhedron, points: &[Vec3]) -> Result<(f64, f64), &'static str> {
+/// Every edge used twice in opposite directions, Euler characteristic 2.
+fn shell_closed(poly: &Polyhedron) -> Result<(), &'static str> {
     let mut edges = HashMap::<(usize, usize), (usize, i32)>::new();
-    let mut volume = 0.0;
-    let mut area = 0.0;
     for face in &poly.faces {
         for (&a, &b) in face.iter().zip(face.iter().cycle().skip(1)) {
             let e = edges.entry((a.min(b), a.max(b))).or_default();
             e.0 += 1;
             e.1 += if a < b { 1 } else { -1 };
-        }
-        let a = points[face[0]];
-        let first = (points[face[1]] - a).cross(points[face[2]] - a);
-        let norm = first.length();
-        for pair in face[1..].windows(2) {
-            let cross = (points[pair[0]] - a).cross(points[pair[1]] - a);
-            let signed = cross.dot(a - poly.interior);
-            if !signed.is_finite() || signed <= 0.0 || cross.dot(first) <= 0.0 {
-                return Err("inverted face or invalid polyhedron kernel");
-            }
-            // Face vertices are computed in world coordinates. Account for
-            // cancellation in very slender faces near a large coordinate offset.
-            let edge = (points[face[1]] - a)
-                .length()
-                .max((points[face[2]] - a).length());
-            let coordinate_scale = a.max_abs_component().max(edge);
-            let distance = (points[pair[1]] - a).dot(first).abs();
-            if distance
-                > 128.0
-                    * f64::EPSILON
-                    * coordinate_scale
-                    * (norm + edge * (points[pair[1]] - a).length())
-            {
-                return Err("nonplanar polyhedron face");
-            }
-            volume += signed / 6.0;
-            area += 0.5 * cross.length();
         }
     }
     if edges.values().any(|&use_count| use_count != (2, 0))
@@ -105,6 +152,21 @@ fn poly_volume(poly: &Polyhedron, points: &[Vec3]) -> Result<(f64, f64), &'stati
     {
         return Err("open or nonmanifold polyhedron shell");
     }
+    Ok(())
+}
+
+fn poly_volume(poly: &Polyhedron, points: &[Vec3]) -> Result<(f64, f64), &'static str> {
+    let mut volume = 0.0;
+    let mut area = 0.0;
+    for face in &poly.faces {
+        let (v6, a, front) = face_integral(points, face, poly.interior)?;
+        if !v6.is_finite() || !front {
+            return Err("inverted face or invalid polyhedron kernel");
+        }
+        volume += v6 / 6.0;
+        area += a;
+    }
+    shell_closed(poly)?;
     if !volume.is_finite() || (volume / poly.expected_volume - 1.0).abs() > 1e-8 {
         return Err("polyhedron shell volume differs from its source partition");
     }
@@ -172,7 +234,7 @@ pub(super) fn check_with_interface_count(
             ));
         }
     }
-    let mut pending = HashMap::<[usize; 4], (Vec<usize>, usize)>::new();
+    let mut pending = HashMap::<Vec<usize>, (Vec<usize>, usize)>::new();
     let mut prism_core_faces = 0;
     let mut complete = std::collections::HashSet::new();
     let mut minimum_volume = f64::INFINITY;
@@ -185,10 +247,33 @@ pub(super) fn check_with_interface_count(
     let mut sphericities = Vec::new();
     for (id, cell) in cells.iter().enumerate() {
         let value = match cell.element {
+            Element::Polyhedron(ref poly) if poly.prism.is_some() => {
+                let mut value = 0.0;
+                for w in poly.prism.iter().flatten() {
+                    let (jac, v, _) = wedge(w.map(|v| p[v]));
+                    if !jac.is_finite() || jac <= 0. {
+                        return Err(format!(
+                            "layer collision or inversion in layer {}, cell {id}, Jacobian {jac}",
+                            cell.layer
+                        ));
+                    }
+                    minimum_j = minimum_j.min(jac);
+                    value += v;
+                }
+                shell_closed(poly).map_err(|e| format!("cell {id}: {e}"))?;
+                if !value.is_finite() || (value / poly.expected_volume - 1.0).abs() > 1e-8 {
+                    return Err(format!(
+                        "cell {id}: layer piece volume differs from its shell"
+                    ));
+                }
+                value
+            }
             Element::Polyhedron(ref poly) => {
-                let (volume, sphericity) =
-                    poly_volume(poly, p).map_err(|e| format!("cell {id}: {e}"))?;
-                sphericities.push(sphericity);
+                let (volume, sphericity) = poly_volume(poly, p)
+                    .map_err(|e| format!("cell {id} (layer {}): {e}", cell.layer))?;
+                if cell.layer == 0 {
+                    sphericities.push(sphericity);
+                }
                 volume
             }
             Element::Tet(n) => {
