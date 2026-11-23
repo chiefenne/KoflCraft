@@ -3,7 +3,7 @@ use crate::msh::{GmshVersion, Model};
 use crate::{end_array, end_vtu, start_array, vtu_points, write_array, write_ids};
 use mesh_algorithms::duct::{DuctMesh, Element};
 use mesh_core::geometry::Vec3;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 
 pub fn volume(mesh: &DuctMesh, out: &mut dyn Write) -> io::Result<()> {
@@ -93,6 +93,10 @@ pub fn patch(mesh: &DuctMesh, tag: usize, out: &mut dyn Write) -> io::Result<()>
 /// point shared by both sides.
 struct Splits {
     caps: HashMap<Vec<usize>, Vec<[usize; 3]>>,
+    /// Faces fanned from a centre although they have at most four corners:
+    /// one of each pair of a cell's faces that share more than one edge.
+    /// Cones over both faces would be two elements sharing two faces.
+    folds: HashSet<Vec<usize>>,
     centres: HashMap<Vec<usize>, usize>,
 }
 
@@ -116,16 +120,62 @@ impl Splits {
                 }
             }
         }
+        // faces of tetrahedra, wedges and wall columns keep their shape
+        let mut fixed = HashSet::new();
+        for cell in &mesh.cells {
+            match &cell.element {
+                Element::Tet(n) => {
+                    for f in [[0, 1, 2], [0, 1, 3], [1, 2, 3], [0, 2, 3]] {
+                        fixed.insert(sorted(&f.map(|i| n[i])));
+                    }
+                }
+                Element::Wedge(n) => {
+                    for f in [[0, 1, 4, 3], [1, 2, 5, 4], [2, 0, 3, 5]] {
+                        fixed.insert(sorted(&f.map(|i| n[i])));
+                    }
+                }
+                Element::Polyhedron(p) if native(p) => {
+                    for f in &p.faces {
+                        fixed.insert(sorted(f));
+                    }
+                }
+                Element::Polyhedron(_) => {}
+            }
+        }
+        let mut folds = HashSet::new();
+        for cell in &mesh.cells {
+            let Element::Polyhedron(p) = &cell.element else {
+                continue;
+            };
+            if native(p) {
+                continue;
+            }
+            for (i, j) in folded_pairs(&p.faces) {
+                let (fi, fj) = (&p.faces[i], &p.faces[j]);
+                let fanned = |f: &Vec<usize>| {
+                    f.len() > 4 || caps.contains_key(&sorted(f)) || folds.contains(&sorted(f))
+                };
+                if fanned(fi) || fanned(fj) {
+                    continue;
+                }
+                if let Some(f) = [fi, fj].into_iter().find(|f| !fixed.contains(&sorted(f))) {
+                    folds.insert(sorted(f));
+                }
+            }
+        }
         Self {
             caps,
+            folds,
             centres: HashMap::new(),
         }
     }
 
-    /// Whether a face is tiled by the end triangles of a native layer cell
-    /// (a quadrilateral cap of a wall column is two triangles, not a quad).
+    /// Whether a face is split: tiled by the end triangles of a native layer cell
+    /// (a quadrilateral cap of a wall column is two triangles, not a quad), or
+    /// a fold (see `folds`).
     fn is_cap(&self, ring: &[usize]) -> bool {
-        self.caps.contains_key(&sorted(ring))
+        let key = sorted(ring);
+        self.caps.contains_key(&key) || self.folds.contains(&key)
     }
 
     fn split(&mut self, points: &mut Vec<Vec3>, ring: &[usize]) -> Vec<[usize; 3]> {
@@ -152,6 +202,30 @@ impl Splits {
             .map(|k| [centre, ring[k], ring[(k + 1) % ring.len()]])
             .collect()
     }
+}
+
+/// The pairs of a cell's faces that share more than one edge (in face
+/// order): a vertex between them belongs to no other face of the cell.
+fn folded_pairs(faces: &[Vec<usize>]) -> Vec<(usize, usize)> {
+    let mut first: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut shared: std::collections::BTreeMap<(usize, usize), usize> =
+        std::collections::BTreeMap::new();
+    for (i, f) in faces.iter().enumerate() {
+        for k in 0..f.len() {
+            let (a, b) = (f[k], f[(k + 1) % f.len()]);
+            let edge = (a.min(b), a.max(b));
+            if let Some(&j) = first.get(&edge) {
+                *shared.entry((j, i)).or_insert(0) += 1;
+            } else {
+                first.insert(edge, i);
+            }
+        }
+    }
+    shared
+        .into_iter()
+        .filter(|&(_, n)| n > 1)
+        .map(|(pair, _)| pair)
+        .collect()
 }
 
 /// The end triangles of a cell's wedges that lie in one of its faces.
@@ -465,5 +539,31 @@ mod tests {
         let tent = [0, 1, 2, 3].map(|k| vec![k, (k + 1) % 4, 5]);
         let refs: Vec<&Vec<usize>> = tent.iter().collect();
         assert!(!planar(&p, &[0, 1, 2, 3], &refs));
+    }
+
+    /// Keep: two quadrilateral faces of one polyhedron that share the edges
+    /// a-v and v-b (v belongs to no other face) are found as a fold, so the
+    /// Gmsh export fans one of them about its centre. Pyramids over both
+    /// would share two triangles, which FoehnCraft refuses ("cells ... share
+    /// more than one face"); this happened on Manifold after the wall flips.
+    #[test]
+    fn faces_sharing_two_edges_are_a_fold() {
+        // a = 0, v = 1, b = 2; the faces close a wedge-like cell
+        let faces = vec![
+            vec![0, 1, 2, 3],
+            vec![2, 1, 0, 4],
+            vec![0, 3, 4],
+            vec![2, 4, 3],
+        ];
+        assert_eq!(folded_pairs(&faces), vec![(0, 1)]);
+        let cube = vec![
+            vec![0, 1, 2, 3],
+            vec![4, 7, 6, 5],
+            vec![0, 4, 5, 1],
+            vec![1, 5, 6, 2],
+            vec![2, 6, 7, 3],
+            vec![3, 7, 4, 0],
+        ];
+        assert!(folded_pairs(&cube).is_empty());
     }
 }
