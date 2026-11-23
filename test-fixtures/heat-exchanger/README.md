@@ -4,6 +4,15 @@
 the STEP reader (section 4b, STP-01 to STP-13) and the multi-domain mesher
 (MD-18). It is stored byte for byte.
 
+**Version 1 (2026-11-23), geometry only.** The maintainer did not set the
+materials and names in this version and will replace the file with a
+corrected one, which becomes the shipped test example. Until then, the
+names, colours and materials below describe this file only. They are not
+acceptance targets, but the reader must still handle them, including the
+repeated body names. When the update arrives, replace the file, update its
+SHA-256 and the inventory, and keep the geometry checks if the geometry is
+unchanged.
+
 ## Provenance (LIC-10)
 
 | Item | Value |
