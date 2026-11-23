@@ -25,7 +25,8 @@ use crate::duct::Scaffold;
 use crate::remesh::ClosestSet;
 use crate::sizing::surface::{Primitive, Weighted, WeightedSet};
 use mesh_core::geometry::Vec3;
-use std::collections::{HashMap, HashSet, VecDeque};
+use crate::delaunay::{HashMap, HashSet};
+use std::collections::VecDeque;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScaffoldOptions {
@@ -141,7 +142,7 @@ pub fn build(
     for _ in 0..64 {
         let edges = dt.edge_set();
         let faces = dt.face_set();
-        let mut split: HashSet<(usize, usize)> = HashSet::new();
+        let mut split: HashSet<(usize, usize)> = HashSet::default();
         for (t, _) in &surface {
             let mut missing_edge = false;
             for k in 0..3 {
@@ -170,7 +171,7 @@ pub fn build(
         }
         let mut split: Vec<_> = split.into_iter().collect();
         split.sort_unstable();
-        let mut midpoint = HashMap::new();
+        let mut midpoint = HashMap::default();
         for (a, b) in split {
             let m = (dt.points[a] + dt.points[b]) / 2.0;
             // a vertex exactly at the midpoint lies on the edge: split there
@@ -231,7 +232,7 @@ pub fn build(
     );
     let h = |x: Vec3| size.envelope(x, opts.rate, 0.0, opts.max_size);
     let mut queue: VecDeque<usize> = (0..dt.tets.len()).filter(|&t| inside[t]).collect();
-    let mut tried: HashSet<[usize; 4]> = HashSet::new();
+    let mut tried: HashSet<[usize; 4]> = HashSet::default();
     while let Some(t) = queue.pop_front() {
         if !dt.alive[t] || !inside[t] || dt.points.len() >= opts.max_points {
             continue;
@@ -526,7 +527,6 @@ mod tests {
     use super::*;
     use crate::remesh::tests::{assert_closed, sphere, volume};
     use crate::sizing::shapes;
-    use std::collections::HashMap;
 
     fn check(
         surface_v: &[Vec3],
@@ -539,7 +539,7 @@ mod tests {
         assert_closed(&boundary);
         // every tetrahedron positive; every interior face shared by two,
         // every boundary triangle by exactly one tetrahedron on its inner side
-        let mut faces: HashMap<[usize; 3], usize> = HashMap::new();
+        let mut faces: HashMap<[usize; 3], usize> = HashMap::default();
         let mut total = 0.0;
         for t in &s.tetrahedra {
             let q = t.map(|v| s.points[v]);

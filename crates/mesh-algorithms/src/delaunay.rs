@@ -19,7 +19,16 @@
 use crate::predicates::{insphere, orient3d};
 use mesh_core::geometry::Vec3;
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::BuildHasherDefault;
+
+/// Hash containers with a fixed hasher: insertion and walk order depend on
+/// their iteration order, so a per-process random seed would make the
+/// scaffold differ from run to run.
+pub(crate) type HashMap<K, V> =
+    std::collections::HashMap<K, V, BuildHasherDefault<DefaultHasher>>;
+/// See [`HashMap`].
+pub(crate) type HashSet<K> = std::collections::HashSet<K, BuildHasherDefault<DefaultHasher>>;
 
 pub const NONE: usize = usize::MAX;
 
@@ -88,7 +97,7 @@ impl Delaunay {
             tets,
             free: Vec::new(),
             last: 0,
-            constrained: HashSet::new(),
+            constrained: HashSet::default(),
             corners: 8,
             created: Vec::new(),
             rng: 0x9E37_79B9_7F4A_7C15,
@@ -98,7 +107,7 @@ impl Delaunay {
     }
 
     fn link_all(&mut self) {
-        let mut faces: HashMap<[usize; 3], (usize, usize)> = HashMap::new();
+        let mut faces: HashMap<[usize; 3], (usize, usize)> = HashMap::default();
         for t in 0..self.tets.len() {
             if !self.alive[t] {
                 continue;
@@ -162,7 +171,7 @@ impl Delaunay {
         if let Some(&v) = self.tets[start].iter().find(|&&v| self.points[v] == p) {
             return Err(Refused::Duplicate(v));
         }
-        let mut in_cavity: HashSet<usize> = HashSet::new();
+        let mut in_cavity: HashSet<usize> = HashSet::default();
         let mut stack = vec![start];
         in_cavity.insert(start);
         while let Some(t) = stack.pop() {
@@ -224,7 +233,7 @@ impl Delaunay {
             }
         }
         let mut created = Vec::with_capacity(boundary.len());
-        let mut edges: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
+        let mut edges: HashMap<(usize, usize), (usize, usize)> = HashMap::default();
         for &(t, i, n) in &boundary {
             let f = FACES[i].map(|k| self.tets[t][k]);
             let tet = [f[0], f[1], f[2], index];
@@ -421,7 +430,7 @@ impl Delaunay {
     /// Replace live tetrahedra `old` by `new` filling the same region.
     fn replace(&mut self, old: &[usize], new: &[[usize; 4]]) -> Vec<usize> {
         let old_set: HashSet<usize> = old.iter().copied().collect();
-        let mut outer: HashMap<[usize; 3], usize> = HashMap::new();
+        let mut outer: HashMap<[usize; 3], usize> = HashMap::default();
         for &t in old {
             for i in 0..4 {
                 let n = self.neighbours[t][i];
@@ -435,7 +444,7 @@ impl Delaunay {
             self.free.push(t);
         }
         let mut ids = Vec::new();
-        let mut inner: HashMap<[usize; 3], (usize, usize)> = HashMap::new();
+        let mut inner: HashMap<[usize; 3], (usize, usize)> = HashMap::default();
         for &tet in new {
             let id = if let Some(slot) = self.free.pop() {
                 self.tets[slot] = tet;
@@ -475,7 +484,7 @@ impl Delaunay {
 
     /// The faces of the live tetrahedra, sorted, each once.
     pub fn face_set(&self) -> HashSet<[usize; 3]> {
-        let mut out = HashSet::new();
+        let mut out = HashSet::default();
         for (t, tet) in self.tets.iter().enumerate() {
             if self.alive[t] {
                 for f in FACES {
@@ -487,7 +496,7 @@ impl Delaunay {
     }
 
     pub fn edge_set(&self) -> HashSet<(usize, usize)> {
-        let mut out = HashSet::new();
+        let mut out = HashSet::default();
         for (t, tet) in self.tets.iter().enumerate() {
             if self.alive[t] {
                 for i in 0..4 {

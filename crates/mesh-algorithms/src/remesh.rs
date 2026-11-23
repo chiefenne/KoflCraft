@@ -30,7 +30,7 @@ use crate::sizing::surface::{
 };
 use mesh_core::geometry::Vec3;
 use mesh_geometry::patches::closest_point;
-use std::collections::{HashMap, HashSet};
+use crate::delaunay::{HashMap, HashSet};
 
 /// The settings of a wall remesh.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -360,7 +360,7 @@ impl Work<'_> {
 
     /// The edges of the wall facets, each once.
     fn edges(&self) -> Vec<(usize, usize)> {
-        let mut set = HashSet::new();
+        let mut set = HashSet::default();
         let mut out = Vec::new();
         for (f, t) in self.t.iter().enumerate() {
             if !self.alive[f] || self.keep[f] {
@@ -681,7 +681,7 @@ pub fn remesh(
         }
     }
     // feature edges of the source and the rims of the kept facets
-    let mut feature = HashSet::new();
+    let mut feature = HashSet::default();
     let mut line_items = Vec::new();
     for e in &geometry.edges {
         let [f, g] = e.facets;
@@ -841,7 +841,7 @@ pub fn remesh(
     let mut out_v = Vec::new();
     let mut out_t = Vec::new();
     let mut source = Vec::new();
-    let mut origin: HashMap<[usize; 3], usize> = HashMap::new();
+    let mut origin: HashMap<[usize; 3], usize> = HashMap::default();
     for (f, t) in triangles.iter().enumerate() {
         if keep[f] {
             origin.insert(*t, f);
@@ -916,7 +916,7 @@ pub(crate) mod tests {
     /// Each edge used once in each direction: a closed, consistently
     /// oriented manifold.
     pub(crate) fn assert_closed(t: &[[usize; 3]]) {
-        let mut half = HashSet::new();
+        let mut half = HashSet::default();
         for f in t {
             for k in 0..3 {
                 assert!(
