@@ -27,6 +27,31 @@ preparations of the same `.geo` file. Pin the checked-in scaffold and its
 SHA-256 in the partition file; regenerate only on purpose, and update the
 digest in the same commit.
 
+## A fine cell size does not mean a fine wall
+
+The polyhedral duct takes its wall from the volume scaffold, not from the
+STL. The Gmsh scaffold of Manifold remeshed the 1-unit STL wall into
+triangles of about 6 units (curvature sizing off), and every finer core or
+layer cell sits on those flat triangles: 0.54 units off the STL, about seven
+first-layer thicknesses. Gmsh's curvature sizing had no effect on the
+discrete charts, and a chord size field made it worse (0.72: the
+reparametrisation of long pipe charts stretches triangles to 12 units). Using
+the STL triangles directly inverts tetrahedra at the wall offset (28-unit
+slivers). Measure the wall against the source both ways
+(`report.scaffold.wall_deviation`) and bound it with
+`max_wall_deviation`; build the scaffold in Rust (`volume_scaffold.build`),
+which remeshes the wall to a chord tolerance.
+
+## Delaunay wall slivers survive refinement
+
+A Delaunay tetrahedralization of a curved, finely remeshed wall has flat
+tetrahedra whose four corners are all on the wall (two wall triangles and
+the opposite diagonal). Their circumspheres bulge outward, so no interior
+point removes them, and inserting points just inside the wall only adds
+points. Remove them by edge removal around their diagonal (best
+triangulation of the ring by dynamic programming); on Manifold that takes
+the worst mean ratio from 0.002 to 0.05.
+
 ## Fitted volume differs from the STL
 
 The polyhedral duct mode remeshes the wall along curved pipes and fillets.
@@ -55,3 +80,7 @@ The Gmsh export subdivides polyhedra into tetrahedra (and the duct export
 into pyramids and tetrahedra). A solver reading it sees a different cell
 count and different face connectivity. To hand true polyhedra to a solver,
 use VTU or OpenFOAM `polyMesh` (OPEN-12).
+
+## Hash iteration order makes a mesh differ between runs
+
+`std::collections::HashMap` and `HashSet` seed their hasher randomly per process. Code that iterates one (a Delaunay cavity, a set of faces to split) and lets the order decide tetrahedron indices or insertion order gives a different mesh on every run of the same input. The Manifold scaffold's smallest core sphericity moved between 0.03 and 0.17 that way. The scaffold modules use the fixed-hasher aliases `delaunay::HashMap` and `delaunay::HashSet`; use them, or a `BTreeMap`, wherever iteration order reaches the output.

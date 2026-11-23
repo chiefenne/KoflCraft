@@ -85,10 +85,13 @@ fn face_integral(
         .map(|&v| (points[v] - centre).length())
         .fold(0.0, f64::max);
     let coordinate_scale = centre.max_abs_component().max(diameter);
-    let planar = face.iter().all(|&v| {
-        (points[v] - centre).dot(unit).abs()
-            <= 1e-10 * diameter + 256.0 * f64::EPSILON * coordinate_scale
-    });
+    // a triangle is planar; on a sliver its Newell normal is too inaccurate
+    // for the offset test
+    let planar = face.len() == 3
+        || face.iter().all(|&v| {
+            (points[v] - centre).dot(unit).abs()
+                <= 1e-10 * diameter + 256.0 * f64::EPSILON * coordinate_scale
+        });
     if !planar {
         if face.len() != 4 {
             return Err("nonplanar polyhedron face");
