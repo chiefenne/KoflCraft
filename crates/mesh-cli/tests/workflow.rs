@@ -339,6 +339,46 @@ fn split_cap_wall_join_stays_available_and_valid_on_the_elbow() {
     assert_eq!(evidence["summary"]["inverted_faces"], 0);
 }
 
+/// Keep: the columns join builds a valid Manifold mesh on the Rust
+/// scaffold. Before, a merged column with a nonconvex footprint had its
+/// centroid behind a side face (inverted in FoehnCraft), every layout was
+/// rejected, and the third (Lloyd 12) hit a core face merge that flattened
+/// a tent of rings (MESH006). Removing the S·d split of merged columns in
+/// `columns.rs` or the all-vertex plane test of `merge_rings` breaks this;
+/// the elbow has neither layout. About 9 minutes, full run only.
+#[test]
+#[ignore = "full run: Manifold with the columns join (about 9 minutes)"]
+fn columns_wall_join_is_valid_on_the_manifold() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/manifold");
+    let work = WorkDirectory::new();
+    let mut partition: Value =
+        serde_json::from_slice(&fs::read(fixture.join("partition.json")).unwrap()).unwrap();
+    partition["volume_scaffold"]
+        .as_object_mut()
+        .unwrap()
+        .remove("wall_join");
+    let config = work.path().join("columns.json");
+    fs::write(&config, serde_json::to_vec(&partition).unwrap()).unwrap();
+    let (stl, patches) = (fixture.join("manifold.stl"), fixture.join("patches.json"));
+    let args = [
+        "generate-duct",
+        stl.to_str().unwrap(),
+        patches.to_str().unwrap(),
+        config.to_str().unwrap(),
+        "polyhedral",
+        "columns",
+    ];
+    let report = work.run(&args)["report"].clone();
+    assert_eq!(report["voronoi_core"]["wall_join"], "columns");
+    let evidence: Value =
+        serde_json::from_slice(&fs::read(work.path().join("columns/mesh-evidence.json")).unwrap())
+            .unwrap();
+    assert_eq!(evidence["summary"]["inverted_faces"], 0);
+    let mesh_volume = report["volume"].as_f64().unwrap();
+    let fitted_volume = report["scaffold_volume"].as_f64().unwrap();
+    assert!((mesh_volume / fitted_volume - 1.).abs() < 1e-10);
+}
+
 #[test]
 fn median_dual_core_stays_available_and_valid_on_the_elbow() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/elbow");
@@ -432,7 +472,7 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
             };
             if (mode, dir) == ("polyhedral", "manifold") {
                 // Manifold builds its scaffold in Rust and joins with split
-                // caps (the columns fail on its finer wall, follow-up):
+                // caps (the columns leave sliver cells there, follow-up):
                 // native wedges plus split caps are 3 per wall triangle.
                 assert!((115_000..116_500).contains(&wall_prisms), "{wall_prisms}");
                 // Keep: the scaffold wall follows the STL to the chord

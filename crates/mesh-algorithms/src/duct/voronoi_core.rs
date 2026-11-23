@@ -404,9 +404,16 @@ fn merge_rings(points: &[Vec3], rings: Vec<Vec<usize>>) -> Vec<Vec<usize>> {
         .iter()
         .map(|&v| (points[v] - c).length())
         .fold(0.0, f64::max);
-    if ring
+    // Every vertex of every input ring must lie on the plane, not only the
+    // merged loop: rings forming a tent with a flat rim would be flattened,
+    // and the merged face would change both cells' volumes. The tolerance
+    // is the shell check's (verify::face_integral), so a merged face is
+    // never rejected there as nonplanar.
+    let tol = 1e-10 * size + 256.0 * f64::EPSILON * c.max_abs_component().max(size);
+    if rings
         .iter()
-        .any(|&v| (points[v] - c).dot(unit).abs() > 1e-9 * size)
+        .flatten()
+        .any(|&v| (points[v] - c).dot(unit).abs() > tol)
     {
         return rings;
     }
@@ -1584,4 +1591,33 @@ fn build(
         surface,
         stats,
     ))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Vec3, merge_rings};
+
+    /// Keep: a core face merged from rings is fanned about its node average,
+    /// so the inner vertices of the rings must lie in the merged plane too.
+    /// On the fine Manifold scaffold (Lloyd 12) three tiny pieces formed a
+    /// tent 8e-3 high whose rim lay in a flat face; the merge flattened it
+    /// and the core cell's shell lost 1.4e-7 of volume (MESH006). The
+    /// fixtures that run in the fast CI do not contain such a tent.
+    #[test]
+    fn rings_with_a_raised_inner_vertex_stay_apart() {
+        let p = [
+            [0., 0., 0.],
+            [1., 0., 0.],
+            [1., 1., 0.],
+            [0., 1., 0.],
+            [0.5, 0.5, 0.01],
+            [0.5, 0.5, 0.],
+        ]
+        .map(|[x, y, z]| Vec3::new(x, y, z));
+        let fan = |apex: usize| -> Vec<Vec<usize>> {
+            (0..4).map(|k| vec![k, (k + 1) % 4, apex]).collect()
+        };
+        assert_eq!(merge_rings(&p, fan(5)), vec![vec![0, 1, 2, 3]]);
+        assert_eq!(merge_rings(&p, fan(4)).len(), 4);
+    }
 }
