@@ -150,13 +150,20 @@ tests = [
   "crates/mesh-cli/tests/workflow.rs::nonconvex_manifold_preserves_volume_and_exposes_each_port_layer",
   "crates/mesh-cli/tests/workflow.rs::median_dual_core_stays_available_and_valid_on_the_elbow",
   "crates/mesh-cli/tests/workflow.rs::split_cap_wall_join_stays_available_and_valid_on_the_elbow",
+  "crates/mesh-cli/tests/workflow.rs::columns_wall_join_is_valid_on_the_manifold",
   "crates/mesh-algorithms/src/duct/columns.rs::contact_chains",
+  "crates/mesh-algorithms/src/duct/wall_seeds.rs::seed_is_on_the_three_balls_on_the_fluid_side",
+  "crates/mesh-algorithms/src/duct/wall_seeds.rs::seed_cells_cut_the_wall_in_their_triangles",
+  "crates/mesh-algorithms/src/duct/wall_seeds.rs::pair_that_is_not_regular_is_flipped",
+  "crates/mesh-algorithms/src/duct/wall_seeds.rs::seed_inside_a_ball_across_a_thin_gap_is_dropped",
+  "crates/mesh-algorithms/src/duct/verify.rs::thin_face_far_from_the_origin_is_planar",
+  "crates/mesh-algorithms/src/duct/verify.rs::bent_face_is_still_rejected",
   "crates/mesh-io/src/duct.rs::only_flat_boundary_polygons_merge",
   "crates/mesh-algorithms/src/duct/convex.rs::halving_a_cube_keeps_half_the_volume_and_tags_the_cut",
   "crates/mesh-algorithms/src/duct/intersection.rs::rejects_transverse_coplanar_and_shared_vertex_overlaps",
 ]
 commands = []
-gaps = "Needs a Gmsh scaffold and a Python preparation script (OPEN-07); fitted volume 0.183 % below the STL; the wall columns reach 80.1° (elbow) and 82.8° (Manifold) non-orthogonality; on curved walls they leave sliver cells where a core cell clips a wall triangle (smallest cell about 5e-11 on Manifold); Manifold builds in about 80 s; flow accuracy untested"
+gaps = "The elbow needs a Gmsh scaffold and a Python preparation script (OPEN-07); with conforming wall seeds the wall columns reach 56.6° (elbow) and 74.5° (Manifold) non-orthogonality and volume ratio 77 and 1,882; sharp convex corners and flat walls have no seeds, and a wall triangle pair the seeds flip is cut in two; the repair of torn contacts at reentrant edges has no test; core sphericity on Manifold fell to 0.74 at the median; Manifold builds in about 130 s; flow accuracy untested"
 
 [[feature]]
 id = "duct-scaffold"

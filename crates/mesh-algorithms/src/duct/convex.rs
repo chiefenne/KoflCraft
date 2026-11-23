@@ -215,10 +215,14 @@ impl Convex {
 
 /// Newell normal (area-weighted, twice the area) and vertex mean of a ring.
 pub(super) fn ring_plane(points: &[Vec3], ring: &[usize]) -> (Vec3, Vec3) {
+    // About the first vertex: far from the origin the products of absolute
+    // coordinates lose the normal of a long thin face to rounding.
+    let origin = ring.first().map_or(Vec3::ZERO, |&v| points[v]);
     let mut n = Vec3::ZERO;
     let mut c = Vec3::ZERO;
     for k in 0..ring.len() {
-        let (a, b) = (points[ring[k]], points[ring[(k + 1) % ring.len()]]);
+        let a = points[ring[k]] - origin;
+        let b = points[ring[(k + 1) % ring.len()]] - origin;
         n = n + Vec3::new(
             (a.y - b.y) * (a.z + b.z),
             (a.z - b.z) * (a.x + b.x),
@@ -226,7 +230,57 @@ pub(super) fn ring_plane(points: &[Vec3], ring: &[usize]) -> (Vec3, Vec3) {
         );
         c = c + a;
     }
-    (n, c / ring.len() as f64)
+    (n, origin + c / ring.len().max(1) as f64)
+}
+
+/// Unit normal of the least-squares plane through the vertex mean `centre`
+/// of a ring, starting from its Newell normal `newell`.
+///
+/// The Newell normal of a long thin face (two cells that barely touch) is
+/// tilted by rounding over the face's width, which shows as offsets at the
+/// far ends although the vertices are on one plane. The fit removes the
+/// tilt: offsets from the fitted plane are the face's true flatness.
+pub(super) fn fitted_normal(points: &[Vec3], ring: &[usize], newell: Vec3, centre: Vec3) -> Vec3 {
+    let unit = newell / newell.length();
+    // in-plane axes, the first along the longest reach from the centre
+    let far = ring
+        .iter()
+        .map(|&v| points[v] - centre)
+        .map(|r| r - unit * r.dot(unit))
+        .fold(
+            Vec3::ZERO,
+            |best, r| if r.dot(r) > best.dot(best) { r } else { best },
+        );
+    let reach = far.length();
+    if reach.is_nan() || reach <= 0.0 {
+        return unit;
+    }
+    let ex = far / reach;
+    let ey = unit.cross(ex);
+    let (mut sxx, mut sxy, mut syy, mut sxh, mut syh) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for &v in ring {
+        let r = points[v] - centre;
+        let (x, y, h) = (r.dot(ex), r.dot(ey), r.dot(unit));
+        sxx += x * x;
+        sxy += x * y;
+        syy += y * y;
+        sxh += x * h;
+        syh += y * h;
+    }
+    let det = sxx * syy - sxy * sxy;
+    // a ring without width fixes the tilt along its length only
+    let (tx, ty) = if det > 1e-24 * sxx * sxx {
+        ((sxh * syy - syh * sxy) / det, (syh * sxx - sxh * sxy) / det)
+    } else {
+        (sxh / sxx, 0.0)
+    };
+    let fitted = unit - ex * tx - ey * ty;
+    let length = fitted.length();
+    if length.is_finite() && length > 0.0 {
+        fitted / length
+    } else {
+        unit
+    }
 }
 
 /// A point strictly inside every face plane of a closed shell (its kernel),

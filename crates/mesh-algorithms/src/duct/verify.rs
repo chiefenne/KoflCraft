@@ -79,7 +79,7 @@ fn face_integral(
     if norm.is_nan() || norm <= 0.0 {
         return Err("degenerate polyhedron face");
     }
-    let unit = newell / norm;
+    let unit = super::convex::fitted_normal(points, face, newell, centre);
     let diameter = face
         .iter()
         .map(|&v| (points[v] - centre).length())
@@ -398,5 +398,68 @@ mod tests {
         let (minimum, volume, _) = wedge(points);
         assert!((minimum + 1.0 / 24.0).abs() < 1e-14);
         assert!(volume > 0.0);
+    }
+
+    /// Keep rule: a long thin planar face far from the origin passes the
+    /// planarity check. The ring is a core face of the Manifold as built
+    /// with conforming wall seeds (2.6 long, 0.00007 wide, 263 from the
+    /// origin): two wall cells that barely touch over a wall vertex. Its
+    /// vertices are on one plane to 1e-13, but a Newell normal from
+    /// absolute coordinates is tilted by 1e-10 over the length and the
+    /// offset test rejected the whole mesh. Taking the normal from a plain
+    /// Newell sum again, or dropping the least-squares plane, breaks this;
+    /// the fixtures of the fast run have no such face, and the Manifold
+    /// build is a full-run test.
+    #[test]
+    fn thin_face_far_from_the_origin_is_planar() {
+        let points = [
+            [6.414802894970417, 262.9597716879253, 18.751259654212134],
+            [6.859459004309515, 262.6533452053385, 18.034802806686436],
+            [6.983285982556163, 262.5680121477317, 17.835285281547556],
+            [6.997576348350637, 262.5581642080918, 17.812259778890425],
+            [7.023771642070697, 262.54011220892545, 17.770052335510094],
+            [7.023766730368811, 262.54005614619194, 17.77009088156666],
+            [6.997572759971385, 262.5581082208852, 17.812295683907582],
+            [6.983282513930192, 262.56795661671845, 17.8353207160207],
+            [6.859456505831417, 262.6532936738063, 18.034834272658962],
+            [6.414835399147537, 262.9597127964614, 18.751226084952386],
+            [5.4468412280837315, 263.62682445664535, 20.310898102481982],
+        ]
+        .map(|[x, y, z]| Vec3::new(x, y, z));
+        let ring: Vec<usize> = (0..points.len()).collect();
+        let (newell, centre) = crate::duct::convex::ring_plane(&points, &ring);
+        let unit = crate::duct::convex::fitted_normal(&points, &ring, newell, centre);
+        let flatness = points
+            .iter()
+            .map(|&p| (p - centre).dot(unit).abs())
+            .fold(0.0, f64::max);
+        assert!(
+            flatness < 1e-12,
+            "offset from the fitted plane {flatness:e}"
+        );
+        // seen from a point off the plane the face integrates as planar
+        let origin = centre - unit;
+        let result = face_integral(&points, &ring, origin);
+        let (v6, area, _) = result.expect("the face is planar");
+        assert!(area > 5e-5 && area < 2e-4, "area {area:e}");
+        assert!((v6.abs() / 6.0 - area / 3.0).abs() < 1e-9 * area);
+    }
+
+    /// Keep rule: the fitted plane does not hide a face that is bent. A
+    /// pentagon with one corner lifted by a millionth of its size is not
+    /// planar, with or without the fit; a fit that absorbed the lift (a
+    /// wrong sign or axis in the tilt) would accept warped polyhedron faces
+    /// everywhere, and no mesh test builds one.
+    #[test]
+    fn bent_face_is_still_rejected() {
+        let mut points = [[0., 0.], [1., 0.], [1.4, 0.8], [0.5, 1.5], [-0.4, 0.8]]
+            .map(|[x, y]| Vec3::new(100.0 + x, 200.0 + y, 50.0));
+        points[2].z += 1e-6;
+        let ring: Vec<usize> = (0..points.len()).collect();
+        let origin = Vec3::new(100.5, 200.7, 49.0);
+        assert_eq!(
+            face_integral(&points, &ring, origin).err(),
+            Some("nonplanar polyhedron face")
+        );
     }
 }

@@ -8,6 +8,7 @@ mod polyhedral;
 mod verify;
 mod volume_dual;
 mod voronoi_core;
+mod wall_seeds;
 pub use volume_dual::{Scaffold, build_volume_dual};
 pub use voronoi_core::{
     DEFAULT_LLOYD_ITERATIONS, VoronoiOptions, VoronoiStats, WallJoin, build_voronoi_core,

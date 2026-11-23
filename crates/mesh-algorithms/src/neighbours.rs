@@ -93,11 +93,23 @@ impl KdTree {
     /// The `k` points nearest to point `of` (itself excluded), as
     /// `(squared distance, index)` sorted by distance and then index.
     pub fn nearest(&self, of: usize, k: usize) -> Vec<(f64, usize)> {
+        match self.points.get(of) {
+            Some(&q) => self.search(q, Some(of), k),
+            None => Vec::new(),
+        }
+    }
+
+    /// The `k` points nearest to `q`, sorted like [`KdTree::nearest`].
+    pub fn nearest_to(&self, q: Vec3, k: usize) -> Vec<(f64, usize)> {
+        self.search(q, None, k)
+    }
+
+    fn search(&self, q: Vec3, skip: Option<usize>, k: usize) -> Vec<(f64, usize)> {
         let mut best: Vec<(f64, usize)> = Vec::with_capacity(k + 1);
         if k == 0 || self.nodes.is_empty() {
             return best;
         }
-        let q = self.points[of];
+        let of = skip.unwrap_or(usize::MAX);
         let mut stack = vec![0usize];
         while let Some(n) = stack.pop() {
             let node = self.nodes[n];
