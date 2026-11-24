@@ -1,0 +1,1 @@
+- Block mesher MB1e: edit tools for a block topology (BS-04). `block.list` shows vertices, blocks, edges, patches and chains; `block.set_count`, `block.set_distribution`, `block.set_edge_curve`, `block.move_vertex` and `block.set_patch` each write a new checked topology or refuse the edit with nothing written, and the steps replay from the journal.

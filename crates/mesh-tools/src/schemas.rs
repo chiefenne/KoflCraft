@@ -539,3 +539,71 @@ pub(crate) fn block_algorithm() -> Value {
     );
     json!({"oneOf": [tfi, elliptic]})
 }
+
+/// A block edge by its two vertex indices.
+fn block_edge() -> Value {
+    json!({"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 2, "maxItems": 2,
+           "description": "The edge's two vertex indices; laws and spline points run from the first to the second"})
+}
+
+/// An edge law of the topology file (BS-06).
+pub(crate) fn block_distribution() -> Value {
+    let positive = json!({"type": "number", "exclusiveMinimum": 0});
+    json!({"oneOf": [
+        input(json!({"law": {"const": "uniform"}}), &[]),
+        input(json!({"law": {"const": "geometric"}, "first": positive, "last": positive}), &["first", "last"]),
+        input(json!({"law": {"const": "tanh"}, "first": positive, "last": positive}), &[]),
+    ]})
+}
+
+/// An edge curve of the topology file.
+pub(crate) fn block_curve() -> Value {
+    json!({"oneOf": [
+        input(json!({"kind": {"const": "line"}}), &[]),
+        input(json!({"kind": {"const": "arc"}, "through": point()}), &[]),
+        input(json!({"kind": {"const": "spline"}, "through": {"type": "array", "items": point(), "minItems": 1}}), &[]),
+    ]})
+}
+
+pub(crate) fn block_set_count() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "edge": block_edge(),
+               "cells": {"type": "integer", "minimum": 1}}),
+        &[],
+    )
+}
+
+pub(crate) fn block_set_distribution() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "edge": block_edge(),
+               "distribution": block_distribution()}),
+        &[],
+    )
+}
+
+pub(crate) fn block_set_edge_curve() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "edge": block_edge(), "curve": block_curve()}),
+        &[],
+    )
+}
+
+pub(crate) fn block_move_vertex() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "vertex": {"type": "integer", "minimum": 0},
+               "to": point(), "by": point()}),
+        &["to", "by"],
+    )
+}
+
+pub(crate) fn block_set_patch() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "name": {"type": "string"},
+               "rename": name(), "role": role()}),
+        &["rename", "role"],
+    )
+}
+
+pub(crate) fn block_edit_result() -> Value {
+    json!({"type": "object", "description": "`koflcraft.block-result` with the written file, its check and the `change` (blocks, edges, vertices, patches, reference_removed)"})
+}

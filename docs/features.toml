@@ -412,3 +412,19 @@ tests = [
 ]
 commands = []
 gaps = "Interior skew from TFI away from walls stays (pipe 23.3° where the MB1b smoother reached 19.3°; airfoil worst cell 55.9° below the leading edge); the airfoil C-grid needs about 2,500 sweeps (35 s for 11,520 cells); Thomas–Middlecoff controls were measured and not kept; non-planar symmetry patches stay fixed; the FoehnCraft round trip for block meshes is not in the acceptance runner"
+
+[[feature]]
+id = "block-mb1e-edit-tools"
+title = "Block-structured variant MB1e: block.* edit tools (list, chain counts, edge laws and curves, vertex moves, patch names and roles)"
+requirements = ["BS-04", "BS-05"]
+grade = "partial"
+how = "block.list reads a topology with vertices, blocks, edges, patches, surfaces and chains; block.set_count sets the count of the whole chain of opposite edges through one edge; block.set_distribution and block.set_edge_curve set one edge, given from either end and stored in the file's edge direction; block.move_vertex moves a vertex to a point or by an offset; block.set_patch renames a patch and sets its role. Each edit writes a new file that passed the check, or is refused with BLOCK001 and writes nothing; geometric edits remove the template's analytic reference; the chain replays from the journal"
+tests = [
+  "crates/mesh-engine/src/block_edit.rs::a_count_follows_its_chain",
+  "crates/mesh-engine/src/block_edit.rs::a_law_is_stored_in_the_edge_direction",
+  "crates/mesh-engine/src/block_edit.rs::moves_are_checked_and_drop_the_reference",
+  "crates/mesh-engine/src/block_edit.rs::patches_are_renamed_and_given_roles",
+  "crates/mesh-cli/tests/kofl.rs::block_edit_tools_chain_and_replay",
+]
+commands = []
+gaps = "No tools yet to add or remove vertices and blocks, split a block, or add and remove patches and projection surfaces; a refused edit lists every follow-on issue of the check, not only the first cause"

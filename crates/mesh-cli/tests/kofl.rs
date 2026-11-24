@@ -519,6 +519,114 @@ fn block_tools_build_a_pipe_from_a_template() {
     );
 }
 
+/// Invariant (BS-04, AG-13): the block edit tools chain through files from
+/// the command line with a journal: list, set a chain count, a law and a
+/// patch role, refuse a move that turns a block inside out (no file
+/// written), build the edited topology, and the journal replays in a fresh
+/// directory with the same results.
+#[test]
+fn block_edit_tools_chain_and_replay() {
+    let dir = fresh("block-edit");
+    let journal = dir.join("j.jsonl");
+    let j = journal.to_str().unwrap();
+    let call = |k: usize, id: &str, v: Value| {
+        let file = dir.join(format!("in{k}.json"));
+        std::fs::write(&file, v.to_string()).unwrap();
+        kofl_in(
+            &dir,
+            &[
+                "--journal",
+                j,
+                "call",
+                id,
+                "--input",
+                file.to_str().unwrap(),
+            ],
+        )
+    };
+    let (ok, e) = call(
+        0,
+        "block.template",
+        serde_json::json!({"config": {"template": "pipe_ogrid", "radius": 0.05, "length": 0.2,
+            "core_cells": 4, "radial_cells": 3, "axial_cells": 6}, "output": "t0.json"}),
+    );
+    assert!(ok, "{e}");
+    let (ok, listed) = call(1, "block.list", serde_json::json!({"topology": "t0.json"}));
+    assert!(ok, "{listed}");
+    let core = listed["result"]["blocks"][0]["vertices"].clone();
+    let axial = [core[0].clone(), core[4].clone()];
+    let (ok, e) = call(
+        2,
+        "block.set_count",
+        serde_json::json!({"topology": "t0.json", "output": "t1.json", "edge": axial, "cells": 10}),
+    );
+    assert!(ok, "{e}");
+    assert_eq!(e["result"]["check"]["cells"], 10 * (16 + 4 * 12));
+    assert_eq!(
+        e["result"]["change"]["blocks"],
+        serde_json::json!([0, 1, 2, 3, 4])
+    );
+    let (ok, e) = call(
+        3,
+        "block.set_distribution",
+        serde_json::json!({"topology": "t1.json", "output": "t2.json", "edge": axial,
+            "distribution": {"law": "tanh", "first": 0.005, "last": 0.005}}),
+    );
+    assert!(ok, "{e}");
+    let (ok, e) = call(
+        4,
+        "block.set_patch",
+        serde_json::json!({"topology": "t2.json", "output": "t3.json", "name": "walls",
+            "rename": "pipe_wall", "role": "wall"}),
+    );
+    assert!(ok, "{e}");
+    // the core corner moved across the opposite face turns the block over
+    let opposite =
+        listed["result"]["vertices"][core[1].as_u64().unwrap() as usize]["point"].clone();
+    let mut far = opposite.clone();
+    far[0] = (opposite[0].as_f64().unwrap() * 3.0).into();
+    let (ok, e) = call(
+        5,
+        "block.move_vertex",
+        serde_json::json!({"topology": "t3.json", "output": "bad.json", "vertex": core[0], "to": far}),
+    );
+    assert!(!ok, "{e}");
+    assert!(
+        e["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("right-handed"),
+        "{e}"
+    );
+    assert!(!dir.join("bad.json").exists());
+    let (ok, e) = call(
+        6,
+        "block.grid",
+        serde_json::json!({"topology": "t3.json", "output": "mesh"}),
+    );
+    assert!(ok, "{e}");
+    assert_eq!(e["result"]["report"]["summary"]["inverted_faces"], 0);
+    let edited: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("t3.json")).unwrap()).unwrap();
+    let wall = edited["patches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "pipe_wall")
+        .unwrap();
+    assert_eq!(wall["role"], "wall");
+
+    let again = fresh("block-edit-replay");
+    // the refused move replays as the same refusal
+    let (_, envelope) = kofl_in(&again, &["run", "--script", j, "--keep-going"]);
+    assert_eq!(
+        envelope["result"]["format"], "koflcraft.replay",
+        "{envelope:#}"
+    );
+    assert_eq!(envelope["result"]["replayed"], 7, "{envelope:#}");
+    assert_eq!(envelope["result"]["different"], 0, "{envelope:#}");
+}
+
 /// Invariant (BS-03, BS-07): the elbow and the airfoil C-grid run through
 /// the registry: the elbow file carries its projection surfaces, and an
 /// airfoil read from a Selig coordinate file in the working directory
