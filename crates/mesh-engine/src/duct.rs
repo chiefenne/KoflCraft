@@ -1066,6 +1066,10 @@ fn voronoi_json(v: &duct::VoronoiStats) -> Value {
         "split_columns": v.split_columns,
         "absorbed_columns": v.absorbed_columns,
         "collapsed_pieces": v.collapsed_pieces,
+        "welded_vertices": v.welded_vertices,
+        "merged_films": v.merged_films,
+        "turned_wall_rings": v.turned_wall_rings,
+        "merged_wall_rings": v.merged_wall_rings,
     });
     if let (Some(o), Value::Object(e)) = (out.as_object_mut(), extra) {
         o.extend(e);

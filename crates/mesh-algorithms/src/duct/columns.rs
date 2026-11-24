@@ -132,6 +132,15 @@ pub(super) fn coplanar(
 /// the node of surface vertex `v` on layer surface `level`, and
 /// `records[bi]` the core cells' wall polygons on the innermost surface.
 #[allow(clippy::too_many_arguments)]
+fn ring_area_dbg(points: &[Vec3], ring: &[usize]) -> f64 {
+    (1..ring.len() - 1)
+        .fold(Vec3::ZERO, |s, i| {
+            s + (points[ring[i]] - points[ring[0]]).cross(points[ring[i + 1]] - points[ring[0]])
+        })
+        .length()
+        * 0.5
+}
+
 pub(super) fn build(
     points: &mut Vec<Vec3>,
     tris: &[[usize; 3]],
@@ -233,6 +242,78 @@ pub(super) fn build(
                     .is_some()
                 {
                     return Err("a wall ring edge is used twice".into());
+                }
+            }
+        }
+    }
+
+    if std::env::var_os("KOFL_DIAG").is_some() {
+        let area0 = |ring: &[usize]| -> f64 {
+            let q: Vec<Vec3> = ring.iter().map(|&g| points[img(g, 0)]).collect();
+            (1..q.len() - 1)
+                .fold(Vec3::ZERO, |s, i| s + (q[i] - q[0]).cross(q[i + 1] - q[0]))
+                .length()
+                * 0.5
+        };
+        let mut sum: HashMap<usize, f64> = HashMap::new();
+        for u in &units {
+            *sum.entry(u.bi).or_default() += u.rings.iter().map(|r| area0(r)).sum::<f64>();
+        }
+        let (mut n, mut total) = (0, 0.0);
+        for &bi in wall {
+            let t = tris[bi].map(|v| points[stack[0][v]]);
+            let area = (t[1] - t[0]).cross(t[2] - t[0]).length() * 0.5;
+            let got = sum.get(&bi).copied().unwrap_or(0.0);
+            if (got - area).abs() > 1e-6 * area {
+                n += 1;
+                total += got - area;
+                if n <= 4 {
+                    eprintln!("DIAG wall tri {bi} area {area:e} units {got:e}");
+                    for u in units.iter().filter(|u| u.bi == bi) {
+                        for r in &u.rings {
+                            eprintln!(
+                                "DIAG   part {} ring {r:?} area0 {:e} inner {:e}",
+                                u.part,
+                                area0(r),
+                                ring_area_dbg(points, r)
+                            );
+                            for &g in r {
+                                eprintln!(
+                                    "DIAG     {g} bary {:?} p {:?} img0 {:?}",
+                                    bary.get(&(g, bi)),
+                                    points[g],
+                                    points[img(g, 0)]
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("DIAG wall triangles off: {n}, total excess {total:e}");
+        for (ui, u) in units.iter().enumerate() {
+            for r in &u.rings {
+                let t = tris[u.bi].map(|v| points[stack[layers][v]]);
+                let tarea = (t[1] - t[0]).cross(t[2] - t[0]).length() * 0.5;
+                let a = ring_area_dbg(points, r);
+                if a < 1e-11 * tarea {
+                    eprintln!(
+                        "DIAG thin wall ring unit {ui} tri {} part {} ring {r:?} area {a:e} tri area {tarea:e} rings in unit {} units in tri {}",
+                        u.bi,
+                        u.part,
+                        u.rings.len(),
+                        units.iter().filter(|w| w.bi == u.bi).count()
+                    );
+                    for &g in r {
+                        eprintln!(
+                            "DIAG     {g} bary {:?} p {:?}",
+                            bary.get(&(g, u.bi)),
+                            points[g]
+                        );
+                    }
+                    for w in units.iter().filter(|w| w.bi == u.bi) {
+                        eprintln!("DIAG    other unit part {} rings {:?}", w.part, w.rings);
+                    }
                 }
             }
         }
@@ -592,6 +673,31 @@ pub(super) fn build(
                 faces.push(top);
                 for i in 1..ring.len() - 1 {
                     let (a, b, c) = (ring[0], ring[i], ring[i + 1]);
+                    if std::env::var_os("KOFL_DIAG").is_some() {
+                        let w = [
+                            img(a, level),
+                            img(c, level),
+                            img(b, level),
+                            img(a, level + 1),
+                            img(c, level + 1),
+                            img(b, level + 1),
+                        ];
+                        let (jac, vol, _) = super::verify::wedge(w.map(|v| points[v]));
+                        if !(jac > 0.0) {
+                            eprintln!(
+                                "DIAG bad wedge level {level} column {x} units {:?} ring {ring:?} fan {i} jac {jac:e} vol {vol:e} ring area {:e}",
+                                columns[x],
+                                ring_area_dbg(points, ring)
+                            );
+                            for &g in ring.iter() {
+                                eprintln!(
+                                    "DIAG    {g} p {:?} img {:?}",
+                                    points[g],
+                                    points[img(g, level)]
+                                );
+                            }
+                        }
+                    }
                     wedges.push([
                         img(a, level),
                         img(c, level),
@@ -615,6 +721,26 @@ pub(super) fn build(
                         .find(|&j| la[j] == 0.0 && lb[j] == 0.0)
                         .ok_or("open wall ring edge off the triangle's rim")?;
                     let (u, v) = (tris[bi][(j + 1) % 3], tris[bi][(j + 2) % 3]);
+                    if rim.get(&(u.min(v), u.max(v))).is_none()
+                        && std::env::var_os("KOFL_DIAG").is_some()
+                    {
+                        eprintln!(
+                            "DIAG open edge {a}->{b} tri {bi} pa {:?} pb {:?} len {:e}",
+                            points[a],
+                            points[b],
+                            (points[a] - points[b]).length()
+                        );
+                        for (k, w) in edge_unit.iter() {
+                            if k.0 == a || k.1 == a || k.0 == b || k.1 == b {
+                                eprintln!(
+                                    "DIAG   edge {k:?} unit {w} tri {} part {} other {:?}",
+                                    units[*w].bi,
+                                    units[*w].part,
+                                    (points[k.0], points[k.1])
+                                );
+                            }
+                        }
+                    }
                     let patch = *rim
                         .get(&(u.min(v), u.max(v)))
                         .ok_or("open wall ring edge that is no port rim")?;
