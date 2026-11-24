@@ -9,6 +9,7 @@ How KoflCraft hands a volume mesh to the companion solver
 | File | Where | What FoehnCraft gets |
 |---|---|---|
 | `foehncraft.vtu` | every bundle of `generate-channel`, `generate-sweep`, `generate-duct`; `export ARTIFACT foehncraft OUT.vtu` for box and STL meshes | The primary hand-off (FC-02, OPEN-12): every cell a VTK polyhedron (type 42), every boundary face a polygon (type 7), the cell array `region` (zone index for cells, patch index for faces), and the field-data string arrays `zone_names`, `boundary_names` and `boundary_roles` (`id=name`). True polyhedra, no subdivision. |
+| `foehncraft.vtkhdf` | instead of `foehncraft.vtu` with `--handoff vtkhdf` (tool input `"handoff": "vtkhdf"`); `export ARTIFACT foehncraft-vtkhdf OUT.vtkhdf` | The same mesh, names and roles as a blocked binary VTKHDF file (see [Blocked VTKHDF](#blocked-vtkhdf)), which FoehnCraft and MurmelCraft read block by block and ParaView 5.13 or later opens as a partitioned data set. |
 | `*.msh` | every bundle (`mesh.msh`, `channel.msh`); `export ARTIFACT gmsh OUT.msh` | Gmsh MSH 4.1 ASCII (FC-01): a tetrahedral subdivision of the polyhedra (prisms and pyramids where the mesh has them), one physical surface group per patch and the volume group `fluid`. `gmsh-2.2` writes the older version. |
 | `export ARTIFACT openfoam DIR` | box and STL meshes | An OpenFOAM `polyMesh` directory (`points`, `faces`, `owner`, `neighbour`, `boundary`, `cellZones`) of the same face-based mesh (FC-03, so far for box and STL meshes only), with `mesh-evidence.json`. FoehnCraft reads the directory as it stands. |
 | `mesh-evidence.json` | every bundle and OpenFOAM export | `koflcraft.mesh-evidence` 1.0: KoflCraft version, generator, the summary below, the patches with their roles and source names, the SHA-256 of every other file, and the limitations (FC-05). |
@@ -17,8 +18,9 @@ How KoflCraft hands a volume mesh to the companion solver
 `koflcraft_mesh_digest`, `koflcraft_topology_digest`,
 `koflcraft_input_digest` and `koflcraft_algorithm` as further field-data
 strings, so a FoehnCraft run record that hashes the mesh file can be traced
-to the KoflCraft build and inputs. MSH files carry no metadata; their hash
-is in the bundle's `mesh-evidence.json`.
+to the KoflCraft build and inputs. `foehncraft.vtkhdf` carries the same
+strings as attributes of its `/VTKHDF` group. MSH files carry no metadata;
+their hash is in the bundle's `mesh-evidence.json`.
 
 ## Writing large meshes
 
@@ -32,6 +34,58 @@ before (checked on the fixtures and on a 1.28 million cell sweep). On a
 2.5 million cell sweep block (3.4 GB of files) the peak memory fell from
 6.5 GB to 3.5 GB and the run from 35 to 29 s; what remains is the meshes
 themselves (see [pitfalls](pitfalls.md#whole-files-in-memory)).
+
+## Blocked VTKHDF
+
+`foehncraft.vtkhdf` is layout 1 of the blocked VTKHDF file agreed with
+MurmelCraft and FoehnCraft (MurmelCraft's `docs/blocked-vtkhdf.md`), so a
+viewer can open a mesh larger than its memory and read only the blocks
+under a region. It is a VTKHDF 2.4 file (VTK documentation, "VTK File
+Formats", VTKHDF section) in HDF5 written by KoflCraft's own writer
+(`mesh_io::hdf5`, from the HDF5 File Format Specification 3.0).
+
+- `/VTKHDF` is a `PartitionedDataSetCollection` with the attributes
+  `Version` = [2, 4], `murmelcraft_blocks` = 1, `block_order` = `hilbert`,
+  `koflcraft_version` and, for an export, the four digests above. Its
+  `Assembly` group links every block.
+- Block `internal` (`Index` 0, `block_cells` = 65,536) holds the cells,
+  one partition per block. The cells are sorted along the Hilbert curve
+  of their centroids (the mean of each cell's points; 21 bits per axis
+  over the bounding box of all points, Skilling's transpose algorithm, ties
+  by KoflCraft's cell number), and each run of 65,536 is a block.
+- Each partition lists its owned cells, then one layer of ghost cells:
+  every cell of another block that shares a point with an owned cell.
+  Points are local to the partition and repeated across partitions.
+- Every cell is a polyhedron (type 42) in the 2.4 arrays (`FaceOffsets`,
+  `FaceConnectivity`, `PolyhedronOffsets`, `PolyhedronToFaces`); its faces
+  are listed per cell and wound outward from it, so an interior face
+  appears once in each of its two cells. Every integer is 64-bit except
+  `Types` and `vtkGhostType` (8-bit) and `zone` (32-bit).
+- `CellData`: `zone` (the `region` of the VTU), `GlobalCellIds` (the
+  cell's position among the owned cells of the file, also for a ghost),
+  `OriginalCellIds` (KoflCraft's cell number, the order of
+  `foehncraft.vtu`), `vtkGhostType` (1 for a ghost). `PointData`:
+  `GlobalPointIds` (the point index of `foehncraft.vtu`) and `vtkGhostType`
+  (1 where a lower block owns the point). `FieldData`: `BlockOwnedCells`,
+  `BlockBounds` (x, y, z minimum then maximum of each block's owned cells)
+  and `zone_names` (`id=name`).
+- Each patch with faces is a `PolyData` block named after the patch
+  (`Index` 1, 2, … in patch order), with the attribute `role` (`wall`,
+  `inlet`, `outlet`, `symmetry`, `interface`; none when unspecified), its
+  faces as `Polygons` wound out of the domain, `PointData/GlobalPointIds`
+  and `CellData/OwnerCell` (the owner's `GlobalCellIds`). A patch may not
+  be named `internal` or `Assembly`.
+- HDF5: superblock 2, version 2 object headers, compact links with their
+  creation order (VTK lists the blocks in that order), every dataset
+  contiguous and uncompressed, fixed-length strings, little-endian. The
+  file is written in one pass (all headers first, then the data of each
+  dataset in turn) and hashed as it goes.
+
+On the 2.5 million cell sweep block the file is 1.7 GB (the VTU 1.3 GB:
+every id takes eight bytes, and the ghosts and repeated points add about
+10 %). Writing it takes about 7 s (4 s to order the cells and find the
+ghosts, 3 s to write); the whole run takes 34 s instead of 31.5 s with the
+VTU, at the same peak memory.
 
 ## One face between two cells
 

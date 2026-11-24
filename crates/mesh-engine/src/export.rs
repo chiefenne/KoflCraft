@@ -11,6 +11,7 @@ use mesh_io::{ExportError, GmshVersion, StreamError, write_gmsh_domain, write_vt
 use mesh_quality::{MeshDomain, validate_domain};
 
 use crate::artifact::ArtifactDomain;
+use crate::handoff::HandoffFormat;
 use crate::{EngineError, ErrorCode, MeshArtifact, MeshDirectory};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +23,9 @@ pub enum ExportFormat {
     /// The single-file VTU for FoehnCraft: cells and boundary faces with
     /// names and digests (FC-02, FC-05).
     FoehnCraft,
+    /// The same mesh, names and digests as a blocked VTKHDF file, binary
+    /// and readable block by block (`docs/foehncraft.md`).
+    FoehnCraftVtkhdf,
     /// An OpenFOAM `constant/polyMesh` directory (FC-03).
     OpenFoam,
 }
@@ -35,10 +39,11 @@ impl FromStr for ExportFormat {
             "gmsh" | "gmsh-4.1" => Ok(Self::Gmsh(GmshVersion::V4_1)),
             "gmsh-2.2" => Ok(Self::Gmsh(GmshVersion::V2_2)),
             "foehncraft" => Ok(Self::FoehnCraft),
+            "foehncraft-vtkhdf" => Ok(Self::FoehnCraftVtkhdf),
             "openfoam" => Ok(Self::OpenFoam),
             _ => Err(EngineError::new(
                 ErrorCode::UnsupportedFormat,
-                "format must be vtu, gmsh (MSH 4.1), gmsh-2.2, foehncraft or openfoam",
+                "format must be vtu, gmsh (MSH 4.1), gmsh-2.2, foehncraft, foehncraft-vtkhdf or openfoam",
             )),
         }
     }
@@ -90,11 +95,9 @@ pub fn prepare_export(
 ) -> Result<Export, EngineError> {
     let (domain, mesh) = artifact.verified_connectivity()?;
     let handoff = match format {
-        ExportFormat::FoehnCraft | ExportFormat::OpenFoam => Some(artifact_handoff(
-            domain.as_domain(),
-            &mesh,
-            artifact.patch_roles(),
-        )?),
+        ExportFormat::FoehnCraft | ExportFormat::FoehnCraftVtkhdf | ExportFormat::OpenFoam => Some(
+            artifact_handoff(domain.as_domain(), &mesh, artifact.patch_roles())?,
+        ),
         ExportFormat::Vtu | ExportFormat::Gmsh(_) => None,
     };
     let build = artifact.build();
@@ -201,10 +204,17 @@ impl Export {
             ExportFormat::Gmsh(version) => {
                 keep(write_gmsh_domain(domain, &self.mesh, version, out))
             }
-            ExportFormat::FoehnCraft => match &self.handoff {
-                Some(handoff) => crate::handoff::write_foehncraft(handoff, &self.provenance, out),
-                None => Err(io::Error::other("the export has no hand-off mesh")),
-            },
+            ExportFormat::FoehnCraft | ExportFormat::FoehnCraftVtkhdf => {
+                let handoff_format = if self.format == ExportFormat::FoehnCraft {
+                    HandoffFormat::Vtu
+                } else {
+                    HandoffFormat::Vtkhdf
+                };
+                match &self.handoff {
+                    Some(handoff) => handoff_format.write(handoff, &self.provenance, out),
+                    None => Err(io::Error::other("the export has no hand-off mesh")),
+                }
+            }
             ExportFormat::OpenFoam => Err(io::Error::other(
                 "openfoam is a directory, not a single file",
             )),

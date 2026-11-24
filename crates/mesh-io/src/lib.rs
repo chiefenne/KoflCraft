@@ -4,7 +4,9 @@ pub mod channel;
 mod directory;
 mod gmsh;
 pub mod handoff;
+pub mod hdf5;
 mod msh;
+pub mod vtkhdf;
 
 pub use directory::{BLOCK, Bundle, MeshDirectory, StreamError};
 pub use gmsh::{write_gmsh, write_gmsh_domain};

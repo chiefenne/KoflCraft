@@ -775,7 +775,12 @@ fn string_array(t: &mut Text<'_>, name: &str, values: &[String]) -> io::Result<(
 
 /// The sorted distinct nodes of cell `c` (its VTK connectivity) into
 /// `nodes`.
-fn cell_nodes(mesh: &HandoffMesh, cells: &CellFaceList, c: usize, nodes: &mut Vec<usize>) {
+pub(crate) fn cell_nodes(
+    mesh: &HandoffMesh,
+    cells: &CellFaceList,
+    c: usize,
+    nodes: &mut Vec<usize>,
+) {
     nodes.clear();
     for (f, _) in cells.cell(c) {
         nodes.extend_from_slice(mesh.face(f));
