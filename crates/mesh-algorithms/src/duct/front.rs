@@ -237,6 +237,7 @@ const MIN_SCALE: f64 = 0.02;
 /// embedded. The height changes by at most `HEIGHT_RATE` per unit length
 /// along the wall. Vertices on the port rims keep the full height, so the
 /// caps stay similar to themselves.
+#[allow(clippy::too_many_arguments)]
 fn squeeze(
     surface: &ClosedSurface,
     patches: &[usize],
