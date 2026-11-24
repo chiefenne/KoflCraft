@@ -522,8 +522,8 @@ fn block_tools_build_a_pipe_from_a_template() {
 /// Invariant (BS-04, AG-13): the block edit tools chain through files from
 /// the command line with a journal: list, set a chain count, a law and a
 /// patch role, refuse a move that turns a block inside out (no file
-/// written), build the edited topology, and the journal replays in a fresh
-/// directory with the same results.
+/// written), split a block through its chain, build the edited topology,
+/// and the journal replays in a fresh directory with the same results.
 #[test]
 fn block_edit_tools_chain_and_replay() {
     let dir = fresh("block-edit");
@@ -601,8 +601,16 @@ fn block_edit_tools_chain_and_replay() {
     assert!(!dir.join("bad.json").exists());
     let (ok, e) = call(
         6,
+        "block.split_block",
+        serde_json::json!({"topology": "t3.json", "output": "t4.json", "block": 0, "axis": 2, "at": 4}),
+    );
+    assert!(ok, "{e}");
+    assert_eq!(e["result"]["check"]["cells"], 10 * (16 + 4 * 12));
+    assert_eq!(e["result"]["check"]["blocks"], 10);
+    let (ok, e) = call(
+        7,
         "block.grid",
-        serde_json::json!({"topology": "t3.json", "output": "mesh"}),
+        serde_json::json!({"topology": "t4.json", "output": "mesh"}),
     );
     assert!(ok, "{e}");
     assert_eq!(e["result"]["report"]["summary"]["inverted_faces"], 0);
@@ -623,7 +631,7 @@ fn block_edit_tools_chain_and_replay() {
         envelope["result"]["format"], "koflcraft.replay",
         "{envelope:#}"
     );
-    assert_eq!(envelope["result"]["replayed"], 7, "{envelope:#}");
+    assert_eq!(envelope["result"]["replayed"], 8, "{envelope:#}");
     assert_eq!(envelope["result"]["different"], 0, "{envelope:#}");
 }
 

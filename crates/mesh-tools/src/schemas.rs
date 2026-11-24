@@ -607,3 +607,49 @@ pub(crate) fn block_set_patch() -> Value {
 pub(crate) fn block_edit_result() -> Value {
     json!({"type": "object", "description": "`koflcraft.block-result` with the written file, its check and the `change` (blocks, edges, vertices, patches, reference_removed)"})
 }
+
+fn index() -> Value {
+    json!({"type": "integer", "minimum": 0})
+}
+
+pub(crate) fn block_add_vertex() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "point": point()}),
+        &[],
+    )
+}
+
+pub(crate) fn block_remove_vertex() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "vertex": index()}),
+        &[],
+    )
+}
+
+pub(crate) fn block_add_block() -> Value {
+    let count = json!({"type": "integer", "minimum": 1});
+    input(
+        json!({"topology": path(), "output": path(),
+               "vertices": {"type": "array", "items": index(), "minItems": 8, "maxItems": 8,
+                            "description": "Corners in the local frame: (0,0,0) (1,0,0) (1,1,0) (0,1,0), then the same at k = 1; right-handed"},
+               "cells": {"type": "array", "items": count, "minItems": 3, "maxItems": 3},
+               "domain": {"type": "string"}, "patch": name(), "role": role()}),
+        &["domain", "patch", "role"],
+    )
+}
+
+pub(crate) fn block_remove_block() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "block": index(), "patch": name(), "role": role()}),
+        &["patch", "role"],
+    )
+}
+
+pub(crate) fn block_split_block() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "block": index(),
+               "axis": {"type": "integer", "minimum": 0, "maximum": 2},
+               "at": {"type": "integer", "minimum": 1, "description": "Split after this many cells along the axis"}}),
+        &[],
+    )
+}

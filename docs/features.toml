@@ -415,16 +415,20 @@ gaps = "Interior skew from TFI away from walls stays (pipe 23.3° where the MB1b
 
 [[feature]]
 id = "block-mb1e-edit-tools"
-title = "Block-structured variant MB1e: block.* edit tools (list, chain counts, edge laws and curves, vertex moves, patch names and roles)"
+title = "Block-structured variant MB1e: block.* edit tools (list, counts, laws, curves, vertices, blocks, split, patches)"
 requirements = ["BS-04", "BS-05"]
 grade = "partial"
-how = "block.list reads a topology with vertices, blocks, edges, patches, surfaces and chains; block.set_count sets the count of the whole chain of opposite edges through one edge; block.set_distribution and block.set_edge_curve set one edge, given from either end and stored in the file's edge direction; block.move_vertex moves a vertex to a point or by an offset; block.set_patch renames a patch and sets its role. Each edit writes a new file that passed the check, or is refused with BLOCK001 and writes nothing; geometric edits remove the template's analytic reference; the chain replays from the journal"
+how = "block.list reads a topology with vertices, blocks, edges, patches, surfaces and chains; block.set_count sets the count of the whole chain of opposite edges through one edge; block.set_distribution and block.set_edge_curve set one edge, given from either end and stored in the file's edge direction; block.move_vertex moves a vertex to a point or by an offset; block.set_patch renames a patch and sets its role; block.add_vertex, block.remove_vertex (unused only), block.add_block (open faces into a named patch, faces it closes leave their patches) and block.remove_block (opened faces into a named patch); block.split_block splits a block after a cell index and every block of its chain with it, new vertices on the TFI nodes and the halves' curves and laws fitted to the grid by arc length (pipe and channel splits keep every node to 3e-14, the NACA 2412 wall to 1.5e-8 chords). Each edit writes a new file that passed the check, or is refused with BLOCK001 and writes nothing; geometric edits remove the template's analytic reference; the chain replays from the journal"
 tests = [
   "crates/mesh-engine/src/block_edit.rs::a_count_follows_its_chain",
   "crates/mesh-engine/src/block_edit.rs::a_law_is_stored_in_the_edge_direction",
   "crates/mesh-engine/src/block_edit.rs::moves_are_checked_and_drop_the_reference",
   "crates/mesh-engine/src/block_edit.rs::patches_are_renamed_and_given_roles",
+  "crates/mesh-engine/src/block_edit.rs::a_split_follows_its_chain_and_keeps_the_grid",
+  "crates/mesh-engine/src/block_edit.rs::a_split_keeps_the_clustering",
+  "crates/mesh-engine/src/block_edit.rs::curved_walls_survive_a_split",
+  "crates/mesh-engine/src/block_edit.rs::blocks_are_added_and_removed",
   "crates/mesh-cli/tests/kofl.rs::block_edit_tools_chain_and_replay",
 ]
 commands = []
-gaps = "No tools yet to add or remove vertices and blocks, split a block, or add and remove patches and projection surfaces; a refused edit lists every follow-on issue of the check, not only the first cause"
+gaps = "After a split, interior nodes follow the TFI of the new blocks, not of the whole (NACA 2412: up to 2.2e-3 chords; elbow: projected wall face interiors slide along the torus by 4.8e-5 at radius 0.5); a split whose chain reaches a block twice in different ways is refused; no tools for projection surfaces, merging blocks or collapsed blocks; a refused edit lists every follow-on issue of the check, not only the first cause"

@@ -226,3 +226,108 @@ pub(crate) fn set_patch(input: Value, ctx: &Context) -> Run {
     };
     edit(ctx, &i.topology, &i.output, e)
 }
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddVertexInput {
+    pub topology: String,
+    pub output: String,
+    pub point: [f64; 3],
+}
+
+pub(crate) fn add_vertex(input: Value, ctx: &Context) -> Run {
+    let i: AddVertexInput = decode(input)?;
+    edit(
+        ctx,
+        &i.topology,
+        &i.output,
+        Edit::AddVertex { point: i.point },
+    )
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveVertexInput {
+    pub topology: String,
+    pub output: String,
+    pub vertex: usize,
+}
+
+pub(crate) fn remove_vertex(input: Value, ctx: &Context) -> Run {
+    let i: RemoveVertexInput = decode(input)?;
+    edit(
+        ctx,
+        &i.topology,
+        &i.output,
+        Edit::RemoveVertex { vertex: i.vertex },
+    )
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddBlockInput {
+    pub topology: String,
+    pub output: String,
+    pub vertices: [usize; 8],
+    pub cells: [usize; 3],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<PatchRole>,
+}
+
+pub(crate) fn add_block(input: Value, ctx: &Context) -> Run {
+    let i: AddBlockInput = decode(input)?;
+    let e = Edit::AddBlock {
+        vertices: i.vertices,
+        cells: i.cells,
+        domain: i.domain,
+        patch: i.patch,
+        role: i.role,
+    };
+    edit(ctx, &i.topology, &i.output, e)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveBlockInput {
+    pub topology: String,
+    pub output: String,
+    pub block: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<PatchRole>,
+}
+
+pub(crate) fn remove_block(input: Value, ctx: &Context) -> Run {
+    let i: RemoveBlockInput = decode(input)?;
+    let e = Edit::RemoveBlock {
+        block: i.block,
+        patch: i.patch,
+        role: i.role,
+    };
+    edit(ctx, &i.topology, &i.output, e)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SplitBlockInput {
+    pub topology: String,
+    pub output: String,
+    pub block: usize,
+    pub axis: usize,
+    pub at: usize,
+}
+
+pub(crate) fn split_block(input: Value, ctx: &Context) -> Run {
+    let i: SplitBlockInput = decode(input)?;
+    let e = Edit::SplitBlock {
+        block: i.block,
+        axis: i.axis,
+        at: i.at,
+    };
+    edit(ctx, &i.topology, &i.output, e)
+}
