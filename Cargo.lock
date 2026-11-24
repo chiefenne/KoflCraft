@@ -242,6 +242,7 @@ dependencies = [
  "mesh-tools",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

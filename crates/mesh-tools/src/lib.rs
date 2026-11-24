@@ -353,13 +353,14 @@ pub static TOOLS: &[Tool] = &[
         id: "mesh.generate_sweep",
         version: 1,
         action: Action::StartBuild,
-        summary: "Generate a graded polyhedral block with one inlet or a straight pipe with two ports into a new directory.",
+        summary: "Generate a graded polyhedral block with one inlet or a straight pipe with two ports into a new directory. `handoff` picks the FoehnCraft file: foehncraft.vtu (default) or the blocked binary foehncraft.vtkhdf.",
         legacy_name: Some("generate_sweep"),
         outputs: &["output"],
         input_schema: || {
             schemas::input(
-                json!({"config": schemas::sweep_schema(), "output": schemas::path()}),
-                &[],
+                json!({"config": schemas::sweep_schema(), "output": schemas::path(),
+                       "handoff": {"enum": ["vtu", "vtkhdf"]}}),
+                &["handoff"],
             )
         },
         output_schema: out!("generate_sweep"),
@@ -369,13 +370,14 @@ pub static TOOLS: &[Tool] = &[
         id: "mesh.generate_channel",
         version: 1,
         action: Action::StartBuild,
-        summary: "Generate and check a layered rectangular channel into a new directory (VTU, Gmsh, FoehnCraft files).",
+        summary: "Generate and check a layered rectangular channel into a new directory (VTU, Gmsh, FoehnCraft files). `handoff` picks the FoehnCraft file: foehncraft.vtu (default) or the blocked binary foehncraft.vtkhdf.",
         legacy_name: Some("generate_channel"),
         outputs: &["output"],
         input_schema: || {
             schemas::input(
-                json!({"config": schemas::channel_config(), "output": schemas::path()}),
-                &[],
+                json!({"config": schemas::channel_config(), "output": schemas::path(),
+                       "handoff": {"enum": ["vtu", "vtkhdf"]}}),
+                &["handoff"],
             )
         },
         output_schema: out!("generate_channel"),
@@ -405,14 +407,15 @@ pub static TOOLS: &[Tool] = &[
         id: "mesh.generate_duct",
         version: 1,
         action: Action::StartBuild,
-        summary: "Generate and validate a partitioned STL bulk, wall-layer or polyhedral duct volume into a new directory.",
+        summary: "Generate and validate a partitioned STL bulk, wall-layer or polyhedral duct volume into a new directory. `handoff` picks the FoehnCraft file: foehncraft.vtu (default) or the blocked binary foehncraft.vtkhdf.",
         legacy_name: Some("generate_duct"),
         outputs: &["output"],
         input_schema: || {
             schemas::input(
                 json!({"surface": schemas::path(), "patches": schemas::path(), "partition": schemas::path(),
-                       "mode": {"enum": ["bulk", "layered", "polyhedral"]}, "output": schemas::path()}),
-                &[],
+                       "mode": {"enum": ["bulk", "layered", "polyhedral"]}, "output": schemas::path(),
+                       "handoff": {"enum": ["vtu", "vtkhdf"]}}),
+                &["handoff"],
             )
         },
         output_schema: out!("generate_duct"),
@@ -450,13 +453,13 @@ pub static TOOLS: &[Tool] = &[
         id: "mesh.export",
         version: 1,
         action: Action::WriteFiles,
-        summary: "Validate a saved artifact and export it to a new file: vtu, gmsh (MSH 4.1), gmsh-2.2, foehncraft (single-file VTU) or openfoam (polyMesh directory).",
+        summary: "Validate a saved artifact and export it to a new file: vtu, gmsh (MSH 4.1), gmsh-2.2, foehncraft (single-file VTU), foehncraft-vtkhdf (the same as blocked binary VTKHDF) or openfoam (polyMesh directory).",
         legacy_name: Some("export_mesh"),
         outputs: &["output"],
         input_schema: || {
             schemas::input(
                 json!({"artifact": schemas::path(), "output": schemas::path(),
-                       "format": {"enum": ["vtu", "gmsh", "gmsh-2.2", "foehncraft", "openfoam"]}}),
+                       "format": {"enum": ["vtu", "gmsh", "gmsh-2.2", "foehncraft", "foehncraft-vtkhdf", "openfoam"]}}),
                 &[],
             )
         },

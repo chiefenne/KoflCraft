@@ -8,7 +8,8 @@ use std::io::{self, Write};
 
 use mesh_io::StreamError;
 use mesh_io::handoff::{HandoffMesh, HandoffSummary, Patch, write_foehncraft_vtu};
-use serde::Serialize;
+use mesh_io::vtkhdf::write_foehncraft_vtkhdf;
+use serde::{Deserialize, Serialize};
 
 use crate::{EngineError, ErrorCode};
 
@@ -17,6 +18,45 @@ pub const EVIDENCE_FORMAT_VERSION: &str = "1.0";
 
 /// The name of the FoehnCraft VTU in a bundle.
 pub const FOEHNCRAFT_VTU: &str = "foehncraft.vtu";
+/// The name of the blocked VTKHDF hand-off in a bundle.
+pub const FOEHNCRAFT_VTKHDF: &str = "foehncraft.vtkhdf";
+
+/// The file a bundle hands to FoehnCraft: the ASCII VTU of FC-02, or the
+/// blocked VTKHDF file that FoehnCraft and MurmelCraft read block by block
+/// (`docs/foehncraft.md`, "Blocked VTKHDF").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HandoffFormat {
+    #[default]
+    Vtu,
+    Vtkhdf,
+}
+
+impl HandoffFormat {
+    /// The file name in a bundle.
+    pub fn file_name(self) -> &'static str {
+        match self {
+            Self::Vtu => FOEHNCRAFT_VTU,
+            Self::Vtkhdf => FOEHNCRAFT_VTKHDF,
+        }
+    }
+
+    /// Write the hand-off file of a mesh, with `provenance` as its metadata
+    /// (field data of the VTU, root attributes of the VTKHDF file).
+    pub(crate) fn write(
+        self,
+        mesh: &HandoffMesh,
+        provenance: &[(&str, String)],
+        out: &mut dyn Write,
+    ) -> io::Result<()> {
+        let mut metadata = vec![("koflcraft_version", env!("CARGO_PKG_VERSION").to_string())];
+        metadata.extend(provenance.iter().cloned());
+        match self {
+            Self::Vtu => write_foehncraft_vtu(mesh, &metadata, out),
+            Self::Vtkhdf => write_foehncraft_vtkhdf(mesh, &metadata, out),
+        }
+    }
+}
 /// The name of the evidence side-car in a bundle.
 pub const MESH_EVIDENCE: &str = "mesh-evidence.json";
 
@@ -48,17 +88,6 @@ pub(crate) fn stream_error(error: StreamError) -> EngineError {
         StreamError::Io(e) => EngineError::new(ErrorCode::IoError, e),
         StreamError::Content(e) => export_error(e),
     }
-}
-
-/// Write the FoehnCraft VTU of a mesh, with `provenance` in its field data.
-pub(crate) fn write_foehncraft(
-    mesh: &HandoffMesh,
-    provenance: &[(&str, String)],
-    out: &mut dyn Write,
-) -> io::Result<()> {
-    let mut metadata = vec![("koflcraft_version", env!("CARGO_PKG_VERSION").to_string())];
-    metadata.extend(provenance.iter().cloned());
-    write_foehncraft_vtu(mesh, &metadata, out)
 }
 
 /// The evidence of a bundle whose files (other than the evidence itself)

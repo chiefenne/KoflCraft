@@ -1,5 +1,6 @@
 //! Mesh an annotated STL using a validated, explicitly supplied partition.
 mod scaffold;
+use crate::handoff::HandoffFormat;
 use crate::{
     EngineError, ErrorCode, MeshDirectory,
     artifact::{digest, require_schema, sha256, vector},
@@ -242,6 +243,7 @@ pub enum Mode {
     Polyhedral,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn generate(
     data: &[u8],
     patch_map: &PatchMap,
@@ -250,6 +252,7 @@ pub fn generate(
     scaffold_data: Option<&[u8]>,
     dir: &MeshDirectory,
     name: &OsStr,
+    handoff_format: HandoffFormat,
 ) -> Result<Value, EngineError> {
     let invalid = |s: &str| EngineError::new(ErrorCode::InvalidDomain, s);
     let start = Instant::now();
@@ -498,8 +501,8 @@ pub fn generate(
         .stream("report.json", |w| w.write_all(&report_json))
         .map_err(fail)?;
     bundle
-        .stream(crate::handoff::FOEHNCRAFT_VTU, |w| {
-            crate::handoff::write_foehncraft(&handoff, &[], w)
+        .stream(handoff_format.file_name(), |w| {
+            handoff_format.write(&handoff, &[], w)
         })
         .map_err(fail)?;
     let evidence = crate::handoff::evidence(&handoff, &generator, bundle.files())?;

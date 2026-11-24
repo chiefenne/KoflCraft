@@ -6,6 +6,7 @@ use std::path::Path;
 
 use mesh_engine::channel::{ChannelConfig, generate_channel};
 use mesh_engine::duct::{self, Mode, Partition, PatchMap};
+use mesh_engine::handoff::HandoffFormat;
 use mesh_engine::sweep::SweepConfig;
 use mesh_engine::{
     MeshArtifact, MeshConfig, SCHEMA_VERSION, StlMeshConfig, Written, build_mesh, build_stl_mesh,
@@ -71,11 +72,18 @@ pub struct GenerateStlInput {
     pub patches: Option<String>,
 }
 
+fn is_vtu(format: &HandoffFormat) -> bool {
+    *format == HandoffFormat::Vtu
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SweepInput {
     pub config: SweepConfig,
     pub output: String,
+    /// The FoehnCraft file of the bundle: `vtu` (default) or `vtkhdf`.
+    #[serde(default, skip_serializing_if = "is_vtu")]
+    pub handoff: HandoffFormat,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -83,6 +91,9 @@ pub struct SweepInput {
 pub struct ChannelInput {
     pub config: ChannelConfig,
     pub output: String,
+    /// The FoehnCraft file of the bundle: `vtu` (default) or `vtkhdf`.
+    #[serde(default, skip_serializing_if = "is_vtu")]
+    pub handoff: HandoffFormat,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -93,6 +104,9 @@ pub struct DuctInput {
     pub partition: String,
     pub mode: Mode,
     pub output: String,
+    /// The FoehnCraft file of the bundle: `vtu` (default) or `vtkhdf`.
+    #[serde(default, skip_serializing_if = "is_vtu")]
+    pub handoff: HandoffFormat,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -201,7 +215,7 @@ pub(crate) fn sweep(input: Value, ctx: &Context) -> Run {
         .limits
         .as_ref()
         .map_or(usize::MAX / 1024, |l| l.max_sweep_cells);
-    let report = mesh_engine::sweep::generate(&i.config, &dir, &name, budget)?;
+    let report = mesh_engine::sweep::generate(&i.config, &dir, &name, budget, i.handoff)?;
     Ok(json!({"schema_version": SCHEMA_VERSION, "output": i.output, "report": report}))
 }
 
@@ -212,7 +226,7 @@ pub(crate) fn channel(input: Value, ctx: &Context) -> Run {
         l.max_channel_axial_cells
     })?;
     let (dir, name) = ctx.target(&i.output)?;
-    let report = generate_channel(&i.config, &dir, &name)?;
+    let report = generate_channel(&i.config, &dir, &name, i.handoff)?;
     Ok(json!({ "schema_version": SCHEMA_VERSION, "output": i.output, "report": report }))
 }
 
@@ -241,6 +255,7 @@ pub(crate) fn duct(input: Value, ctx: &Context) -> Run {
         scaffold.as_deref(),
         &dir,
         &name,
+        i.handoff,
     )?;
     Ok(json!({"schema_version": SCHEMA_VERSION, "output": i.output, "report": report}))
 }

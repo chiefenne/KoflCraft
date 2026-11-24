@@ -393,7 +393,7 @@ pub fn generate(
         .map_err(fail)?;
     bundle
         .stream(crate::handoff::FOEHNCRAFT_VTU, |w| {
-            crate::handoff::write_foehncraft(
+            crate::handoff::HandoffFormat::Vtu.write(
                 &handoff,
                 &[("koflcraft_algorithm", ALGORITHM.to_string())],
                 w,

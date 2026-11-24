@@ -8,6 +8,7 @@ use mesh_io::channel::{MULTIBLOCK, write_gmsh, write_patch, write_volume};
 use mesh_quality::{MeshMetrics, RELATIVE_CONSERVATION_TOLERANCE, validate_mesh};
 use serde::{Deserialize, Serialize};
 
+use crate::handoff::HandoffFormat;
 use crate::{EngineError, ErrorCode, MeshDirectory, SCHEMA_VERSION};
 
 #[derive(Deserialize, Serialize)]
@@ -113,6 +114,7 @@ pub fn generate_channel(
     config: &ChannelConfig,
     dir: &MeshDirectory,
     name: &OsStr,
+    handoff_format: HandoffFormat,
 ) -> Result<ChannelReport, EngineError> {
     if config.schema_version != SCHEMA_VERSION {
         return Err(EngineError::new(
@@ -171,8 +173,8 @@ pub fn generate_channel(
         })
         .map_err(fail)?;
     bundle
-        .stream(crate::handoff::FOEHNCRAFT_VTU, |w| {
-            crate::handoff::write_foehncraft(&handoff, &[], w)
+        .stream(handoff_format.file_name(), |w| {
+            handoff_format.write(&handoff, &[], w)
         })
         .map_err(fail)?;
     let evidence = crate::handoff::evidence(&handoff, "straight_channel", bundle.files())?;
