@@ -7,7 +7,11 @@ on it read the same in every picture of the three projects.
 - **Rainbow Desaturated** is the map of every field picture: a quality
   measure drawn as a field, a mesh size, a wall distance, a flow result.
 - **Inferno** is the second map, for a second field next to the first.
-- A diverging map (cool to warm) stays for signed values centred on zero.
+- **Rainbow Uniform** (Colin Ware's map in ParaView) is the map of signed
+  values centred on zero: blue, green, a bright yellow at zero, orange,
+  red, magenta. Its 43 points are in MurmelCraft (`rainbow_uniform` in
+  `assets/colormaps.toml`) and FoehnCraft (`UNIFORM_POINTS` in
+  `tools/plot/colormaps.py`); KoflCraft draws no signed fields.
 
 KoflCraft draws no pictures of its own: its meshes are shown by
 MurmelCraft (`murmel run --script` with `export.image`, as in the README
