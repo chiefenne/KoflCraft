@@ -475,14 +475,12 @@ fn round_trip(cli: &Path, foehn: &Path, root: &Path, workspace: &Path) -> RunRes
             json!({"config": config, "output": topology}),
         )?;
         let mut worst = Vec::new();
-        // the airfoil also runs with its wall nodes sliding on the section
-        let mut kinds = vec![
+        // and once more with the wall nodes sliding on the wall
+        let kinds = [
             ("tfi", json!({"kind": "tfi"})),
             ("elliptic", json!({"kind": "elliptic"})),
+            ("sliding", json!({"kind": "elliptic", "wall_sliding": true})),
         ];
-        if *case == "airfoil" {
-            kinds.push(("sliding", json!({"kind": "elliptic", "wall_sliding": true})));
-        }
         for (kind, algorithm) in &kinds {
             let name = format!("{case}-{kind}");
             call(

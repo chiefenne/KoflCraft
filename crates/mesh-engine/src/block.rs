@@ -38,7 +38,8 @@ pub enum VolumeAlgorithm {
         /// patches with the role `wall` (default true).
         #[serde(default = "yes")]
         wall_orthogonality: bool,
-        /// Let the wall nodes slide along the curved wall contours toward
+        /// Let the wall nodes slide along curved walls (section contours,
+        /// cylinder and torus surfaces) toward
         /// orthogonal, smooth grid lines; corners sharper than 30° stay
         /// fixed (default false). Needs `wall_orthogonality`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]

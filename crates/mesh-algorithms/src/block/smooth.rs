@@ -60,7 +60,7 @@
 
 use std::collections::HashMap;
 
-use mesh_core::block::BLOCK_FACES;
+use mesh_core::block::{BLOCK_FACES, Surface};
 use mesh_core::geometry::Vec3;
 
 use super::grid::BlockGrid;
@@ -441,6 +441,11 @@ const CONTOUR_RELAXATION: f64 = 0.5;
 /// either neighbour; the Neumann foot alone drifts the whole distribution
 /// toward a convex leading edge.
 const CONTOUR_WINDOW: f64 = 0.5;
+/// Weight of the TFI position against the foot point for a sliding node on
+/// a projection surface. There the face nodes follow the rim and carry
+/// their off-wall nodes along, so the foot point follows the node it is
+/// for; without the anchor the rim drifts until it folds (elbow).
+const SURFACE_ANCHOR: f64 = 1.0;
 
 /// A chain of wall nodes along a curved wall line, across blocks; the end
 /// nodes stay, the others slide on a dense polyline of the spline through
@@ -530,7 +535,7 @@ fn wall_contours(
     blocks: &[Block],
     walls: &[Wall],
     wall_patches: &[usize],
-    on_surface: &std::collections::HashSet<usize>,
+    on_surface: &HashMap<usize, usize>,
 ) -> Result<Vec<Contour>, String> {
     let bend = |ids: &[usize]| -> f64 {
         let (a, b) = (x[ids[0]], x[ids[ids.len() - 1]]);
@@ -547,7 +552,7 @@ fn wall_contours(
     for w in walls {
         let b = &blocks[w.block];
         let mid = b.at(w.node(w.n[w.t[0]] / 2, w.n[w.t[1]] / 2, 0));
-        if on_surface.contains(&mid) {
+        if on_surface.contains_key(&mid) {
             continue;
         }
         let line = |along: usize, other: usize| -> Vec<usize> {
@@ -726,7 +731,7 @@ fn surface_nodes(
     boundary: &[([usize; 4], usize, usize)],
     boundary_surfaces: &[Option<usize>],
     wall_patches: &[usize],
-) -> std::collections::HashSet<usize> {
+) -> HashMap<usize, usize> {
     let mut of: HashMap<usize, Option<usize>> = HashMap::new();
     for ((q, p, _), s) in boundary.iter().zip(boundary_surfaces) {
         let s = if wall_patches.contains(p) { *s } else { None };
@@ -737,8 +742,222 @@ fn surface_nodes(
             }
         }
     }
-    of.into_iter().filter_map(|(v, s)| s.map(|_| v)).collect()
+    of.into_iter()
+        .filter_map(|(v, s)| s.map(|s| (v, s)))
+        .collect()
 }
+
+/// A wall node on a block edge of a projection surface (cylinder, torus):
+/// it slides on the surface toward the foot of its off-wall node, inside a
+/// window of `CONTOUR_WINDOW` of each TFI wall edge at it.
+struct RimSlide {
+    surface: Surface,
+    id: usize,
+    off: usize,
+    tfi: Vec3,
+    /// TFI edges from the node to its wall neighbours.
+    edges: Vec<Vec3>,
+}
+
+impl RimSlide {
+    fn slide(&self, x: &mut [Vec3], h_node: &[f64]) -> f64 {
+        let here = x[self.id];
+        let foot = self.surface.project(x[self.off]);
+        let target = (foot + self.tfi * SURFACE_ANCHOR) / (1.0 + SURFACE_ANCHOR);
+        let d = here + (target - here) * CONTOUR_RELAXATION - self.tfi;
+        let mut t = 1.0f64;
+        for e in &self.edges {
+            let (a, cap) = (d.dot(*e), CONTOUR_WINDOW * e.dot(*e));
+            if a > cap {
+                t = t.min(cap / a);
+            }
+        }
+        let p = self.surface.project(self.tfi + d * t);
+        let change = (p - here).length() / h_node[self.id];
+        x[self.id] = p;
+        change
+    }
+}
+
+/// The wall nodes of one block face on a projection surface: the nodes
+/// inside follow the displacement of its rim by transfinite interpolation
+/// at their TFI arc-length fractions, and stay on the surface.
+struct SurfaceFace {
+    surface: Surface,
+    nu: usize,
+    nv: usize,
+    ids: Vec<usize>,
+    tfi: Vec<Vec3>,
+    /// Arc-length fractions along the u and the v lines.
+    xi: Vec<f64>,
+    eta: Vec<f64>,
+}
+
+impl SurfaceFace {
+    fn follow(&self, x: &mut [Vec3], h_node: &[f64]) -> f64 {
+        let at = |u: usize, v: usize| u + (self.nu + 1) * v;
+        let d = |x: &[Vec3], u: usize, v: usize| x[self.ids[at(u, v)]] - self.tfi[at(u, v)];
+        let (nu, nv) = (self.nu, self.nv);
+        let mut change = 0.0f64;
+        for v in 1..nv {
+            for u in 1..nu {
+                let k = at(u, v);
+                let (s, t) = (self.xi[k], self.eta[k]);
+                let e = d(x, 0, v) * (1.0 - s)
+                    + d(x, nu, v) * s
+                    + d(x, u, 0) * (1.0 - t)
+                    + d(x, u, nv) * t
+                    - (d(x, 0, 0) * ((1.0 - s) * (1.0 - t))
+                        + d(x, nu, 0) * (s * (1.0 - t))
+                        + d(x, 0, nv) * ((1.0 - s) * t)
+                        + d(x, nu, nv) * (s * t));
+                let id = self.ids[k];
+                let p = self.surface.project(self.tfi[k] + e);
+                change = change.max((p - x[id]).length() / h_node[id]);
+                x[id] = p;
+            }
+        }
+        change
+    }
+}
+
+/// The sliding of the walls on projection surfaces: rim nodes and faces.
+fn surface_sliding(
+    x: &[Vec3],
+    hexes: &[[usize; 8]],
+    boundary: &[([usize; 4], usize, usize)],
+    surfaces: &[Surface],
+    on_surface: &HashMap<usize, usize>,
+    blocks: &[Block],
+    walls: &[Wall],
+) -> (Vec<RimSlide>, Vec<SurfaceFace>) {
+    let mut faces = Vec::new();
+    let mut rim: std::collections::BTreeSet<usize> = Default::default();
+    for w in walls {
+        let b = &blocks[w.block];
+        let (nu, nv) = (w.n[w.t[0]], w.n[w.t[1]]);
+        let mid = b.at(w.node(nu / 2, nv / 2, 0));
+        let Some(&sn) = on_surface.get(&mid) else {
+            continue;
+        };
+        let mut ids = Vec::with_capacity((nu + 1) * (nv + 1));
+        for v in 0..=nv {
+            for u in 0..=nu {
+                let id = b.at(w.node(u, v, 0));
+                ids.push(id);
+                if (u == 0 || u == nu || v == 0 || v == nv) && on_surface.contains_key(&id) {
+                    rim.insert(id);
+                }
+            }
+        }
+        let at = |u: usize, v: usize| u + (nu + 1) * v;
+        let mut xi = vec![0.0; ids.len()];
+        let mut eta = vec![0.0; ids.len()];
+        for v in 0..=nv {
+            let mut acc = vec![0.0];
+            for u in 1..=nu {
+                acc.push(acc[u - 1] + (x[ids[at(u, v)]] - x[ids[at(u - 1, v)]]).length());
+            }
+            for u in 0..=nu {
+                xi[at(u, v)] = acc[u] / acc[nu];
+            }
+        }
+        for u in 0..=nu {
+            let mut acc = vec![0.0];
+            for v in 1..=nv {
+                acc.push(acc[v - 1] + (x[ids[at(u, v)]] - x[ids[at(u, v - 1)]]).length());
+            }
+            for v in 0..=nv {
+                eta[at(u, v)] = acc[v] / acc[nv];
+            }
+        }
+        let tfi = ids.iter().map(|&i| x[i]).collect();
+        faces.push(SurfaceFace {
+            surface: surfaces[sn],
+            nu,
+            nv,
+            ids,
+            tfi,
+            xi,
+            eta,
+        });
+    }
+    let mut on_boundary: std::collections::HashSet<usize> = Default::default();
+    let mut wall_nbrs: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (q, _, _) in boundary {
+        on_boundary.extend(q.iter().copied());
+        for k in 0..4 {
+            let (a, b) = (q[k], q[(k + 1) % 4]);
+            for (p, r) in [(a, b), (b, a)] {
+                if rim.contains(&p) {
+                    let e = wall_nbrs.entry(p).or_default();
+                    if !e.contains(&r) {
+                        e.push(r);
+                    }
+                }
+            }
+        }
+    }
+    let mut off_nbrs: HashMap<usize, Vec<usize>> = HashMap::new();
+    for h in hexes {
+        for (a, b) in HEX_EDGES {
+            for (p, q) in [(h[a], h[b]), (h[b], h[a])] {
+                if rim.contains(&p) && !on_boundary.contains(&q) {
+                    let e = off_nbrs.entry(p).or_default();
+                    if !e.contains(&q) {
+                        e.push(q);
+                    }
+                }
+            }
+        }
+    }
+    let mut slides = Vec::new();
+    for id in rim {
+        let (Some(nb), Some(offs)) = (wall_nbrs.get(&id), off_nbrs.get(&id)) else {
+            continue;
+        };
+        let edges: Vec<Vec3> = nb.iter().map(|&r| x[r] - x[id]).collect();
+        // the off-wall neighbour most normal to the wall edges
+        let score = |c: usize| {
+            let d = x[c] - x[id];
+            let d = d / d.length();
+            edges
+                .iter()
+                .map(|e| (d.dot(*e) / e.length()).abs())
+                .fold(0.0, f64::max)
+        };
+        let Some(off) = offs
+            .iter()
+            .copied()
+            .min_by(|&p, &q| score(p).total_cmp(&score(q)))
+        else {
+            continue;
+        };
+        slides.push(RimSlide {
+            surface: surfaces[on_surface[&id]],
+            id,
+            off,
+            tfi: x[id],
+            edges,
+        });
+    }
+    (slides, faces)
+}
+
+const HEX_EDGES: [(usize, usize); 12] = [
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 0),
+    (4, 5),
+    (5, 6),
+    (6, 7),
+    (7, 4),
+    (0, 4),
+    (1, 5),
+    (2, 6),
+    (3, 7),
+];
 
 /// Deviation in degrees of the first off-wall grid line from the normal,
 /// over the interior nodes of the wall faces: (max, mean).
@@ -1074,13 +1293,25 @@ pub fn smooth(grid: &mut BlockGrid, options: &SmoothOptions) -> Result<Smoothing
             }
         }
     }
-    // curved walls of extruded sections slide along their contour lines;
-    // walls on a projection surface (pipe, elbow) stay: there the foot
-    // point of the off-wall node follows the node at the block edges of
-    // an O-grid and the pair drifts (measured: pipe wall angle 0.4° to
-    // 4.8°), and Sorenson's controls already hold them orthogonal
+    // walls on a projection surface (pipe, elbow): the block-edge nodes
+    // slide on it, anchored to their TFI position, and the face nodes
+    // follow; the other curved walls (extruded sections) slide node by
+    // node along their contour lines
     let surface_nodes = if o.slide_walls {
         surface_nodes(&grid.boundary, &grid.boundary_surfaces, &o.wall_patches)
+    } else {
+        Default::default()
+    };
+    let (rim_slides, surface_faces) = if o.slide_walls {
+        surface_sliding(
+            x,
+            &grid.hexes,
+            &grid.boundary,
+            &grid.surfaces,
+            &surface_nodes,
+            &blocks,
+            &walls,
+        )
     } else {
         Default::default()
     };
@@ -1184,7 +1415,12 @@ pub fn smooth(grid: &mut BlockGrid, options: &SmoothOptions) -> Result<Smoothing
         vertex_nodes: vertices.len(),
         sliding_patches: planes.len(),
         sliding_nodes: slides_on.len(),
-        contour_nodes: contours.iter().map(|c| c.free()).sum(),
+        contour_nodes: contours.iter().map(|c| c.free()).sum::<usize>()
+            + rim_slides.len()
+            + surface_faces
+                .iter()
+                .map(|f| (f.nu - 1) * (f.nv - 1))
+                .sum::<usize>(),
         contour_slide_max: 0.0,
         wall_faces: walls.len(),
         wall_angle_max_before: angle_max_before,
@@ -1373,9 +1609,15 @@ pub fn smooth(grid: &mut BlockGrid, options: &SmoothOptions) -> Result<Smoothing
             change = change.max((new - x[id]).length() / h_node[id]);
             x[id] = new;
         }
-        if !contours.is_empty() {
+        if !contours.is_empty() || !rim_slides.is_empty() {
             for c in &mut contours {
                 change = change.max(c.slide(x, &h_node));
+            }
+            for r in &rim_slides {
+                change = change.max(r.slide(x, &h_node));
+            }
+            for f in &surface_faces {
+                change = change.max(f.follow(x, &h_node));
             }
             // the wall moved: the target slopes follow its new normals
             for w in &mut walls {
@@ -1397,6 +1639,11 @@ pub fn smooth(grid: &mut BlockGrid, options: &SmoothOptions) -> Result<Smoothing
         }
         // converged when nodes stop moving and the first spacing is held
         report.converged = report.last_change < o.tolerance && spacing_error < SPACING_TOLERANCE;
+    }
+    for f in &surface_faces {
+        for (k, &id) in f.ids.iter().enumerate() {
+            report.contour_slide_max = report.contour_slide_max.max((x[id] - f.tfi[k]).length());
+        }
     }
     for c in &contours {
         for &id in &c.nodes {

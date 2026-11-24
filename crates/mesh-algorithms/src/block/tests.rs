@@ -298,21 +298,44 @@ mod elliptic {
         assert!(worst(&g) >= 0.99 * before, "{} < {before}", worst(&g));
     }
 
-    /// Invariant: wall sliding leaves walls on projection surfaces (pipe,
-    /// elbow) alone: no node slides and the grid is the one without it.
+    /// Invariant: on projection surfaces (pipe cylinder, elbow torus) the
+    /// block-edge wall nodes slide and the face nodes follow; they stay on
+    /// the surface, the smoother converges, and the grid is no worse than
+    /// with fixed walls (already orthogonal to 0.4° to 0.6°).
     #[test]
-    fn surface_walls_do_not_slide() {
-        let t = pipe_ogrid(0.05, 0.2, 0.55, [8, 10, 6], Some(0.0005)).unwrap();
-        let mut a = build(&t.topology).unwrap();
-        let mut b = a.clone();
-        smooth(&mut a, &walls(&t.topology)).unwrap();
-        let o = SmoothOptions {
-            slide_walls: true,
-            ..walls(&t.topology)
+    fn surface_walls_slide_and_stay() {
+        let worst = |g: &BlockGrid| {
+            g.quality()
+                .iter()
+                .map(|q| q.min_scaled_jacobian)
+                .fold(f64::INFINITY, f64::min)
         };
-        let res = smooth(&mut b, &o).unwrap();
-        assert_eq!(res.contour_nodes, 0);
-        assert_eq!(a.points, b.points);
+        let (r, big) = (0.5, 1.5);
+        let cases = [
+            elbow(r, big, 90.0, 1.0, 1.0, 0.5, [6, 6, 36], Some(0.01)).unwrap(),
+            pipe_ogrid(0.05, 0.2, 0.55, [8, 10, 6], Some(0.0005)).unwrap(),
+        ];
+        for (c, t) in cases.iter().enumerate() {
+            let mut fixed = build(&t.topology).unwrap();
+            let mut slid = fixed.clone();
+            let a = smooth(&mut fixed, &walls(&t.topology)).unwrap();
+            let o = SmoothOptions {
+                slide_walls: true,
+                ..walls(&t.topology)
+            };
+            let b = smooth(&mut slid, &o).unwrap();
+            assert!(b.converged && b.contour_nodes > 0, "{b:?}");
+            assert!(b.contour_slide_max > 0.0, "{b:?}");
+            assert!(
+                b.wall_angle_max_after <= a.wall_angle_max_after + 0.05,
+                "{b:?} {a:?}"
+            );
+            assert!(worst(&slid) >= 0.99 * worst(&fixed));
+            if c == 0 {
+                assert!(elbow_wall_error(&slid, r, big, 1.0) < 1e-12);
+            }
+            assert_conforming(&slid);
+        }
     }
 
     /// Invariant: nodes of a planar sliding patch move inside their plane

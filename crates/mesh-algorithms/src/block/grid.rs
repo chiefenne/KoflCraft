@@ -77,8 +77,9 @@ pub struct BlockGrid {
     /// The patch of each of a block's six faces (order of `BLOCK_FACES`),
     /// `None` for a face shared with another block.
     pub face_patches: Vec<[Option<usize>; 6]>,
-    /// For each boundary quad, the projection surface its block face is
-    /// listed under.
+    /// The projection surfaces of the topology, and for each boundary quad
+    /// the one its block face is listed under.
+    pub surfaces: Vec<mesh_core::block::Surface>,
     pub boundary_surfaces: Vec<Option<usize>>,
 }
 
@@ -398,6 +399,7 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
         edges: g.reports,
         checked,
         face_patches,
+        surfaces: t.surfaces.iter().map(|s| s.surface).collect(),
         boundary_surfaces,
     })
 }
