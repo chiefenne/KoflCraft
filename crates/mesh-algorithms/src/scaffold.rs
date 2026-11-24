@@ -75,6 +75,10 @@ pub struct ScaffoldStats {
     pub volume: f64,
 }
 
+/// An interior point nearer to a vertex than this share of the local
+/// spacing is not inserted.
+const NEAR_VERTEX: f64 = 1e-3;
+
 fn sorted(mut f: [usize; 3]) -> [usize; 3] {
     f.sort_unstable();
     f
@@ -163,7 +167,8 @@ pub fn build(
     // 2. boundary recovery
     let input: HashSet<usize> = id.iter().copied().collect();
     let mut recovered = false;
-    for _ in 0..64 {
+    let trace = crate::trace_enabled();
+    for pass in 0..64 {
         let edges = dt.edge_set();
         let faces = dt.face_set();
         let mut split: HashSet<(usize, usize)> = HashSet::default();
@@ -195,6 +200,17 @@ pub fn build(
         }
         let mut split: Vec<_> = split.into_iter().collect();
         split.sort_unstable();
+        if trace {
+            let shortest = split
+                .iter()
+                .map(|&(a, b)| (dt.points[a] - dt.points[b]).length())
+                .fold(f64::INFINITY, f64::min);
+            eprintln!(
+                "kofl trace: recovery pass {pass}: {} edges to split, shortest {shortest:.3e}, {} points",
+                split.len(),
+                dt.points.len()
+            );
+        }
         let mut midpoint = HashMap::default();
         for (a, b) in split {
             let m = shell_point(&dt.points, &input, a, b);
@@ -284,6 +300,16 @@ pub fn build(
             continue;
         };
         if !inside[home] {
+            continue;
+        }
+        // Cospherical vertices (regular CAD rings) give several tetrahedra
+        // one circumcentre up to rounding: a point almost on a vertex of
+        // the tetrahedron that holds it would only add a degenerate one.
+        if dt.tets[home]
+            .iter()
+            .any(|&v| (dt.points[v] - c).length() < NEAR_VERTEX * target)
+        {
+            stats.refused += 1;
             continue;
         }
         if wall

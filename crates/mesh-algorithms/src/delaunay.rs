@@ -47,6 +47,9 @@ pub struct Delaunay {
     pub corners: usize,
     /// The tetrahedra the last successful insertion created.
     pub created: Vec<usize>,
+    /// A point nearer than this to a vertex counts as that vertex (a few
+    /// roundings of the coordinates).
+    near: f64,
     rng: u64,
 }
 
@@ -97,6 +100,7 @@ impl Delaunay {
             free: Vec::new(),
             last: 0,
             constrained: HashSet::default(),
+            near: 1e-12 * d,
             corners: 8,
             created: Vec::new(),
             rng: 0x9E37_79B9_7F4A_7C15,
@@ -167,7 +171,10 @@ impl Delaunay {
     /// Insert `p` and return its index.
     pub fn insert(&mut self, p: Vec3) -> Result<usize, Refused> {
         let start = self.locate(p).ok_or(Refused::Outside)?;
-        if let Some(&v) = self.tets[start].iter().find(|&&v| self.points[v] == p) {
+        if let Some(&v) = self.tets[start]
+            .iter()
+            .find(|&&v| (self.points[v] - p).length() <= self.near)
+        {
             return Err(Refused::Duplicate(v));
         }
         let mut in_cavity: HashSet<usize> = HashSet::default();
@@ -188,6 +195,17 @@ impl Delaunay {
                     in_cavity.insert(n);
                     stack.push(n);
                 }
+            }
+        }
+        // the near vertex may belong to a neighbour of the located tetrahedron
+        let mut cavity: Vec<usize> = in_cavity.iter().copied().collect();
+        cavity.sort_unstable();
+        for t in cavity {
+            if let Some(&v) = self.tets[t]
+                .iter()
+                .find(|&&v| (self.points[v] - p).length() <= self.near)
+            {
+                return Err(Refused::Duplicate(v));
             }
         }
         // make the cavity star-shaped from p

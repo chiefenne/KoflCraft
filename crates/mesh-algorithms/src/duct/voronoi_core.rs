@@ -68,6 +68,8 @@ pub struct VoronoiStats {
     /// Sites whose restricted cell came out empty and were dropped.
     pub empty_sites: usize,
     pub pieces: usize,
+    /// Convex pieces too thin for the kernel search; their centroid stands in.
+    pub thin_pieces: usize,
     pub whole_wall_triangles: usize,
     pub split_wall_triangles: usize,
     pub layer_pieces: usize,
@@ -201,7 +203,13 @@ impl<'a> Sites<'a> {
             let n = other - site;
             let len = n.length();
             if len.is_nan() || len <= 0.0 {
-                return Err(format!("sites {s} and {o} coincide"));
+                return Err(format!(
+                    "sites {s} and {o} of {} coincide at ({:.6}, {:.6}, {:.6})",
+                    self.points.len(),
+                    site.x,
+                    site.y,
+                    site.z
+                ));
             }
             let n = n / len;
             match c
@@ -753,6 +761,13 @@ fn build(
         *p = outside_balls(*p);
     }
     let mut site_fixed = vec![false; sites.len()];
+    if crate::trace_enabled() {
+        eprintln!(
+            "kofl trace: core sites: {} from the scaffold, {} wall seeds",
+            sites.len(),
+            seed_sites.len()
+        );
+    }
     for &(p, l) in &seed_sites {
         sites.push(p);
         site_h.push(l);
@@ -992,8 +1007,14 @@ fn build(
             });
             while !rest.is_empty() {
                 let mut part = vec![rest.remove(0)];
-                let mut kernel = kernel_point(points, &exposed(&part))
-                    .ok_or("a convex Voronoi piece has no kernel")?;
+                // A convex piece is star-shaped about its centroid; the
+                // kernel search shrinks every face inwards and so finds
+                // nothing in a piece thinner than its margin.
+                let mut kernel =
+                    kernel_point(points, &exposed(&part)).unwrap_or(pieces[part[0]].centroid);
+                if kernel_point(points, &exposed(&part)).is_none() {
+                    stats.thin_pieces += 1;
+                }
                 loop {
                     let mut grown = false;
                     for j in 0..rest.len() {

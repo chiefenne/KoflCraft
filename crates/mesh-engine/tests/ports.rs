@@ -78,7 +78,13 @@ fn detection_and_setup_on_the_cooling_jacket() {
 
     let v = serde_json::to_value(&plan).unwrap();
     assert_eq!(v["regions"], serde_json::json!([]));
-    assert_eq!(v["volume_scaffold"]["build"]["tolerance"], 0.008);
+    // Keep: the tolerance is not r/500 = 0.008 here. The jacket's cylinders
+    // are 96-sided, so its own facets are 0.035 off the round wall, and a
+    // tolerance below that makes the remesher chase the facet lines and
+    // fill the wall with needles (the recovery blowup on thin parts).
+    assert_eq!(v["volume_scaffold"]["build"]["tolerance"], 0.0442);
+    // Keep: thin gaps and thin walls set the wall size (one edge across).
+    assert_eq!(v["volume_scaffold"]["build"]["thickness"]["across"], 1.0);
     assert_eq!(v["first_thickness"], 0.0128);
     let coarse = SetupOptions {
         size_factor: 2.0,

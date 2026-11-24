@@ -45,6 +45,8 @@ echo '{"surface": "cooling-jacket.stl", "patches": "ports.json", "output": "part
 
 **Setup.** Every length is a fixed fraction of the smaller port's equivalent radius r, the fractions of the Manifold fixture (r = 25): chord tolerance r/500, wall sizes r/38.5 to r/4.17, rim size r/29.4, spacing rate 0.4, first layer r/312.5 with growth 1.4 and three layers, a wall deviation limit of 1.5 times the tolerance and a geometry error limit of 0.2%. `size_factor` multiplies the lengths (2 is twice as coarse); `layers`, `first_thickness` and `growth` override the layers. The partition has no regions, so it serves the polyhedral mode only. Edit it by hand for finer control.
 
+Two rules keep thin parts meshable ([note](../research/thin-gaps.md)). The chord tolerance is never below 1.25 times the STL's own facet error (the 99th percentile of β·w/8 over the smooth wall edges, with β the turn between two facets and w their width): a wall cannot follow the STL more closely than the STL follows its shape. And `build.thickness` sizes the wall from the local thickness of gaps and thin walls, one edge across (`across`), down to r/154 (`min_size`). Set `KOFL_TRACE=1` to see the remesh rounds, the smallest gap and wall found, the recovery passes and the layer squeezing on standard error.
+
 On the synthetic [cooling jacket](../test-fixtures/cooling-jacket/README.md) (24,732 facets) both caps score 1.000 and the next candidate, a block face, 0.57. On the Manifold surface the two best candidates are exactly the port caps of its hand-made port file. Run `cargo test --release --locked -p mesh-engine --test ports`.
 
 ## Fixture results

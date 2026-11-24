@@ -5,6 +5,7 @@ use crate::{
     artifact::{digest, require_schema, sha256, vector},
 };
 use mesh_algorithms::duct::{self, Region};
+use mesh_algorithms::sizing::surface::SurfaceGeometry;
 use mesh_algorithms::{remesh, scaffold as scaffold_build};
 use mesh_geometry::{StlOptions, import_closed_stl};
 use serde::{Deserialize, Serialize};
@@ -87,6 +88,26 @@ pub struct ScaffoldBuild {
     pub feature_angle: f64,
     #[serde(default = "default_remesh_iterations")]
     pub iterations: usize,
+    /// Wall spacing from the local thickness of gaps and thin walls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thickness: Option<ThicknessBuild>,
+}
+
+/// Wall spacing = local thickness / `across`, not below `min_size` (which
+/// may lie below the build's `min_size`). The thickness is the medial-ball
+/// diameter between opposite walls, on the fluid and on the solid side.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ThicknessBuild {
+    pub across: f64,
+    pub min_size: f64,
+    /// Walls within this angle (degrees) of opposite count as a gap.
+    #[serde(default = "default_wedge_angle")]
+    pub wedge_angle: f64,
+}
+
+fn default_wedge_angle() -> f64 {
+    45.0
 }
 
 fn default_feature_angle() -> f64 {
@@ -593,7 +614,10 @@ pub fn setup(
             "layers, first_thickness and growth must be positive",
         ));
     }
-    let tolerance = h / 500.0;
+    // The wall cannot follow the STL more closely than the STL's own facets
+    // follow the shape they were made from.
+    let facet_error = stl_facet_error(&surface, &patches);
+    let tolerance = (h / 500.0).max(1.25 * facet_error);
     let round = |v: f64| {
         let digits = 10f64.powi(3 - v.abs().log10().ceil() as i32);
         (v * digits).round() / digits
@@ -613,6 +637,11 @@ pub fn setup(
                 rim_size: Some(round(h / 29.4)),
                 feature_angle: default_feature_angle(),
                 iterations: default_remesh_iterations(),
+                thickness: Some(ThicknessBuild {
+                    across: 1.0,
+                    min_size: round(h / 154.0),
+                    wedge_angle: default_wedge_angle(),
+                }),
             }),
             max_relative_geometry_error: 0.002,
             max_wall_deviation: Some(round(1.5 * tolerance)),
@@ -625,6 +654,41 @@ pub fn setup(
         layers,
     };
     Ok((plan, r))
+}
+
+/// The chord error of the STL's own facets on its smooth walls: where two
+/// wall facets meet at a turn β below the feature angle, facets of width w
+/// across the edge cut the smooth wall they came from by about β·w/8 (the
+/// sagitta of a chord of length w that turns by β). The value is the
+/// length-weighted 99th percentile over these edges, so a few odd facets do
+/// not set it.
+pub fn stl_facet_error(surface: &mesh_geometry::ClosedSurface, patches: &[usize]) -> f64 {
+    let g = SurfaceGeometry::new(surface);
+    let limit = default_feature_angle().to_radians();
+    let mut items: Vec<(f64, f64)> = Vec::new();
+    for e in &g.edges {
+        let [f, k] = e.facets;
+        if patches[f] != 3 || patches[k] != 3 || e.angle >= limit || e.angle < 1e-3 {
+            continue;
+        }
+        let [a, b] = e.vertices;
+        let length = (g.vertices[a] - g.vertices[b]).length();
+        if length <= 0.0 {
+            continue;
+        }
+        let width = (g.areas[f] + g.areas[k]) / length;
+        items.push((e.angle * width / 8.0, length));
+    }
+    items.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let total: f64 = items.iter().map(|i| i.1).sum();
+    let mut seen = 0.0;
+    for (error, length) in items {
+        seen += length;
+        if seen >= 0.99 * total {
+            return error;
+        }
+    }
+    0.0
 }
 
 /// Patch ids (1 inlet, 2 outlet, 3 wall) of a port file.
@@ -832,7 +896,14 @@ fn load_scaffold(
                 && b.rim_size.is_none_or(positive)
                 && b.feature_angle > 0.0
                 && b.feature_angle < 180.0
-                && b.iterations <= MAX_REMESH_ITERATIONS)
+                && b.iterations <= MAX_REMESH_ITERATIONS
+                && b.thickness.is_none_or(|t| {
+                    positive(t.across)
+                        && positive(t.min_size)
+                        && t.min_size <= b.max_size
+                        && t.wedge_angle > 0.0
+                        && t.wedge_angle < 90.0
+                }))
             {
                 return Err(invalid("invalid scaffold build settings"));
             }
@@ -855,10 +926,30 @@ fn load_scaffold(
                     feature_angle: b.feature_angle.to_radians(),
                     iterations: b.iterations,
                     rim_size: b.rim_size,
+                    thickness: b.thickness.map(|t| remesh::ThicknessSizing {
+                        across: t.across,
+                        min_size: t.min_size,
+                        wedge_angle: t.wedge_angle.to_radians(),
+                    }),
                 },
             )
             .map_err(validated)?;
             let remesh_seconds = start.elapsed().as_secs_f64();
+            if mesh_algorithms::trace_enabled() {
+                let w = wall.stats;
+                eprintln!(
+                    "kofl trace: wall remesh {remesh_seconds:.1} s, {} rounds: {} triangles, {} sharp-edge splits, {} merges, edges {:.3e} to {:.3e}, min gap {:.3e}, min wall {:.3e}, {} thickness pieces at the floor",
+                    w.rounds,
+                    wall.triangles.len(),
+                    w.feature_ball_splits,
+                    w.feature_ball_merges,
+                    w.min_edge,
+                    w.max_edge,
+                    w.min_gap,
+                    w.min_wall,
+                    w.thickness_clamped
+                );
+            }
             let tags: Vec<usize> = wall
                 .source
                 .iter()
@@ -886,6 +977,12 @@ fn load_scaffold(
                     "feature_corners": w.corners,
                     "wall_edge_range": [w.min_edge, w.max_edge],
                     "deviation_splits": w.deviation_splits,
+                    "remesh_rounds": w.rounds,
+                    "short_edges": w.short_edges,
+                    "sharp_edge_splits": w.feature_ball_splits,
+                    "min_gap": w.min_gap.is_finite().then_some(w.min_gap),
+                    "min_wall": w.min_wall.is_finite().then_some(w.min_wall),
+                    "thickness_clamped": w.thickness_clamped,
                     "surface_points": st.surface_points,
                     "recovery_points": st.recovery_points,
                     "interior_points": st.interior_points,

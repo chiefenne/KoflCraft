@@ -7,6 +7,11 @@ bent pipes, each ending in a flat circular cap (the ports). Lengths in mm.
 
     python3 -m pip install manifold3d numpy
     python3 make_jacket.py cooling-jacket.stl
+    python3 make_jacket.py cooling-jacket-thin.stl thin
+
+The `thin` variant adds the two thin features of the industrial part: rib 3
+reaches to 0.5 mm below the outer wall (a thin fluid gap over its top) and
+rib 5 is 0.5 mm wide (a thin solid wall between two channels).
 """
 import struct
 import sys
@@ -27,7 +32,10 @@ def ring(r_in, r_out, z0, z1):
     ).translate([0, 0, z0 - 1])
 
 
-def jacket():
+THIN_GAP, THIN_WALL = 0.5, 0.5
+
+
+def jacket(thin=False):
     fluid = ring(R_IN, R_OUT, 0.0, HEIGHT)
     pitch = HEIGHT / (RIBS + 1)
     gap = (
@@ -36,7 +44,9 @@ def jacket():
     )
     for k in range(1, RIBS + 1):
         z = k * pitch
-        rib = ring(R_IN - 1, R_IN + RIB_DEPTH, z - RIB_WIDTH / 2, z + RIB_WIDTH / 2) - gap
+        depth = R_OUT - R_IN - THIN_GAP if thin and k == 3 else RIB_DEPTH
+        width = THIN_WALL if thin and k == 5 else RIB_WIDTH
+        rib = ring(R_IN - 1, R_IN + depth, z - width / 2, z + width / 2) - gap
         fluid = fluid - rib
     return fluid
 
@@ -92,8 +102,8 @@ def tube(frames, n=96):
     return body
 
 
-def main(path):
-    body = jacket() + pipe(15.0, True) + pipe(45.0, False)
+def main(path, thin=False):
+    body = jacket(thin) + pipe(15.0, True) + pipe(45.0, False)
     if body.genus() != 1:
         raise RuntimeError(f"genus {body.genus()}")
     mesh = body.to_mesh()
@@ -111,4 +121,4 @@ def main(path):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "cooling-jacket.stl")
+    main(sys.argv[1] if len(sys.argv) > 1 else "cooling-jacket.stl", "thin" in sys.argv[2:])
