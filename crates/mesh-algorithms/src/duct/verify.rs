@@ -215,10 +215,14 @@ pub(super) fn check_with_interface_count(
             return Err("duplicate outer boundary face".into());
         }
         let a = p[face.nodes[0]];
+        // The vector area: for a planar face it is the area also when the
+        // face is not convex, where a sum of unsigned fan triangles counts
+        // a notch twice.
         let area = face.nodes[1..]
             .windows(2)
-            .map(|s| (p[s[0]] - a).cross(p[s[1]] - a).length() * 0.5)
-            .sum::<f64>();
+            .fold(Vec3::ZERO, |s, w| s + (p[w[0]] - a).cross(p[w[1]] - a))
+            .length()
+            * 0.5;
         areas[face.patch - 1] += area;
         if face.patch <= 2 {
             port_layer_areas[face.patch - 1][cells[face.owner].layer] += area;
