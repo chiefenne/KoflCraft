@@ -2,8 +2,7 @@
 
     python3 -I tools/readme-tour/tour.py MESH_DIR SHOTS_DIR
 
-MESH_DIR holds the meshes made by make-tour.sh (manifold/, sweep/, pipe/,
-channel/, elbow/, each with its foehncraft.vtu). For each slide this script
+MESH_DIR holds the mesh made by make-tour.sh (manifold/foehncraft.vtu). For each slide this script
 writes a `murmel run --script` file (open the mesh, set the colouring, the
 clip plane and the camera, then `export.image` at 2560 x 1600, scale 2) and
 runs it headless; the PNGs land in SHOTS_DIR as NN-name.png. Set MURMEL to
@@ -26,21 +25,10 @@ def clip(axis, mode):
     return {"tool": "clip.set", "input": {"axis": axis, "offset": 0.0, "mode": mode, "enabled": True}}
 
 
-def cut(origin, normal):
-    return {"tool": "clip.set", "input": {"origin": origin, "normal": normal, "mode": "flat", "enabled": True}}
-
-
 def camera(target, distance, yaw, pitch):
     return {"tool": "view.set_camera",
             "input": {"target": target, "distance": distance, "yaw_deg": yaw, "pitch_deg": pitch,
                       "projection": "perspective"}}
-
-
-def standard(view):
-    return {"tool": "view.standard", "input": {"view": view}}
-
-
-FIT = {"tool": "view.fit", "input": {}}
 
 
 # (file name, mesh folder, steps, export.image extras)
@@ -49,19 +37,9 @@ SLIDES = [
      [{"tool": "display.color_by", "input": {"by": "patch"}}, camera([150.0, 200.0, 20.0], 900.0, -45.0, 35.0)], {}),
     ("02-manifold-cell-types", "manifold",
      [cell_types(), camera([150.0, 200.0, 20.0], 900.0, -45.0, 35.0), clip("z", "crinkle")], {}),
-    ("03-manifold-prism-layers", "manifold",
-     [cell_types(), camera([8.0, 60.0, -20.0], 22.0, -75.0, 12.0), cut([0.0, 60.0, 0.0], [0.0, -1.0, 0.0])], {}),
-    ("04-manifold-quality", "manifold",
+    ("03-manifold-quality", "manifold",
      [{"tool": "display.color_by", "input": {"by": "quality", "metric": "non_orthogonality"}},
       camera([150.0, 200.0, 20.0], 900.0, -45.0, 35.0), clip("z", "flat")], {"theme": "light"}),
-    ("05-block-sweep", "sweep",
-     [cell_types(), clip("y", "crinkle"), camera([88.0, 50.0, 5.0], 70.0, 35.0, 30.0)], {}),
-    ("06-pipe-o-grid", "pipe",
-     [cell_types(), clip("x", "crinkle"), camera([75.0, 0.0, 0.0], 110.0, -55.0, 25.0)], {}),
-    ("07-channel", "channel",
-     [cell_types(), standard("front_right_top"), clip("y", "crinkle"), FIT], {"theme": "light"}),
-    ("08-elbow", "elbow",
-     [cell_types(), standard("front_right_top"), clip("z", "flat"), FIT], {}),
 ]
 
 

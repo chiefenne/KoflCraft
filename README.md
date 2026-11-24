@@ -9,14 +9,13 @@
 </p>
 
 <p align="center">
-  <a href="docs/gallery.md"><img src="assets/readme/tour.webp" width="880" alt="A slideshow of KoflCraft meshes, eight slides that change every four seconds, pictured with MurmelCraft: the Manifold duct coloured by patch; the Manifold cut in half and coloured by cell type, polyhedra in the core and prisms along the walls; a close view of the prism layers at the wall of the inlet pipe; the Manifold's non-orthogonality on a flat cut in the light theme; a swept block with hexahedral wall layers round a polyhedral core; the O-grid of a swept pipe seen end on; a straight channel with prism layers on its walls in the light theme; an L-shaped elbow cut flat, with layered columns along the walls"></a>
+  <a href="docs/gallery.md"><img src="assets/readme/tour.webp" width="880" alt="A slideshow of KoflCraft's Manifold mesh, three slides that change every four seconds, pictured with MurmelCraft: the Manifold duct coloured by patch; the Manifold cut in half and coloured by cell type, polyhedra in the core and prisms along the walls; the non-orthogonality of the cells on a flat cut, in the light theme"></a>
 </p>
 
-<sub>KoflCraft meshes pictured with <a href="https://github.com/chiefenne/MurmelCraft">MurmelCraft</a>:
-the Manifold duct (229,615 cells: Voronoi polyhedra with prism layers at
-the walls), a swept block and pipe, a channel and an elbow. The slides are
-also [still images with captions](docs/gallery.md); how they were made is
-in [tools/readme-tour](tools/readme-tour/README.md).</sub>
+<sub>KoflCraft's Manifold mesh pictured with <a href="https://github.com/chiefenne/MurmelCraft">MurmelCraft</a>:
+229,615 cells, Voronoi polyhedra in the core with prism layers at the
+walls. The slides are also [still images with captions](docs/gallery.md);
+how they were made is in [tools/readme-tour](tools/readme-tour/README.md).</sub>
 
 ---
 
