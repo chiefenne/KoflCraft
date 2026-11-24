@@ -175,6 +175,11 @@ tests = [
   "crates/mesh-algorithms/src/duct/verify.rs::bent_face_is_still_rejected",
   "crates/mesh-io/src/duct.rs::only_flat_boundary_polygons_merge",
   "crates/mesh-algorithms/src/duct/convex.rs::halving_a_cube_keeps_half_the_volume_and_tags_the_cut",
+  "crates/mesh-algorithms/src/duct/symbolic.rs::neighbouring_tetrahedra_share_names_and_coordinates",
+  "crates/mesh-algorithms/src/duct/symbolic.rs::two_sites_name_their_common_face_alike",
+  "crates/mesh-algorithms/src/duct/symbolic.rs::a_scaffold_vertex_on_the_bisector_belongs_to_both_pieces",
+  "crates/mesh-algorithms/src/duct/voronoi_core.rs::the_weld_is_the_same_for_every_order",
+  "crates/mesh-algorithms/src/duct/voronoi_core.rs::a_pinched_ring_is_cut_not_dropped",
   "crates/mesh-algorithms/src/duct/intersection.rs::rejects_transverse_coplanar_and_shared_vertex_overlaps",
 ]
 commands = []

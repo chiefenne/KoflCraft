@@ -5,6 +5,7 @@ mod convex;
 mod front;
 mod intersection;
 mod polyhedral;
+mod symbolic;
 mod verify;
 mod volume_dual;
 mod voronoi_core;

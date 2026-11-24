@@ -22,6 +22,7 @@
 //! layer nodes (poly-prism pieces with planar caps and bilinear sides), so
 //! every innermost layer face matches its core face exactly.
 use super::convex::{Convex, Cut, Src, kernel_point};
+use super::symbolic::{Frame, Key, SymConvex};
 use super::volume_dual::{Prepared, Scaffold, compact_points, map_scaffold, prepare};
 use super::*;
 use crate::neighbours::KdTree;
@@ -95,6 +96,14 @@ pub struct VoronoiStats {
     pub retries: usize,
     /// Sliver parts merged into a neighbouring cell.
     pub merged_slivers: usize,
+    /// Boundary polygons turned to start at another vertex, because a
+    /// fan from the first held a triangle without area.
+    pub turned_wall_rings: usize,
+    /// Polygons of one cell on one boundary triangle merged into one.
+    pub merged_wall_rings: usize,
+    /// Parts without thickness (fewer than four faces) joined to their
+    /// largest neighbour.
+    pub merged_films: usize,
     /// Sites split into a pair at reentrant wall edges.
     pub added_sites: usize,
     /// Wall pieces at a reentrant edge made cells of their own.
@@ -111,6 +120,9 @@ pub struct VoronoiStats {
     pub wall_join: WallJoin,
     /// Pieces thinner than the weld tolerance that left the diagram.
     pub collapsed_pieces: usize,
+    /// Named vertices of the final diagram merged into another by the
+    /// global weld.
+    pub welded_vertices: usize,
 }
 
 /// Rebuilds of the final diagram with sites added at reentrant edges.
@@ -138,6 +150,8 @@ const INITIAL_NEIGHBOURS: usize = 32;
 
 struct Domain {
     tets: Vec<[Vec3; 4]>,
+    /// Scaffold vertex ids of each tetrahedron.
+    nodes: Vec<[usize; 4]>,
     /// Density at the four corners of each tetrahedron.
     rho: Vec<[f64; 4]>,
     tol: f64,
@@ -222,6 +236,88 @@ impl<'a> Sites<'a> {
             }
         }
         Ok(Some(c))
+    }
+
+    /// As [`Self::piece`], with named vertices and shared decisions.
+    fn piece_sym(&self, dom: &Domain, t: usize, s: usize) -> Result<Option<SymConvex>, String> {
+        let frame = Frame {
+            nodes: dom.nodes[t],
+            corners: dom.tets[t],
+            sites: self.points,
+            tol: dom.tol,
+        };
+        let mut c = SymConvex::tet(&frame);
+        let site = self.points[s];
+        let radius = |c: &SymConvex| {
+            c.pts
+                .iter()
+                .map(|&p| (p - site).length())
+                .fold(0.0, f64::max)
+        };
+        let mut r = radius(&c);
+        let others = self.points.len() - 1;
+        let mut owned: Option<Vec<(f64, usize)>> = None;
+        let mut i = 0;
+        loop {
+            let list = owned.as_deref().unwrap_or(&self.near[s]);
+            if i == list.len() {
+                if list.len() >= others {
+                    break;
+                }
+                let k = (2 * list.len()).max(1).min(others);
+                owned = Some(self.tree.nearest(s, k));
+                continue;
+            }
+            let (d2, o) = list[i];
+            i += 1;
+            if d2.sqrt() > 2.0 * (r + dom.tol) * SECURITY_MARGIN {
+                break;
+            }
+            if d2.is_nan() || d2 <= 0.0 {
+                return Err(format!(
+                    "sites {s} and {o} of {} coincide at ({:.6}, {:.6}, {:.6})",
+                    self.points.len(),
+                    site.x,
+                    site.y,
+                    site.z
+                ));
+            }
+            match c
+                .clip(&frame, s as u32, o as u32)
+                .map_err(|e| format!("site {s}, tetrahedron {t}: {e}"))?
+            {
+                Cut::Inside => {}
+                Cut::Clipped => r = radius(&c),
+                Cut::Empty => return Ok(None),
+            }
+        }
+        Ok(Some(c))
+    }
+
+    /// Every non-empty piece of tetrahedron `t` with named vertices.
+    fn split_tet_sym(&self, dom: &Domain, t: usize) -> Result<Vec<(usize, SymConvex)>, String> {
+        let p = &dom.tets[t];
+        let centre = (p[0] + p[1] + p[2] + p[3]) * 0.25;
+        let start = self.tree.closest(centre).ok_or("no sites")?;
+        let mut seen = vec![start];
+        let mut queue = vec![start];
+        let mut out = Vec::new();
+        while let Some(s) = queue.pop() {
+            if let Some(c) = self.piece_sym(dom, t, s)? {
+                for (src, _) in &c.faces {
+                    if let Src::Bis(o) = *src {
+                        let o = o as usize;
+                        if !seen.contains(&o) {
+                            seen.push(o);
+                            queue.push(o);
+                        }
+                    }
+                }
+                out.push((s, c));
+            }
+        }
+        out.sort_by_key(|(s, _)| *s);
+        Ok(out)
     }
 
     /// Every non-empty piece of tetrahedron `t`, by site.
@@ -312,54 +408,97 @@ pub(super) fn one_loop(rings: &[&Vec<usize>]) -> bool {
     false
 }
 
-/// Merge vertices closer than the tolerance into one id.
-struct Weld {
-    cell: f64,
-    tol2: f64,
-    grid: HashMap<(i64, i64, i64), Vec<usize>>,
-}
-
-impl Weld {
-    fn key(&self, p: Vec3) -> (i64, i64, i64) {
+/// Merge raw vertices closer than `tol` (single linkage) and give every
+/// group its final point id: the anchor of a group that holds a scaffold
+/// vertex, a new point otherwise. Two scaffold vertices are never merged.
+fn weld_all(
+    raw: &[Vec3],
+    anchor: &[Option<usize>],
+    tol: f64,
+    points: &mut Vec<Vec3>,
+) -> Vec<usize> {
+    fn find(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    let cell = tol * 4.0;
+    let key = |p: Vec3| {
         (
-            (p.x / self.cell).floor() as i64,
-            (p.y / self.cell).floor() as i64,
-            (p.z / self.cell).floor() as i64,
+            (p.x / cell).floor() as i64,
+            (p.y / cell).floor() as i64,
+            (p.z / cell).floor() as i64,
         )
-    }
-    fn insert_new(&mut self, points: &mut Vec<Vec3>, p: Vec3) -> usize {
-        let id = points.len();
-        points.push(p);
-        let k = self.key(p);
-        self.grid.entry(k).or_default().push(id);
-        id
-    }
-    fn register(&mut self, points: &[Vec3], id: usize) {
-        let k = self.key(points[id]);
-        self.grid.entry(k).or_default().push(id);
-    }
-    fn id(&mut self, points: &mut Vec<Vec3>, p: Vec3) -> usize {
-        let (x, y, z) = self.key(p);
-        let mut best: Option<(f64, usize)> = None;
+    };
+    let mut parent: Vec<usize> = (0..raw.len()).collect();
+    let mut fixed: Vec<Option<usize>> = anchor.to_vec();
+    let mut grid: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
+    for (i, &p) in raw.iter().enumerate() {
+        let (x, y, z) = key(p);
         for dx in -1..=1 {
             for dy in -1..=1 {
                 for dz in -1..=1 {
-                    if let Some(ids) = self.grid.get(&(x + dx, y + dy, z + dz)) {
-                        for &i in ids {
-                            let d = (points[i] - p).dot(points[i] - p);
-                            if d <= self.tol2 && best.is_none_or(|b| (d, i) < b) {
-                                best = Some((d, i));
-                            }
+                    let Some(ids) = grid.get(&(x + dx, y + dy, z + dz)) else {
+                        continue;
+                    };
+                    for &j in ids {
+                        if (raw[j] - p).dot(raw[j] - p) > tol * tol {
+                            continue;
                         }
+                        let (a, b) = (find(&mut parent, i), find(&mut parent, j));
+                        if a == b || (fixed[a].is_some() && fixed[b].is_some()) {
+                            continue;
+                        }
+                        // the earlier vertex leads, so the result does not
+                        // depend on the order of the unions
+                        let (lo, hi) = (a.min(b), a.max(b));
+                        parent[hi] = lo;
+                        fixed[lo] = fixed[lo].or(fixed[hi]);
                     }
                 }
             }
         }
-        match best {
-            Some((_, i)) => i,
-            None => self.insert_new(points, p),
+        grid.entry((x, y, z)).or_default().push(i);
+    }
+    let mut id = vec![usize::MAX; raw.len()];
+    for i in 0..raw.len() {
+        let root = find(&mut parent, i);
+        if id[root] == usize::MAX {
+            id[root] = fixed[root].unwrap_or_else(|| {
+                points.push(raw[root]);
+                points.len() - 1
+            });
+        }
+        id[i] = id[root];
+    }
+    id
+}
+
+/// The simple loops of a ring: consecutive repeats dropped, and a ring
+/// that touches itself at a vertex cut there. Loops of fewer than three
+/// vertices are gone.
+fn simple_loops(ring: &[usize]) -> Vec<Vec<usize>> {
+    let mut loops = Vec::new();
+    let mut path: Vec<usize> = Vec::with_capacity(ring.len());
+    for &v in ring {
+        if path.last() == Some(&v) {
+            continue;
+        }
+        if let Some(i) = path.iter().position(|&x| x == v) {
+            if path.len() - i >= 3 {
+                loops.push(path[i..].to_vec());
+            }
+            path.truncate(i + 1);
+        } else {
+            path.push(v);
         }
     }
+    if path.len() >= 3 {
+        loops.push(path);
+    }
+    loops
 }
 
 struct Piece {
@@ -368,17 +507,6 @@ struct Piece {
     faces: Vec<(Src, Vec<usize>)>,
     volume: f64,
     centroid: Vec3,
-}
-
-fn clean_ring(mut ring: Vec<usize>) -> Option<Vec<usize>> {
-    ring.dedup();
-    while ring.len() > 1 && ring.first() == ring.last() {
-        ring.pop();
-    }
-    let mut seen = ring.clone();
-    seen.sort_unstable();
-    seen.dedup();
-    (ring.len() >= 3 && seen.len() == ring.len()).then_some(ring)
 }
 
 /// Merge coplanar rings shared by the same two cells into one polygon when
@@ -553,6 +681,7 @@ fn build(
     }
     let dom = Domain {
         tets,
+        nodes: scaffold.tetrahedra.clone(),
         rho,
         tol: scale * 1e-12,
     };
@@ -843,58 +972,87 @@ fn build(
         stats.last_relative_shift = shift;
     }
 
-    // Final diagram, welded into global vertex ids.
+    // Final diagram. A vertex gets its id from its name, so the pieces of
+    // neighbouring tetrahedra and sites share their vertices whatever the
+    // rounding. Vertices closer than the weld distance are then merged in
+    // one pass over the whole diagram (single linkage), so a face is the
+    // same ring for the two pieces on its sides: it collapses for both or
+    // for neither.
     let s = Sites::new(&sites);
-    let mut weld = Weld {
-        cell: scale * 1e-9,
-        tol2: (scale * 1e-10).powi(2),
-        grid: HashMap::new(),
-    };
-    for &m in &mapped {
-        weld.register(&front.points, m);
-    }
+    let weld_tol = scale * 1e-10;
+    let mut named: HashMap<Key, usize> = HashMap::new();
+    let mut raw_points: Vec<Vec3> = Vec::new();
+    let mut anchor: Vec<Option<usize>> = Vec::new();
     let mut pieces: Vec<Piece> = Vec::new();
-    let mut site_tet: HashMap<(usize, usize), usize> = HashMap::new();
     const CHUNK: usize = 20_000;
     for start in (0..dom.tets.len()).step_by(CHUNK) {
         let end = (start + CHUNK).min(dom.tets.len());
-        let split = per_tet(end - start, &|i| s.split_tet(&dom, start + i))?;
+        let split = per_tet(end - start, &|i| s.split_tet_sym(&dom, start + i))?;
         for (i, list) in split.into_iter().enumerate() {
             let t = start + i;
             for (site, c) in list {
-                let ids: Vec<usize> = c
-                    .pts
+                let (keys, c) = c.into_convex();
+                let ids: Vec<usize> = keys
                     .iter()
-                    .map(|&p| weld.id(&mut front.points, p))
-                    .collect();
-                let faces: Vec<(Src, Vec<usize>)> = c
-                    .faces
-                    .iter()
-                    .filter_map(|(src, ring)| {
-                        clean_ring(ring.iter().map(|&v| ids[v]).collect()).map(|r| (*src, r))
+                    .zip(&c.pts)
+                    .map(|(&key, &p)| {
+                        *named.entry(key).or_insert_with(|| {
+                            let (p, fixed) = match key {
+                                Key::V(n) => (front.points[mapped[n]], Some(mapped[n])),
+                                _ => (p, None),
+                            };
+                            raw_points.push(p);
+                            anchor.push(fixed);
+                            raw_points.len() - 1
+                        })
                     })
                     .collect();
-                if faces.is_empty() {
-                    // Thinner than the weld tolerance in two directions (a
-                    // needle along a Voronoi edge through a wall vertex or
-                    // edge): every face collapsed, on its neighbours too.
-                    stats.collapsed_pieces += 1;
-                    continue;
-                }
-                site_tet.insert((site, t), pieces.len());
+                let (volume, _, moment) = c.moments(&|_| 1.0);
                 pieces.push(Piece {
                     site,
                     tet: t,
-                    faces,
-                    volume: c.volume(),
-                    centroid: {
-                        let (v, _, m) = c.moments(&|_| 1.0);
-                        m / v
-                    },
+                    faces: c
+                        .faces
+                        .iter()
+                        .map(|(src, ring)| (*src, ring.iter().map(|&v| ids[v]).collect()))
+                        .collect(),
+                    volume,
+                    centroid: moment / volume,
                 });
             }
         }
     }
+    let final_id = weld_all(&raw_points, &anchor, weld_tol, &mut front.points);
+    drop(named);
+    stats.welded_vertices = raw_points.len() - {
+        let mut ids = final_id.clone();
+        ids.sort_unstable();
+        ids.dedup();
+        ids.len()
+    };
+    drop(raw_points);
+    let mut site_tet: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut kept: Vec<Piece> = Vec::with_capacity(pieces.len());
+    for mut p in pieces {
+        p.faces = p
+            .faces
+            .into_iter()
+            .flat_map(|(src, ring)| {
+                let ring: Vec<usize> = ring.into_iter().map(|v| final_id[v]).collect();
+                simple_loops(&ring).into_iter().map(move |r| (src, r))
+            })
+            .collect();
+        if p.faces.is_empty() {
+            // Thinner than the weld distance in two directions (a needle
+            // along a Voronoi edge through a wall vertex or edge): every
+            // face collapsed, and with it the same face of each neighbour.
+            stats.collapsed_pieces += 1;
+            continue;
+        }
+        site_tet.insert((p.site, p.tet), kept.len());
+        kept.push(p);
+    }
+    let pieces = kept;
     stats.pieces = pieces.len();
     let points = &mut front.points;
 
@@ -1541,10 +1699,25 @@ fn build(
         }
         let mut order: Vec<(usize, f64)> = contact.into_iter().collect();
         order.sort_by(|a, b| b.1.total_cmp(&a.1));
+        // A part with fewer than four faces is a film without thickness
+        // (its faces lie on each other after the weld). It cannot be a
+        // cell, and joining its largest neighbour leaves that neighbour's
+        // shape as it was: the film's far face takes the place of the
+        // shared one.
+        let film = exposed(&parts[id].0).len() < 4;
         for (q, _) in order {
             let mut grown = parts[q].0.clone();
             grown.extend(parts[id].0.iter().copied());
             grown.sort_unstable();
+            if film {
+                for &i in &parts[id].0 {
+                    owner[i] = q;
+                }
+                parts[q].0 = grown;
+                parts[id].0.clear();
+                stats.merged_films += 1;
+                break;
+            }
             if behind(&grown) > behind(&parts[q].0) {
                 continue;
             }
@@ -1608,6 +1781,69 @@ fn build(
             let b = part_of[other];
             if a < b {
                 pair_faces.entry((a, b)).or_default().push(ring.clone());
+            }
+        }
+    }
+    // A film joined to its neighbour leaves that cell two polygons on one
+    // boundary triangle, one of them a needle without area. The two become
+    // one polygon, so that no layer cell stands on the needle.
+    //
+    // Every ring then starts where its fan has the largest smallest
+    // triangle. A polygon may have a vertex in the middle of a straight
+    // edge (where a third cell ends on that edge); the layer cells fan
+    // their caps from the first vertex, and a fan from the neighbour of
+    // such a vertex would hold a triangle without area.
+    let best_start = |points: &[Vec3], ring: &[usize]| -> usize {
+        let n = ring.len();
+        let fan = |start: usize| -> f64 {
+            let at = |k: usize| points[ring[(start + k) % n]];
+            (1..n - 1)
+                .map(|k| (at(k) - at(0)).cross(at(k + 1) - at(0)).length())
+                .fold(f64::INFINITY, f64::min)
+        };
+        let first = fan(0);
+        let (newell, _) = super::convex::ring_plane(points, ring);
+        if first > 1e-9 * newell.length() {
+            return 0;
+        }
+        let mut best = (first, 0);
+        for start in 1..n {
+            let f = fan(start);
+            if f > best.0 {
+                best = (f, start);
+            }
+        }
+        best.1
+    };
+    for rec in records.values_mut() {
+        let mut by_part: BTreeMap<usize, Vec<Vec<usize>>> = BTreeMap::new();
+        for (part, ring) in rec.drain(..) {
+            by_part.entry(part).or_default().push(ring);
+        }
+        for (part, rings) in by_part {
+            let areas: Vec<f64> = rings
+                .iter()
+                .map(|r| super::convex::ring_plane(points, r).0.length())
+                .collect();
+            let largest = areas.iter().copied().fold(0.0, f64::max);
+            let rings = if rings.len() > 1 && areas.iter().any(|&a| a < 1e-6 * largest) {
+                let merged = merge_rings(points, rings.clone());
+                if merged.len() == 1 {
+                    stats.merged_wall_rings += rings.len() - 1;
+                    merged
+                } else {
+                    rings
+                }
+            } else {
+                rings
+            };
+            for mut ring in rings {
+                let start = best_start(points, &ring);
+                if start > 0 {
+                    ring.rotate_left(start);
+                    stats.turned_wall_rings += 1;
+                }
+                rec.push((part, ring));
             }
         }
     }
@@ -1868,7 +2104,45 @@ fn build(
 
 #[cfg(test)]
 mod tests {
-    use super::{Vec3, merge_rings};
+    use super::{Vec3, merge_rings, simple_loops, weld_all};
+
+    /// Keep: the weld is one decision for the whole diagram. Three vertices
+    /// in a row, each within the distance of the next, become one whatever
+    /// their order, and a scaffold vertex in the group gives it its id. The
+    /// earlier weld took the nearest earlier point per piece, so the same
+    /// face could collapse in one tetrahedron and survive in its neighbour.
+    #[test]
+    fn the_weld_is_the_same_for_every_order() {
+        let p = |x: f64| Vec3::new(x, 0.0, 0.0);
+        let raw = [p(0.0), p(0.8e-3), p(1.6e-3), p(1.0)];
+        for order in [[0, 1, 2, 3], [2, 0, 3, 1], [3, 2, 1, 0]] {
+            let pts: Vec<Vec3> = order.iter().map(|&i| raw[i]).collect();
+            let anchor: Vec<Option<usize>> = order.iter().map(|&i| (i == 2).then_some(7)).collect();
+            let mut points = vec![Vec3::ZERO; 8];
+            let id = weld_all(&pts, &anchor, 1e-3, &mut points);
+            let of = |i: usize| id[order.iter().position(|&o| o == i).unwrap()];
+            assert_eq!([of(0), of(1), of(2)], [7, 7, 7]);
+            assert_eq!(of(3), 8);
+            assert_eq!(points.len(), 9);
+        }
+        // two scaffold vertices stay two
+        let mut points = vec![Vec3::ZERO; 2];
+        let id = weld_all(&[p(0.0), p(1e-4)], &[Some(0), Some(1)], 1e-3, &mut points);
+        assert_eq!(id, [0, 1]);
+    }
+
+    /// Keep: a ring that touches itself after the weld is cut into its
+    /// loops, and a spike goes. Dropping the whole ring (as before) loses
+    /// the face on one cell pair and opens both cells.
+    #[test]
+    fn a_pinched_ring_is_cut_not_dropped() {
+        assert_eq!(
+            simple_loops(&[0, 1, 2, 0, 3, 4]),
+            vec![vec![0, 1, 2], vec![0, 3, 4]]
+        );
+        assert_eq!(simple_loops(&[0, 1, 1, 2, 3, 2, 4]), vec![vec![0, 1, 2, 4]]);
+        assert!(simple_loops(&[5, 6, 6, 5]).is_empty());
+    }
 
     /// Keep: a core face merged from rings is fanned about its node average,
     /// so the inner vertices of the rings must lie in the merged plane too.

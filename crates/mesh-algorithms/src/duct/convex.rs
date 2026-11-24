@@ -208,6 +208,7 @@ impl Convex {
         (vol, mass, moment)
     }
 
+    #[cfg(test)]
     pub fn volume(&self) -> f64 {
         self.moments(&|_| 1.0).0
     }
