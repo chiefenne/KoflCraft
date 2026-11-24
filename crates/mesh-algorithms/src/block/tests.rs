@@ -298,6 +298,46 @@ mod elliptic {
         assert!(worst(&g) >= 0.99 * before, "{} < {before}", worst(&g));
     }
 
+    /// Invariant: on projection surfaces (pipe cylinder, elbow torus) the
+    /// block-edge wall nodes slide and the face nodes follow; they stay on
+    /// the surface, the smoother converges, and the grid is no worse than
+    /// with fixed walls (already orthogonal to 0.4° to 0.6°).
+    #[test]
+    fn surface_walls_slide_and_stay() {
+        let worst = |g: &BlockGrid| {
+            g.quality()
+                .iter()
+                .map(|q| q.min_scaled_jacobian)
+                .fold(f64::INFINITY, f64::min)
+        };
+        let (r, big) = (0.5, 1.5);
+        let cases = [
+            elbow(r, big, 90.0, 1.0, 1.0, 0.5, [6, 6, 36], Some(0.01)).unwrap(),
+            pipe_ogrid(0.05, 0.2, 0.55, [8, 10, 6], Some(0.0005)).unwrap(),
+        ];
+        for (c, t) in cases.iter().enumerate() {
+            let mut fixed = build(&t.topology).unwrap();
+            let mut slid = fixed.clone();
+            let a = smooth(&mut fixed, &walls(&t.topology)).unwrap();
+            let o = SmoothOptions {
+                slide_walls: true,
+                ..walls(&t.topology)
+            };
+            let b = smooth(&mut slid, &o).unwrap();
+            assert!(b.converged && b.contour_nodes > 0, "{b:?}");
+            assert!(b.contour_slide_max > 0.0, "{b:?}");
+            assert!(
+                b.wall_angle_max_after <= a.wall_angle_max_after + 0.05,
+                "{b:?} {a:?}"
+            );
+            assert!(worst(&slid) >= 0.99 * worst(&fixed));
+            if c == 0 {
+                assert!(elbow_wall_error(&slid, r, big, 1.0) < 1e-12);
+            }
+            assert_conforming(&slid);
+        }
+    }
+
     /// Invariant: nodes of a planar sliding patch move inside their plane
     /// and stay on it; a patch that is not planar (the pipe wall) keeps its
     /// nodes fixed even when it is named as sliding.
@@ -585,4 +625,68 @@ fn coordinate_files_read_to_one_section() {
         assert_conforming(&build(&t.topology).unwrap());
     }
     assert!(Section::from_coordinates("x\n1 0\n0 0\n").is_err());
+}
+
+/// Invariant: on the NACA 2412 C-grid the wall nodes slide along the
+/// section (they stay on it), the smoother still converges, and the grid
+/// is no worse than with fixed wall nodes: smaller largest wall angle, no
+/// smaller scaled Jacobian.
+#[test]
+fn wall_nodes_slide_along_the_section() {
+    use super::smooth::{SmoothOptions, smooth};
+    let section = Naca4::parse("2412").unwrap();
+    let mut runs = Vec::new();
+    for slide in [false, true] {
+        let (mut g, _) = naca_case("2412", 48);
+        let cg = airfoil_cgrid(
+            &section.section(),
+            &AirfoilCgrid {
+                chord: 1.0,
+                span: 0.1,
+                farfield: 5.0,
+                wake: 5.0,
+                cells: [48, 24, 24, 1],
+                wall_spacing: 1e-3,
+                le_spacing: None,
+                te_spacing: None,
+            },
+        )
+        .unwrap();
+        let named = |f: &dyn Fn(&str) -> bool| -> Vec<usize> {
+            cg.topology
+                .patches
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| f(&p.name))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let o = SmoothOptions {
+            wall_patches: named(&|n| n.contains("wall")),
+            sliding_patches: named(&|n| n.starts_with("symmetry")),
+            slide_walls: slide,
+            ..SmoothOptions::default()
+        };
+        let res = smooth(&mut g, &o).unwrap();
+        assert!(res.converged, "{res:?}");
+        let jmin = g
+            .quality()
+            .iter()
+            .map(|q| q.min_scaled_jacobian)
+            .fold(1.0, f64::min);
+        runs.push((res, jmin, section_error(&g, &section)));
+    }
+    let (fixed, slid) = (&runs[0], &runs[1]);
+    assert_eq!(fixed.0.contour_nodes, 0);
+    // two contours (upper, lower) on each of the two symmetry planes
+    assert!(slid.0.contour_nodes > 100, "{:?}", slid.0);
+    assert!(slid.0.contour_slide_max > 0.0);
+    assert!(
+        slid.0.wall_angle_max_after < fixed.0.wall_angle_max_after,
+        "{:?} {:?}",
+        slid.0,
+        fixed.0
+    );
+    assert!(slid.1 >= fixed.1, "{} < {}", slid.1, fixed.1);
+    assert!(slid.2 < 2e-5, "wall nodes {} off the section", slid.2);
 }

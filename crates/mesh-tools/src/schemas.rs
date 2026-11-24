@@ -534,8 +534,9 @@ pub(crate) fn block_algorithm() -> Value {
     let tfi = input(json!({"kind": {"const": "tfi"}}), &[]);
     let elliptic = input(
         json!({"kind": {"const": "elliptic"}, "wall_orthogonality": {"type": "boolean"},
+               "wall_sliding": {"type": "boolean"},
                "max_iterations": {"type": "integer", "minimum": 1}}),
-        &["wall_orthogonality", "max_iterations"],
+        &["wall_orthogonality", "wall_sliding", "max_iterations"],
     );
     json!({"oneOf": [tfi, elliptic]})
 }

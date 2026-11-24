@@ -432,3 +432,17 @@ tests = [
 ]
 commands = ["cargo m1 --require-gmsh --require-foehn"]
 gaps = "After a split, interior nodes follow the TFI of the new blocks, not of the whole (NACA 2412: up to 2.2e-3 chords; elbow: projected wall face interiors slide along the torus by 4.8e-5 at radius 0.5); a split whose chain reaches a block twice in different ways is refused; no tools for projection surfaces, merging blocks or collapsed blocks; a refused edit lists every follow-on issue of the check, not only the first cause"
+[[feature]]
+id = "block-mb1f-wall-sliding"
+title = "Block-structured variant MB1f: wall nodes slide along curved walls during elliptic smoothing (section contours, cylinder and torus surfaces)"
+requirements = ["BS-09", "BS-12"]
+grade = "partial"
+how = "block.grid with {\"kind\": \"elliptic\", \"wall_sliding\": true}. Extruded sections: the wall nodes are chained along the curved lines of ruled wall faces, joined across blocks where the line turns by less than 30°; chain ends and sharper corners (trailing edges) stay; after each sweep a node moves halfway to the foot of its first off-wall node on a spline through the TFI wall nodes, inside half a TFI cell of its start, block vertices included. Without the window the whole distribution drifts toward the leading edge and folds (NACA 2412: 13 % of chord). Projection surfaces (cylinder, torus): the wall nodes on block edges slide on the surface toward the mean of the foot point and their TFI position (inside the same window), and the face nodes follow by transfinite interpolation of the rim displacement; without the TFI anchor the foot point follows the node it is for and the elbow folds. NACA 2412 C-grid, 48 surface cells: largest wall angle 15.5° → 11.0°, min scaled Jacobian 0.58 → 0.62, wall nodes within 5e-6 chords of the section; FoehnCraft max non-orthogonality on the acceptance C-grid 47.0° → 44.7° (TFI 60.5°). Pipe and elbow, already orthogonal to 0.4°–0.6°, stay as good with nodes on the surface to 1e-12 (FoehnCraft max non-orthogonality pipe 23.30°, elbow 23.58°, same as fixed walls). wall_sliding without wall_orthogonality is refused"
+tests = [
+  "crates/mesh-algorithms/src/block/tests.rs::wall_nodes_slide_along_the_section",
+  "crates/mesh-algorithms/src/block/tests.rs::surface_walls_slide_and_stay",
+  "crates/mesh-engine/src/block.rs::airfoil_cgrid_validates_and_smooths",
+]
+commands = ["cargo m1 --require-gmsh --require-foehn"]
+gaps = "No multi-element template yet to measure the case it is for; on surfaces the TFI anchor leaves little room (elbow wall angle 0.59° → 0.58°); the contour is a polyline with 32 samples per cell of the spline through the TFI nodes, not the section itself (wall nodes off by up to 8e-6 chords); walls that are neither ruled nor on a projection surface do not slide"
+

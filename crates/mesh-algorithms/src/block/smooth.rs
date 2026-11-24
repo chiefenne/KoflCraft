@@ -60,7 +60,7 @@
 
 use std::collections::HashMap;
 
-use mesh_core::block::BLOCK_FACES;
+use mesh_core::block::{BLOCK_FACES, Surface};
 use mesh_core::geometry::Vec3;
 
 use super::grid::BlockGrid;
@@ -80,6 +80,10 @@ pub struct SmoothOptions {
     /// Patches whose nodes slide in their plane (symmetry); a patch that is
     /// not planar keeps its nodes fixed.
     pub sliding_patches: Vec<usize>,
+    /// Let the nodes of curved wall lines (and the block vertices on them)
+    /// slide along the wall contour toward the foot of their first
+    /// off-wall node; sharp corners and chain ends stay.
+    pub slide_walls: bool,
     pub max_iterations: usize,
     /// Stop when the largest node move of a sweep is below this fraction of
     /// the shortest TFI edge at that node.
@@ -99,6 +103,7 @@ impl Default for SmoothOptions {
         Self {
             wall_patches: Vec::new(),
             sliding_patches: Vec::new(),
+            slide_walls: false,
             max_iterations: 10000,
             tolerance: 1e-4,
             decay: 0.45,
@@ -127,6 +132,10 @@ pub struct Smoothing {
     /// Planar sliding patches, and the nodes on them that moved.
     pub sliding_patches: usize,
     pub sliding_nodes: usize,
+    /// Wall nodes that slide along a contour, and the largest distance one
+    /// moved from its TFI position.
+    pub contour_nodes: usize,
+    pub contour_slide_max: f64,
     pub wall_faces: usize,
     /// Deviation of the first grid line off a wall from the wall normal,
     /// in degrees, over the interior nodes of the wall faces.
@@ -420,6 +429,535 @@ fn inward_normal(x: &[Vec3], b: &Block, w: &Wall, u: usize, v: usize) -> Option<
         normal
     })
 }
+
+/// The largest angle in degrees between two wall lines that still continue
+/// one contour; a sharper corner (a trailing edge) stays fixed.
+const CONTOUR_CORNER_DEG: f64 = 30.0;
+/// Samples of the contour polyline per grid cell.
+const CONTOUR_SAMPLES: usize = 32;
+/// Fraction of the way to the foot point a contour node moves per sweep.
+const CONTOUR_RELAXATION: f64 = 0.5;
+/// A contour node slides at most this fraction of its TFI cell toward
+/// either neighbour; the Neumann foot alone drifts the whole distribution
+/// toward a convex leading edge.
+const CONTOUR_WINDOW: f64 = 0.5;
+/// Weight of the TFI position against the foot point for a sliding node on
+/// a projection surface. There the face nodes follow the rim and carry
+/// their off-wall nodes along, so the foot point follows the node it is
+/// for; without the anchor the rim drifts until it folds (elbow).
+const SURFACE_ANCHOR: f64 = 1.0;
+
+/// A chain of wall nodes along a curved wall line, across blocks; the end
+/// nodes stay, the others slide on a dense polyline of the spline through
+/// the TFI nodes.
+struct Contour {
+    nodes: Vec<usize>,
+    /// The first node off the wall for each node (`usize::MAX`: none).
+    off: Vec<usize>,
+    pts: Vec<Vec3>,
+    /// Arc length at each polyline point.
+    arc: Vec<f64>,
+    /// Arc length of each node.
+    at: Vec<f64>,
+    /// Arc length of each node in the TFI grid.
+    at_tfi: Vec<f64>,
+}
+
+impl Contour {
+    fn free(&self) -> usize {
+        (1..self.nodes.len().saturating_sub(1))
+            .filter(|&k| self.off[k] != usize::MAX)
+            .count()
+    }
+
+    fn eval(&self, s: f64) -> Vec3 {
+        let i = match self.arc.binary_search_by(|a| a.total_cmp(&s)) {
+            Ok(i) => return self.pts[i],
+            Err(i) => i.clamp(1, self.arc.len() - 1),
+        };
+        let t = (s - self.arc[i - 1]) / (self.arc[i] - self.arc[i - 1]);
+        self.pts[i - 1] + (self.pts[i] - self.pts[i - 1]) * t
+    }
+
+    /// The arc length of the polyline point nearest to `p` within [lo, hi].
+    fn project(&self, p: Vec3, lo: f64, hi: f64) -> f64 {
+        let start = self.arc.partition_point(|&a| a < lo).saturating_sub(1);
+        let end = self
+            .arc
+            .partition_point(|&a| a <= hi)
+            .min(self.arc.len() - 1);
+        let mut best = (f64::INFINITY, lo);
+        for i in start..end {
+            let d = self.pts[i + 1] - self.pts[i];
+            let t = ((p - self.pts[i]).dot(d) / d.dot(d)).clamp(0.0, 1.0);
+            let dist = (p - (self.pts[i] + d * t)).length();
+            if dist < best.0 {
+                best = (dist, self.arc[i] + t * (self.arc[i + 1] - self.arc[i]));
+            }
+        }
+        best.1.clamp(lo, hi)
+    }
+
+    /// Move each free node part of the way to the foot of its off-wall
+    /// node, keeping the order along the contour; the largest move over
+    /// the node's shortest edge.
+    fn slide(&mut self, x: &mut [Vec3], h_node: &[f64]) -> f64 {
+        let mut change = 0.0f64;
+        for k in 1..self.nodes.len() - 1 {
+            if self.off[k] == usize::MAX {
+                continue;
+            }
+            let (lo, hi) = (self.at[k - 1], self.at[k + 1]);
+            let margin = 0.1 * (hi - lo);
+            let t = &self.at_tfi;
+            let lo = (lo + margin).max(t[k] - CONTOUR_WINDOW * (t[k] - t[k - 1]));
+            let hi = (hi - margin).min(t[k] + CONTOUR_WINDOW * (t[k + 1] - t[k]));
+            let foot = self.project(x[self.off[k]], lo, hi);
+            let s = self.at[k] + CONTOUR_RELAXATION * (foot - self.at[k]);
+            let s = s.clamp(lo, hi);
+            let p = self.eval(s);
+            let id = self.nodes[k];
+            change = change.max((p - x[id]).length() / h_node[id]);
+            x[id] = p;
+            self.at[k] = s;
+        }
+        change
+    }
+}
+
+/// Chains of wall nodes along the curved direction of wall faces whose
+/// other direction is straight (extruded sections), joined across blocks
+/// where the lines continue smoothly.
+fn wall_contours(
+    x: &[Vec3],
+    hexes: &[[usize; 8]],
+    boundary: &[([usize; 4], usize, usize)],
+    blocks: &[Block],
+    walls: &[Wall],
+    wall_patches: &[usize],
+    on_surface: &HashMap<usize, usize>,
+) -> Result<Vec<Contour>, String> {
+    let bend = |ids: &[usize]| -> f64 {
+        let (a, b) = (x[ids[0]], x[ids[ids.len() - 1]]);
+        let len = (b - a).length();
+        ids[1..ids.len() - 1]
+            .iter()
+            .map(|&i| {
+                let t = (x[i] - a).dot(b - a) / (len * len);
+                (x[i] - (a + (b - a) * t)).length() / len
+            })
+            .fold(0.0, f64::max)
+    };
+    let mut lines: Vec<Vec<usize>> = Vec::new();
+    for w in walls {
+        let b = &blocks[w.block];
+        let mid = b.at(w.node(w.n[w.t[0]] / 2, w.n[w.t[1]] / 2, 0));
+        if on_surface.contains_key(&mid) {
+            continue;
+        }
+        let line = |along: usize, other: usize| -> Vec<usize> {
+            (0..=w.n[w.t[along]])
+                .map(|i| {
+                    let (u, v) = if along == 0 { (i, other) } else { (other, i) };
+                    b.at(w.node(u, v, 0))
+                })
+                .collect()
+        };
+        let curved = |along: usize| -> f64 {
+            let other = 1 - along;
+            (0..=w.n[w.t[other]])
+                .map(|j| bend(&line(along, j)))
+                .fold(0.0, f64::max)
+        };
+        let (c0, c1) = (curved(0), curved(1));
+        let along = if c0 >= c1 { 0 } else { 1 };
+        let (big, small) = if along == 0 { (c0, c1) } else { (c1, c0) };
+        // only ruled faces: one curved direction, the other straight
+        if big < 1e-9 || small > 1e-9 {
+            continue;
+        }
+        for j in 0..=w.n[w.t[1 - along]] {
+            lines.push(line(along, j));
+        }
+    }
+    // join lines that meet end to end and continue smoothly
+    let dir = |a: usize, b: usize| {
+        let d = x[b] - x[a];
+        d / d.length()
+    };
+    let cos_limit = CONTOUR_CORNER_DEG.to_radians().cos();
+    let mut ends: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (i, l) in lines.iter().enumerate() {
+        ends.entry(l[0]).or_default().push(i);
+        ends.entry(l[l.len() - 1]).or_default().push(i);
+    }
+    let mut used = vec![false; lines.len()];
+    let mut chains: Vec<Vec<usize>> = Vec::new();
+    for start in 0..lines.len() {
+        if used[start] {
+            continue;
+        }
+        used[start] = true;
+        let mut chain = lines[start].clone();
+        for _ in 0..2 {
+            loop {
+                let e = chain[chain.len() - 1];
+                let prev = chain[chain.len() - 2];
+                let Some(next) = ends.get(&e).and_then(|c| {
+                    let open: Vec<usize> = c.iter().copied().filter(|&i| !used[i]).collect();
+                    (open.len() == 1 && c.len() == 2).then(|| open[0])
+                }) else {
+                    break;
+                };
+                let mut l = lines[next].clone();
+                if l[0] != e {
+                    l.reverse();
+                }
+                if dir(prev, e).dot(dir(e, l[1])) < cos_limit || l[l.len() - 1] == chain[0] {
+                    break;
+                }
+                used[next] = true;
+                chain.extend_from_slice(&l[1..]);
+            }
+            chain.reverse();
+        }
+        chains.push(chain);
+    }
+    // the node one step off the wall: the neighbour not on a wall whose
+    // edge is most normal to the contour
+    let wall_set: std::collections::HashSet<usize> = boundary
+        .iter()
+        .filter(|(_, p, _)| wall_patches.contains(p))
+        .flat_map(|(q, _, _)| *q)
+        .collect();
+    let mut adj: HashMap<usize, Vec<usize>> = HashMap::new();
+    for h in hexes {
+        for (a, b) in [
+            (0, 1),
+            (1, 2),
+            (2, 3),
+            (3, 0),
+            (4, 5),
+            (5, 6),
+            (6, 7),
+            (7, 4),
+            (0, 4),
+            (1, 5),
+            (2, 6),
+            (3, 7),
+        ] {
+            for (p, q) in [(h[a], h[b]), (h[b], h[a])] {
+                if wall_set.contains(&p) && !wall_set.contains(&q) {
+                    let e = adj.entry(p).or_default();
+                    if !e.contains(&q) {
+                        e.push(q);
+                    }
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for nodes in chains {
+        if nodes.len() < 3 {
+            continue;
+        }
+        let off: Vec<usize> = (0..nodes.len())
+            .map(|k| {
+                let id = nodes[k];
+                let t = dir(
+                    nodes[k.saturating_sub(1)],
+                    nodes[(k + 1).min(nodes.len() - 1)],
+                );
+                adj.get(&id)
+                    .and_then(|c| {
+                        c.iter().copied().min_by(|&p, &q| {
+                            dir(id, p).dot(t).abs().total_cmp(&dir(id, q).dot(t).abs())
+                        })
+                    })
+                    .unwrap_or(usize::MAX)
+            })
+            .collect();
+        let (a, b) = (x[nodes[0]], x[nodes[nodes.len() - 1]]);
+        let through: Vec<Vec3> = nodes[1..nodes.len() - 1].iter().map(|&i| x[i]).collect();
+        let curve = mesh_core::block::Curve::Spline { through };
+        let ev = super::distribution::Evaluator::new(a, b, &curve)?;
+        let m = CONTOUR_SAMPLES * (nodes.len() - 1);
+        let pts: Vec<Vec3> = (0..=m)
+            .map(|i| match i {
+                0 => a,
+                _ if i == m => b,
+                _ => ev.at(i as f64 / m as f64),
+            })
+            .collect();
+        let mut arc = vec![0.0];
+        for w in pts.windows(2) {
+            arc.push(arc[arc.len() - 1] + (w[1] - w[0]).length());
+        }
+        let mut c = Contour {
+            nodes,
+            off,
+            pts,
+            arc,
+            at: Vec::new(),
+            at_tfi: Vec::new(),
+        };
+        let total = c.arc[c.arc.len() - 1];
+        let mut lo = 0.0;
+        c.at = c
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(k, &id)| {
+                let s = if k == 0 {
+                    0.0
+                } else if k == c.nodes.len() - 1 {
+                    total
+                } else {
+                    c.project(x[id], lo, total)
+                };
+                lo = s;
+                s
+            })
+            .collect();
+        c.at_tfi = c.at.clone();
+        out.push(c);
+    }
+    Ok(out)
+}
+
+/// The wall nodes whose boundary quads are all wall quads of one
+/// projection surface.
+fn surface_nodes(
+    boundary: &[([usize; 4], usize, usize)],
+    boundary_surfaces: &[Option<usize>],
+    wall_patches: &[usize],
+) -> HashMap<usize, usize> {
+    let mut of: HashMap<usize, Option<usize>> = HashMap::new();
+    for ((q, p, _), s) in boundary.iter().zip(boundary_surfaces) {
+        let s = if wall_patches.contains(p) { *s } else { None };
+        for &v in q {
+            let e = of.entry(v).or_insert(s);
+            if *e != s {
+                *e = None;
+            }
+        }
+    }
+    of.into_iter()
+        .filter_map(|(v, s)| s.map(|s| (v, s)))
+        .collect()
+}
+
+/// A wall node on a block edge of a projection surface (cylinder, torus):
+/// it slides on the surface toward the foot of its off-wall node, inside a
+/// window of `CONTOUR_WINDOW` of each TFI wall edge at it.
+struct RimSlide {
+    surface: Surface,
+    id: usize,
+    off: usize,
+    tfi: Vec3,
+    /// TFI edges from the node to its wall neighbours.
+    edges: Vec<Vec3>,
+}
+
+impl RimSlide {
+    fn slide(&self, x: &mut [Vec3], h_node: &[f64]) -> f64 {
+        let here = x[self.id];
+        let foot = self.surface.project(x[self.off]);
+        let target = (foot + self.tfi * SURFACE_ANCHOR) / (1.0 + SURFACE_ANCHOR);
+        let d = here + (target - here) * CONTOUR_RELAXATION - self.tfi;
+        let mut t = 1.0f64;
+        for e in &self.edges {
+            let (a, cap) = (d.dot(*e), CONTOUR_WINDOW * e.dot(*e));
+            if a > cap {
+                t = t.min(cap / a);
+            }
+        }
+        let p = self.surface.project(self.tfi + d * t);
+        let change = (p - here).length() / h_node[self.id];
+        x[self.id] = p;
+        change
+    }
+}
+
+/// The wall nodes of one block face on a projection surface: the nodes
+/// inside follow the displacement of its rim by transfinite interpolation
+/// at their TFI arc-length fractions, and stay on the surface.
+struct SurfaceFace {
+    surface: Surface,
+    nu: usize,
+    nv: usize,
+    ids: Vec<usize>,
+    tfi: Vec<Vec3>,
+    /// Arc-length fractions along the u and the v lines.
+    xi: Vec<f64>,
+    eta: Vec<f64>,
+}
+
+impl SurfaceFace {
+    fn follow(&self, x: &mut [Vec3], h_node: &[f64]) -> f64 {
+        let at = |u: usize, v: usize| u + (self.nu + 1) * v;
+        let d = |x: &[Vec3], u: usize, v: usize| x[self.ids[at(u, v)]] - self.tfi[at(u, v)];
+        let (nu, nv) = (self.nu, self.nv);
+        let mut change = 0.0f64;
+        for v in 1..nv {
+            for u in 1..nu {
+                let k = at(u, v);
+                let (s, t) = (self.xi[k], self.eta[k]);
+                let e = d(x, 0, v) * (1.0 - s)
+                    + d(x, nu, v) * s
+                    + d(x, u, 0) * (1.0 - t)
+                    + d(x, u, nv) * t
+                    - (d(x, 0, 0) * ((1.0 - s) * (1.0 - t))
+                        + d(x, nu, 0) * (s * (1.0 - t))
+                        + d(x, 0, nv) * ((1.0 - s) * t)
+                        + d(x, nu, nv) * (s * t));
+                let id = self.ids[k];
+                let p = self.surface.project(self.tfi[k] + e);
+                change = change.max((p - x[id]).length() / h_node[id]);
+                x[id] = p;
+            }
+        }
+        change
+    }
+}
+
+/// The sliding of the walls on projection surfaces: rim nodes and faces.
+fn surface_sliding(
+    x: &[Vec3],
+    hexes: &[[usize; 8]],
+    boundary: &[([usize; 4], usize, usize)],
+    surfaces: &[Surface],
+    on_surface: &HashMap<usize, usize>,
+    blocks: &[Block],
+    walls: &[Wall],
+) -> (Vec<RimSlide>, Vec<SurfaceFace>) {
+    let mut faces = Vec::new();
+    let mut rim: std::collections::BTreeSet<usize> = Default::default();
+    for w in walls {
+        let b = &blocks[w.block];
+        let (nu, nv) = (w.n[w.t[0]], w.n[w.t[1]]);
+        let mid = b.at(w.node(nu / 2, nv / 2, 0));
+        let Some(&sn) = on_surface.get(&mid) else {
+            continue;
+        };
+        let mut ids = Vec::with_capacity((nu + 1) * (nv + 1));
+        for v in 0..=nv {
+            for u in 0..=nu {
+                let id = b.at(w.node(u, v, 0));
+                ids.push(id);
+                if (u == 0 || u == nu || v == 0 || v == nv) && on_surface.contains_key(&id) {
+                    rim.insert(id);
+                }
+            }
+        }
+        let at = |u: usize, v: usize| u + (nu + 1) * v;
+        let mut xi = vec![0.0; ids.len()];
+        let mut eta = vec![0.0; ids.len()];
+        for v in 0..=nv {
+            let mut acc = vec![0.0];
+            for u in 1..=nu {
+                acc.push(acc[u - 1] + (x[ids[at(u, v)]] - x[ids[at(u - 1, v)]]).length());
+            }
+            for u in 0..=nu {
+                xi[at(u, v)] = acc[u] / acc[nu];
+            }
+        }
+        for u in 0..=nu {
+            let mut acc = vec![0.0];
+            for v in 1..=nv {
+                acc.push(acc[v - 1] + (x[ids[at(u, v)]] - x[ids[at(u, v - 1)]]).length());
+            }
+            for v in 0..=nv {
+                eta[at(u, v)] = acc[v] / acc[nv];
+            }
+        }
+        let tfi = ids.iter().map(|&i| x[i]).collect();
+        faces.push(SurfaceFace {
+            surface: surfaces[sn],
+            nu,
+            nv,
+            ids,
+            tfi,
+            xi,
+            eta,
+        });
+    }
+    let mut on_boundary: std::collections::HashSet<usize> = Default::default();
+    let mut wall_nbrs: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (q, _, _) in boundary {
+        on_boundary.extend(q.iter().copied());
+        for k in 0..4 {
+            let (a, b) = (q[k], q[(k + 1) % 4]);
+            for (p, r) in [(a, b), (b, a)] {
+                if rim.contains(&p) {
+                    let e = wall_nbrs.entry(p).or_default();
+                    if !e.contains(&r) {
+                        e.push(r);
+                    }
+                }
+            }
+        }
+    }
+    let mut off_nbrs: HashMap<usize, Vec<usize>> = HashMap::new();
+    for h in hexes {
+        for (a, b) in HEX_EDGES {
+            for (p, q) in [(h[a], h[b]), (h[b], h[a])] {
+                if rim.contains(&p) && !on_boundary.contains(&q) {
+                    let e = off_nbrs.entry(p).or_default();
+                    if !e.contains(&q) {
+                        e.push(q);
+                    }
+                }
+            }
+        }
+    }
+    let mut slides = Vec::new();
+    for id in rim {
+        let (Some(nb), Some(offs)) = (wall_nbrs.get(&id), off_nbrs.get(&id)) else {
+            continue;
+        };
+        let edges: Vec<Vec3> = nb.iter().map(|&r| x[r] - x[id]).collect();
+        // the off-wall neighbour most normal to the wall edges
+        let score = |c: usize| {
+            let d = x[c] - x[id];
+            let d = d / d.length();
+            edges
+                .iter()
+                .map(|e| (d.dot(*e) / e.length()).abs())
+                .fold(0.0, f64::max)
+        };
+        let Some(off) = offs
+            .iter()
+            .copied()
+            .min_by(|&p, &q| score(p).total_cmp(&score(q)))
+        else {
+            continue;
+        };
+        slides.push(RimSlide {
+            surface: surfaces[on_surface[&id]],
+            id,
+            off,
+            tfi: x[id],
+            edges,
+        });
+    }
+    (slides, faces)
+}
+
+const HEX_EDGES: [(usize, usize); 12] = [
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 0),
+    (4, 5),
+    (5, 6),
+    (6, 7),
+    (7, 4),
+    (0, 4),
+    (1, 5),
+    (2, 6),
+    (3, 7),
+];
 
 /// Deviation in degrees of the first off-wall grid line from the normal,
 /// over the interior nodes of the wall faces: (max, mean).
@@ -755,6 +1293,46 @@ pub fn smooth(grid: &mut BlockGrid, options: &SmoothOptions) -> Result<Smoothing
             }
         }
     }
+    // walls on a projection surface (pipe, elbow): the block-edge nodes
+    // slide on it, anchored to their TFI position, and the face nodes
+    // follow; the other curved walls (extruded sections) slide node by
+    // node along their contour lines
+    let surface_nodes = if o.slide_walls {
+        surface_nodes(&grid.boundary, &grid.boundary_surfaces, &o.wall_patches)
+    } else {
+        Default::default()
+    };
+    let (rim_slides, surface_faces) = if o.slide_walls {
+        surface_sliding(
+            x,
+            &grid.hexes,
+            &grid.boundary,
+            &grid.surfaces,
+            &surface_nodes,
+            &blocks,
+            &walls,
+        )
+    } else {
+        Default::default()
+    };
+    let mut contours = if o.slide_walls {
+        wall_contours(
+            x,
+            &grid.hexes,
+            &grid.boundary,
+            &blocks,
+            &walls,
+            &o.wall_patches,
+            &surface_nodes,
+        )?
+    } else {
+        Vec::new()
+    };
+    let tfi_points: Vec<Vec3> = if o.slide_walls {
+        x.to_vec()
+    } else {
+        Vec::new()
+    };
     let walls_of: Vec<Vec<usize>> = (0..blocks.len())
         .map(|b| (0..walls.len()).filter(|&w| walls[w].block == b).collect())
         .collect();
@@ -837,6 +1415,13 @@ pub fn smooth(grid: &mut BlockGrid, options: &SmoothOptions) -> Result<Smoothing
         vertex_nodes: vertices.len(),
         sliding_patches: planes.len(),
         sliding_nodes: slides_on.len(),
+        contour_nodes: contours.iter().map(|c| c.free()).sum::<usize>()
+            + rim_slides.len()
+            + surface_faces
+                .iter()
+                .map(|f| (f.nu - 1) * (f.nv - 1))
+                .sum::<usize>(),
+        contour_slide_max: 0.0,
         wall_faces: walls.len(),
         wall_angle_max_before: angle_max_before,
         wall_angle_max_after: angle_max_before,
@@ -1024,12 +1609,48 @@ pub fn smooth(grid: &mut BlockGrid, options: &SmoothOptions) -> Result<Smoothing
             change = change.max((new - x[id]).length() / h_node[id]);
             x[id] = new;
         }
+        if !contours.is_empty() || !rim_slides.is_empty() {
+            for c in &mut contours {
+                change = change.max(c.slide(x, &h_node));
+            }
+            for r in &rim_slides {
+                change = change.max(r.slide(x, &h_node));
+            }
+            for f in &surface_faces {
+                change = change.max(f.follow(x, &h_node));
+            }
+            // the wall moved: the target slopes follow its new normals
+            for w in &mut walls {
+                let b = &blocks[w.block];
+                let sign = if w.side == 0 { 1.0 } else { -1.0 };
+                for v in 0..=w.n[w.t[1]] {
+                    for u in 0..=w.n[w.t[0]] {
+                        if let Some(nrm) = inward_normal(x, b, w, u, v) {
+                            let s = w.slot(u, v);
+                            w.target[s] = nrm * (w.spacing[s] * sign);
+                        }
+                    }
+                }
+            }
+        }
         report.last_change = change;
         if !report.last_change.is_finite() {
             return Err("elliptic smoothing diverged".into());
         }
         // converged when nodes stop moving and the first spacing is held
         report.converged = report.last_change < o.tolerance && spacing_error < SPACING_TOLERANCE;
+    }
+    for f in &surface_faces {
+        for (k, &id) in f.ids.iter().enumerate() {
+            report.contour_slide_max = report.contour_slide_max.max((x[id] - f.tfi[k]).length());
+        }
+    }
+    for c in &contours {
+        for &id in &c.nodes {
+            report.contour_slide_max = report
+                .contour_slide_max
+                .max((x[id] - tfi_points[id]).length());
+        }
     }
     let (max_after, mean_after) = wall_angles(x, &blocks, &walls);
     report.wall_angle_max_after = max_after;

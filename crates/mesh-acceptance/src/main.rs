@@ -475,12 +475,18 @@ fn round_trip(cli: &Path, foehn: &Path, root: &Path, workspace: &Path) -> RunRes
             json!({"config": config, "output": topology}),
         )?;
         let mut worst = Vec::new();
-        for kind in ["tfi", "elliptic"] {
+        // and once more with the wall nodes sliding on the wall
+        let kinds = [
+            ("tfi", json!({"kind": "tfi"})),
+            ("elliptic", json!({"kind": "elliptic"})),
+            ("sliding", json!({"kind": "elliptic", "wall_sliding": true})),
+        ];
+        for (kind, algorithm) in &kinds {
             let name = format!("{case}-{kind}");
             call(
                 "block.grid",
                 &format!("grid-{name}.json"),
-                json!({"topology": topology, "output": name, "algorithm": {"kind": kind}}),
+                json!({"topology": topology, "output": name, "algorithm": algorithm}),
             )?;
             let evidence = blocks.join(&name).join("mesh-evidence.json");
             let vtu = format!("{name}/foehncraft.vtu");
@@ -493,18 +499,29 @@ fn round_trip(cli: &Path, foehn: &Path, root: &Path, workspace: &Path) -> RunRes
             )?;
             worst.push(non_orthogonality(&blocks, &vtu)?);
         }
-        require(
-            worst[1] <= worst[0] + 1e-9,
-            &format!(
-                "{case}: elliptic smoothing raises the max non-orthogonality from {:.2}° (TFI) to {:.2}°",
-                worst[0], worst[1]
-            ),
-        )?;
+        for (k, (kind, _)) in kinds.iter().enumerate().skip(1) {
+            require(
+                worst[k] <= worst[0] + 1e-9,
+                &format!(
+                    "{case}: {kind} smoothing raises the max non-orthogonality from {:.2}° (TFI) to {:.2}°",
+                    worst[0], worst[k]
+                ),
+            )?;
+        }
         println!(
-            "block {case}: FoehnCraft max non-orthogonality TFI {:.2}°, elliptic {:.2}°",
-            worst[0], worst[1]
+            "block {case}: FoehnCraft max non-orthogonality TFI {:.2}°, elliptic {:.2}°{}",
+            worst[0],
+            worst[1],
+            worst
+                .get(2)
+                .map(|w| format!(", sliding walls {w:.2}°"))
+                .unwrap_or_default()
         );
-        block_quality.push(json!({"case": case, "tfi_deg": worst[0], "elliptic_deg": worst[1]}));
+        let mut q = json!({"case": case, "tfi_deg": worst[0], "elliptic_deg": worst[1]});
+        if let Some(w) = worst.get(2) {
+            q["sliding_deg"] = json!(w);
+        }
+        block_quality.push(q);
     }
     // BS-04: a pipe split through its chain by the edit tools still meshes
     write_json(
