@@ -121,6 +121,11 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 - `bent_face_is_still_rejected` in [crates/mesh-algorithms/src/duct/verify.rs](../crates/mesh-algorithms/src/duct/verify.rs)
 - `only_flat_boundary_polygons_merge` in [crates/mesh-io/src/duct.rs](../crates/mesh-io/src/duct.rs)
 - `halving_a_cube_keeps_half_the_volume_and_tags_the_cut` in [crates/mesh-algorithms/src/duct/convex.rs](../crates/mesh-algorithms/src/duct/convex.rs)
+- `neighbouring_tetrahedra_share_names_and_coordinates` in [crates/mesh-algorithms/src/duct/symbolic.rs](../crates/mesh-algorithms/src/duct/symbolic.rs)
+- `two_sites_name_their_common_face_alike` in [crates/mesh-algorithms/src/duct/symbolic.rs](../crates/mesh-algorithms/src/duct/symbolic.rs)
+- `a_scaffold_vertex_on_the_bisector_belongs_to_both_pieces` in [crates/mesh-algorithms/src/duct/symbolic.rs](../crates/mesh-algorithms/src/duct/symbolic.rs)
+- `the_weld_is_the_same_for_every_order` in [crates/mesh-algorithms/src/duct/voronoi_core.rs](../crates/mesh-algorithms/src/duct/voronoi_core.rs)
+- `a_pinched_ring_is_cut_not_dropped` in [crates/mesh-algorithms/src/duct/voronoi_core.rs](../crates/mesh-algorithms/src/duct/voronoi_core.rs)
 - `rejects_transverse_coplanar_and_shared_vertex_overlaps` in [crates/mesh-algorithms/src/duct/intersection.rs](../crates/mesh-algorithms/src/duct/intersection.rs)
 
 ### Rust scaffold for nonconvex ducts: wall remeshed to a chord tolerance, Delaunay tetrahedralization (OPEN-07)

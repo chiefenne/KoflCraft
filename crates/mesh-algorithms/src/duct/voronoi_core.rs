@@ -282,29 +282,10 @@ impl<'a> Sites<'a> {
                     site.z
                 ));
             }
-            let before = c.clone();
-            match c.clip(&frame, s as u32, o as u32).map_err(|e| {
-                if std::env::var_os("KOFL_DIAG").is_some() {
-                    eprintln!(
-                        "DIAG site {s} other {o} tet {t} nodes {:?} tol {:e}",
-                        frame.nodes, frame.tol
-                    );
-                    for (i, (k, p)) in before.keys.iter().zip(&before.pts).enumerate() {
-                        eprintln!(
-                            "DIAG v{i} {k:?} class {} d {:e}",
-                            before.debug_class(&frame, i, s as u32, o as u32),
-                            {
-                                let n = self.points[o] - site;
-                                (*p - (self.points[o] + site) * 0.5).dot(n) / n.length()
-                            }
-                        );
-                    }
-                    for (src, ring) in &before.faces {
-                        eprintln!("DIAG face {src:?} {ring:?}");
-                    }
-                }
-                format!("site {s}, tetrahedron {t}: {e}")
-            })? {
+            match c
+                .clip(&frame, s as u32, o as u32)
+                .map_err(|e| format!("site {s}, tetrahedron {t}: {e}"))?
+            {
                 Cut::Inside => {}
                 Cut::Clipped => r = radius(&c),
                 Cut::Empty => return Ok(None),
@@ -998,11 +979,7 @@ fn build(
     // same ring for the two pieces on its sides: it collapses for both or
     // for neither.
     let s = Sites::new(&sites);
-    let weld_tol = scale
-        * std::env::var("KOFL_WELD")
-            .ok()
-            .and_then(|v| v.parse::<f64>().ok())
-            .unwrap_or(1e-10);
+    let weld_tol = scale * 1e-10;
     let mut named: HashMap<Key, usize> = HashMap::new();
     let mut raw_points: Vec<Vec3> = Vec::new();
     let mut anchor: Vec<Option<usize>> = Vec::new();
@@ -1046,15 +1023,6 @@ fn build(
         }
     }
     let final_id = weld_all(&raw_points, &anchor, weld_tol, &mut front.points);
-    let diag_names: HashMap<usize, Vec<Key>> = if std::env::var_os("KOFL_DIAG").is_some() {
-        let mut m: HashMap<usize, Vec<Key>> = HashMap::new();
-        for (key, &raw) in &named {
-            m.entry(final_id[raw]).or_default().push(*key);
-        }
-        m
-    } else {
-        HashMap::new()
-    };
     drop(named);
     stats.welded_vertices = raw_points.len() - {
         let mut ids = final_id.clone();
@@ -1879,56 +1847,6 @@ fn build(
             }
         }
     }
-    if !diag_names.is_empty() {
-        let mut shown = 0;
-        let mut straight = 0;
-        for (bi, rec) in &records {
-            for (part, r) in rec {
-                let n = r.len();
-                for k in 0..n {
-                    let (a, b, c) = (points[r[k]], points[r[(k + 1) % n]], points[r[(k + 2) % n]]);
-                    if (b - a).cross(c - b).length() < 1e-9 * (b - a).length() * (c - b).length() {
-                        straight += 1;
-                        if straight <= 6 {
-                            eprintln!(
-                                "DIAG straight vertex {} in ring {r:?} of part {part} tri {bi} nodes {:?}",
-                                r[(k + 1) % n],
-                                scaffold.boundary[*bi].0
-                            );
-                            for v in r {
-                                eprintln!("DIAG      {v} {:?} {:?}", points[*v], diag_names.get(v));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        eprintln!("DIAG straight vertices in wall rings: {straight}");
-        for (bi, rec) in &records {
-            let t = scaffold.boundary[*bi].0.map(|n| points[mapped[n]]);
-            let area = (t[1] - t[0]).cross(t[2] - t[0]).length() * 0.5;
-            let sum: f64 = rec
-                .iter()
-                .map(|(_, r)| super::convex::ring_plane(points, r).0.length() * 0.5)
-                .sum();
-            if (sum - area).abs() > 1e-9 * area.max(1e-6) && shown < 6 {
-                shown += 1;
-                eprintln!(
-                    "DIAG boundary tri {bi} nodes {:?} area {area:e} rings sum {sum:e}",
-                    scaffold.boundary[*bi].0
-                );
-                for (part, r) in rec {
-                    eprintln!(
-                        "DIAG   part {part} ring {r:?} area {:e}",
-                        super::convex::ring_plane(points, r).0.length() * 0.5
-                    );
-                    for v in r {
-                        eprintln!("DIAG      {v} {:?} {:?}", points[*v], diag_names.get(v));
-                    }
-                }
-            }
-        }
-    }
     let mut core_faces: Vec<Vec<Vec<usize>>> = vec![Vec::new(); parts.len()];
     for ((a, b), rings) in pair_faces {
         let before = rings.len();
@@ -2155,35 +2073,6 @@ fn build(
     }
     for (id, ((group, kernel), faces)) in parts.iter().zip(core_faces).enumerate() {
         let volume: f64 = group.iter().map(|&i| pieces[i].volume).sum();
-        if faces.len() < 4 && std::env::var_os("KOFL_DIAG").is_some() {
-            eprintln!(
-                "DIAG cell {id}: {} pieces, volume {volume:e}, faces {faces:?}",
-                group.len()
-            );
-            for &i in group {
-                let p = &pieces[i];
-                eprintln!(
-                    "DIAG  piece {i} site {} tet {} vol {:e}",
-                    p.site, p.tet, p.volume
-                );
-                for (src, ring) in &p.faces {
-                    let j = match *src {
-                        Src::Bis(o) => site_tet.get(&(o as usize, p.tet)).copied(),
-                        Src::Tet(k) => {
-                            across(p.tet, k).and_then(|o| site_tet.get(&(p.site, o)).copied())
-                        }
-                        Src::Cut => None,
-                    };
-                    eprintln!(
-                        "DIAG   {src:?} {ring:?} area {:e} -> piece {j:?} part {:?} (part pieces {:?}, vol {:?})",
-                        super::convex::ring_plane(points, ring).0.length() * 0.5,
-                        j.map(|j| part_of[j]),
-                        j.map(|j| parts[part_of[j]].0.len()),
-                        j.map(|j| pieces[j].volume)
-                    );
-                }
-            }
-        }
         if faces.len() < 4 {
             return Err(format!("core cell {id} has {} faces", faces.len()));
         }
@@ -2215,7 +2104,45 @@ fn build(
 
 #[cfg(test)]
 mod tests {
-    use super::{Vec3, merge_rings};
+    use super::{Vec3, merge_rings, simple_loops, weld_all};
+
+    /// Keep: the weld is one decision for the whole diagram. Three vertices
+    /// in a row, each within the distance of the next, become one whatever
+    /// their order, and a scaffold vertex in the group gives it its id. The
+    /// earlier weld took the nearest earlier point per piece, so the same
+    /// face could collapse in one tetrahedron and survive in its neighbour.
+    #[test]
+    fn the_weld_is_the_same_for_every_order() {
+        let p = |x: f64| Vec3::new(x, 0.0, 0.0);
+        let raw = [p(0.0), p(0.8e-3), p(1.6e-3), p(1.0)];
+        for order in [[0, 1, 2, 3], [2, 0, 3, 1], [3, 2, 1, 0]] {
+            let pts: Vec<Vec3> = order.iter().map(|&i| raw[i]).collect();
+            let anchor: Vec<Option<usize>> = order.iter().map(|&i| (i == 2).then_some(7)).collect();
+            let mut points = vec![Vec3::ZERO; 8];
+            let id = weld_all(&pts, &anchor, 1e-3, &mut points);
+            let of = |i: usize| id[order.iter().position(|&o| o == i).unwrap()];
+            assert_eq!([of(0), of(1), of(2)], [7, 7, 7]);
+            assert_eq!(of(3), 8);
+            assert_eq!(points.len(), 9);
+        }
+        // two scaffold vertices stay two
+        let mut points = vec![Vec3::ZERO; 2];
+        let id = weld_all(&[p(0.0), p(1e-4)], &[Some(0), Some(1)], 1e-3, &mut points);
+        assert_eq!(id, [0, 1]);
+    }
+
+    /// Keep: a ring that touches itself after the weld is cut into its
+    /// loops, and a spike goes. Dropping the whole ring (as before) loses
+    /// the face on one cell pair and opens both cells.
+    #[test]
+    fn a_pinched_ring_is_cut_not_dropped() {
+        assert_eq!(
+            simple_loops(&[0, 1, 2, 0, 3, 4]),
+            vec![vec![0, 1, 2], vec![0, 3, 4]]
+        );
+        assert_eq!(simple_loops(&[0, 1, 1, 2, 3, 2, 4]), vec![vec![0, 1, 2, 4]]);
+        assert!(simple_loops(&[5, 6, 6, 5]).is_empty());
+    }
 
     /// Keep: a core face merged from rings is fanned about its node average,
     /// so the inner vertices of the rings must lie in the merged plane too.

@@ -17,7 +17,10 @@
 //! bisector": conforming wall seeds put bisectors through wall edges on
 //! purpose, and a scaffold vertex within the tolerance of a bisector stays
 //! a vertex of both cells. The answer depends only on the vertex and the
-//! two sites, so it is shared as well. All other vertices are in or out.
+//! two sites, so it is shared as well. A vertex named on a scaffold edge or
+//! face whose vertices are all on the bisector inherits that answer, and so
+//! does a vertex whose name holds the other site. All other vertices are in
+//! or out.
 use super::convex::{Convex, Cut, Src};
 use mesh_core::geometry::Vec3;
 
@@ -230,14 +233,6 @@ impl SymConvex {
         }
     }
 
-    pub fn debug_class(&self, frame: &Frame, i: usize, s: u32, o: u32) -> &'static str {
-        match frame.side(self.keys[i], self.pts[i], s, o) {
-            Class::In => "in",
-            Class::On => "ON",
-            Class::Out => "out",
-        }
-    }
-
     pub fn into_convex(self) -> (Vec<Key>, Convex) {
         (
             self.keys,
@@ -406,5 +401,132 @@ impl SymConvex {
         self.pts = kept;
         self.faces = faces;
         Ok(Cut::Clipped)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(x: f64, y: f64, z: f64) -> Vec3 {
+        Vec3::new(x, y, z)
+    }
+
+    /// Two tetrahedra on the face 0-1-2, with apexes 3 and 4.
+    fn pair() -> ([Vec3; 5], [usize; 4], [usize; 4]) {
+        let p = [
+            v(0., 0., 0.),
+            v(1., 0., 0.),
+            v(0., 1., 0.),
+            v(0.2, 0.2, 1.),
+            v(0.3, 0.1, -1.),
+        ];
+        (p, [0, 1, 2, 3], [0, 2, 1, 4])
+    }
+
+    fn piece(p: &[Vec3; 5], nodes: [usize; 4], sites: &[Vec3], s: u32) -> Option<SymConvex> {
+        let frame = Frame {
+            nodes,
+            corners: nodes.map(|n| p[n]),
+            sites,
+            tol: 1e-12,
+        };
+        let mut c = SymConvex::tet(&frame);
+        for o in 0..sites.len() as u32 {
+            if o != s && matches!(c.clip(&frame, s, o).unwrap(), Cut::Empty) {
+                return None;
+            }
+        }
+        Some(c)
+    }
+
+    /// The vertices of a piece on the scaffold face 0-1-2, by name.
+    fn on_shared_face(c: &SymConvex) -> Vec<(Key, [u64; 3])> {
+        let mut out: Vec<(Key, [u64; 3])> = c
+            .keys
+            .iter()
+            .zip(&c.pts)
+            .filter(|(k, _)| match k {
+                Key::V(n) => *n < 3,
+                Key::E(n, _) => n.iter().all(|n| *n < 3),
+                Key::F(n, _) => n.iter().all(|n| *n < 3),
+                Key::X(_) => false,
+            })
+            .map(|(k, p)| (*k, [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Keep: the two tetrahedra on a scaffold face give a site's cell the
+    /// same vertices on that face, by name and bit for bit, although each
+    /// cuts on its own and meets the vertices along different edges. With
+    /// positions taken from each tetrahedron's own edge crossing (as before
+    /// this module) the bits differ, and a weld by distance had to decide
+    /// whether they are one vertex: the jacket failure "piece has no
+    /// continuation". No fixture in the fast run has a piece thin enough to
+    /// show that.
+    #[test]
+    fn neighbouring_tetrahedra_share_names_and_coordinates() {
+        let (p, up, down) = pair();
+        let sites = [
+            v(0.21, 0.33, 0.07),
+            v(0.63, 0.18, -0.11),
+            v(0.17, 0.71, 0.05),
+            v(0.45, 0.42, 0.52),
+        ];
+        let mut seen = 0;
+        for s in 0..sites.len() as u32 {
+            let (Some(a), Some(b)) = (piece(&p, up, &sites, s), piece(&p, down, &sites, s)) else {
+                continue;
+            };
+            let (fa, fb) = (on_shared_face(&a), on_shared_face(&b));
+            assert_eq!(fa, fb, "site {s}");
+            seen += fa.iter().filter(|(k, _)| !matches!(k, Key::V(_))).count();
+        }
+        assert!(seen >= 4, "the bisectors must cross the shared face");
+    }
+
+    /// Keep: two sites that share a bisector face name its vertices alike,
+    /// each from its own side (the sets of sites are sorted, and the side
+    /// test asks about the least site of a name). A name that depended on
+    /// the asking site would give the two cells different vertex ids on
+    /// their common face.
+    #[test]
+    fn two_sites_name_their_common_face_alike() {
+        let (p, up, _) = pair();
+        let sites = [v(0.2, 0.3, 0.3), v(0.6, 0.2, 0.4), v(0.2, 0.6, 0.2)];
+        let cap = |s: u32, o: u32| -> Vec<Key> {
+            let c = piece(&p, up, &sites, s).unwrap();
+            let (_, ring) = c
+                .faces
+                .iter()
+                .find(|(src, _)| *src == Src::Bis(o))
+                .expect("the two cells touch");
+            let mut keys: Vec<Key> = ring.iter().map(|&i| c.keys[i]).collect();
+            keys.sort();
+            keys
+        };
+        assert_eq!(cap(0, 1), cap(1, 0));
+        assert_eq!(cap(0, 2), cap(2, 0));
+        assert_eq!(cap(1, 2), cap(2, 1));
+    }
+
+    /// Keep: a scaffold vertex on the bisector stays a vertex of both
+    /// pieces, and no vertex appears beside it. Conforming wall seeds put
+    /// bisectors through wall vertices on purpose; a sign taken from
+    /// rounding there cuts a needle off one cell.
+    #[test]
+    fn a_scaffold_vertex_on_the_bisector_belongs_to_both_pieces() {
+        let (p, up, _) = pair();
+        // mirrored about the plane x = y, which holds vertices 0 and 3
+        let sites = [v(0.4, 0.1, 0.3), v(0.1, 0.4, 0.3)];
+        for s in 0..2 {
+            let c = piece(&p, up, &sites, s).unwrap();
+            assert!(c.keys.contains(&Key::V(0)) && c.keys.contains(&Key::V(3)));
+            // the cut runs through 0 and 3 and crosses the edge 1-2 only
+            let made: Vec<&Key> = c.keys.iter().filter(|k| !matches!(k, Key::V(_))).collect();
+            assert_eq!(made, [&Key::E([1, 2], [0, 1])]);
+        }
     }
 }
