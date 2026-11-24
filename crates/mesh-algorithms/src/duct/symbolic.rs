@@ -9,18 +9,17 @@
 //! Liu (2010, Lp centroidal Voronoi tessellation) and Yan, Wang, Lévy & Liu
 //! (2013): tetrahedron faces and bisectors, written with the global ids of
 //! scaffold vertices and sites. Its coordinates and its side of any further
-//! bisector are functions of that name alone, evaluated in one fixed order,
-//! so every tetrahedron and every site that meets the vertex computes the
-//! same bits and takes the same decision.
+//! bisector are functions of that name alone, so every tetrahedron and
+//! every site that meets the vertex takes the same decision.
 //!
-//! Scaffold vertices are the one case with a third answer, "on the
-//! bisector": conforming wall seeds put bisectors through wall edges on
-//! purpose, and a scaffold vertex within the tolerance of a bisector stays
-//! a vertex of both cells. The answer depends only on the vertex and the
-//! two sites, so it is shared as well. A vertex named on a scaffold edge or
-//! face whose vertices are all on the bisector inherits that answer, and so
-//! does a vertex whose name holds the other site. All other vertices are in
-//! or out.
+//! The side of a vertex is the exact sign of a quotient of two determinants
+//! of squared distances from the scaffold vertices of the name to the sites
+//! (`predicates::offset_side`, after the side predicates of Lévy's PCK,
+//! 2016). It has a third answer, "on the bisector". Conforming wall seeds
+//! put bisectors through wall edges on purpose: seeds on the ball of one
+//! wall vertex are equidistant from it, and their distance from that vertex
+//! is taken to one stand-in seed, so the tie is an exact zero for every
+//! site that asks.
 use super::convex::{Convex, Cut, Src};
 use crate::predicates::{Entry, offset_side};
 use mesh_core::geometry::Vec3;
