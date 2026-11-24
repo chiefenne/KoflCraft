@@ -59,6 +59,13 @@ fn same_ring(a: &[usize], b: &[usize], reverse: bool) -> bool {
             (0..n).all(|i| a[(start + if reverse { n - i } else { i }) % n] == b[i])
         })
 }
+/// A face counts as planar when its corners are within this share of its
+/// size of the fitted plane. Such a face is fanned from its vertex mean, as
+/// FoehnCraft does with every face, so the checked volume is the solver's.
+/// The core welds points up to 1e-10 of the model size apart, which moves a
+/// corner of a small face by more than 1e-10 of that face's size.
+const PLANAR_SHARE: f64 = 1e-7;
+
 /// Two-point Gauss rule on [0, 1].
 const GAUSS: [f64; 2] = [0.211_324_865_405_187_1, 0.788_675_134_594_812_9];
 
@@ -90,7 +97,7 @@ fn face_integral(
     let planar = face.len() == 3
         || face.iter().all(|&v| {
             (points[v] - centre).dot(unit).abs()
-                <= 1e-10 * diameter + 256.0 * f64::EPSILON * coordinate_scale
+                <= PLANAR_SHARE * diameter + 256.0 * f64::EPSILON * coordinate_scale
         });
     if !planar {
         if face.len() != 4 {
