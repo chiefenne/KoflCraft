@@ -4,10 +4,12 @@
 //! their SHA-256, the summary FoehnCraft must reproduce (FC-06) and the
 //! patch roles (FC-04).
 
+use std::io::{self, Write};
+
+use mesh_io::StreamError;
 use mesh_io::handoff::{HandoffMesh, HandoffSummary, Patch, write_foehncraft_vtu};
 use serde::Serialize;
 
-use crate::artifact::sha256;
 use crate::{EngineError, ErrorCode};
 
 pub const EVIDENCE_FORMAT: &str = "koflcraft.mesh-evidence";
@@ -35,24 +37,32 @@ pub(crate) fn export_error(error: impl std::fmt::Display) -> EngineError {
     EngineError::new(ErrorCode::ExportFailed, error)
 }
 
-/// The FoehnCraft VTU of a mesh, with `provenance` in its field data.
-pub(crate) fn foehncraft_vtu(
+/// A file that could not be streamed: the file system's errors as
+/// `io_error`, the writer's as `export_failed`.
+pub(crate) fn stream_error(error: StreamError) -> EngineError {
+    match error {
+        StreamError::Io(e) => EngineError::new(ErrorCode::IoError, e),
+        StreamError::Content(e) => export_error(e),
+    }
+}
+
+/// Write the FoehnCraft VTU of a mesh, with `provenance` in its field data.
+pub(crate) fn write_foehncraft(
     mesh: &HandoffMesh,
     provenance: &[(&str, String)],
-) -> Result<Vec<u8>, EngineError> {
+    out: &mut dyn Write,
+) -> io::Result<()> {
     let mut metadata = vec![("koflcraft_version", env!("CARGO_PKG_VERSION").to_string())];
     metadata.extend(provenance.iter().cloned());
-    let mut vtu = Vec::new();
-    write_foehncraft_vtu(mesh, &metadata, &mut vtu).map_err(export_error)?;
-    Ok(vtu)
+    write_foehncraft_vtu(mesh, &metadata, out)
 }
 
 /// The evidence of a bundle whose files (other than the evidence itself)
-/// are `files`.
+/// are `files`, given with their SHA-256 as the bundle wrote them.
 pub(crate) fn evidence(
     mesh: &HandoffMesh,
     generator: &str,
-    files: &[(&str, &[u8])],
+    files: &[(String, String)],
 ) -> Result<Vec<u8>, EngineError> {
     let mut limitations = Vec::new();
     let empty = mesh.empty_patches();
@@ -88,10 +98,7 @@ pub(crate) fn evidence(
         generator: generator.to_string(),
         summary: mesh.summary(),
         patches: mesh.patches.clone(),
-        files: files
-            .iter()
-            .map(|(name, bytes)| (name.to_string(), sha256(bytes)))
-            .collect(),
+        files: files.to_vec(),
         limitations,
     };
     serde_json::to_vec_pretty(&evidence)

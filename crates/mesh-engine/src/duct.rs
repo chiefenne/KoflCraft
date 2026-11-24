@@ -466,34 +466,47 @@ pub fn generate(
         "voronoi_core": voronoi.as_ref().map(voronoi_json),
         "generation_seconds": start.elapsed().as_secs_f64()
     });
-    let mut volume = Vec::new();
-    let mut gmsh = Vec::new();
-    let mut faces: [Vec<u8>; 3] = Default::default();
-    let io = |e| EngineError::new(ErrorCode::ExportFailed, e);
-    mesh_io::duct::volume(&mesh, &mut volume).map_err(io)?;
-    mesh_io::duct::gmsh(&mesh, mesh_io::GmshVersion::V4_1, &mut gmsh).map_err(io)?;
-    for (i, out) in faces.iter_mut().enumerate() {
-        mesh_io::duct::patch(&mesh, i + 1, out).map_err(io)?;
-    }
     let report_json = serde_json::to_vec_pretty(&report)
         .map_err(|e| EngineError::new(ErrorCode::SerializationFailed, e))?;
     let handoff = mesh_io::duct::handoff(&mesh).map_err(crate::handoff::export_error)?;
-    let foehn = crate::handoff::foehncraft_vtu(&handoff, &[])?;
-    let mut files: Vec<(&str, &[u8])> = vec![
-        ("volume.vtu", &volume),
-        ("mesh.msh", &gmsh),
-        ("mesh.vtm", mesh_io::channel::MULTIBLOCK),
-        ("inlet.vtu", &faces[0]),
-        ("outlet.vtu", &faces[1]),
-        ("walls.vtu", &faces[2]),
-        ("report.json", &report_json),
-        (crate::handoff::FOEHNCRAFT_VTU, &foehn),
-    ];
     let generator = report["algorithm"].as_str().unwrap_or("duct").to_string();
-    let evidence = crate::handoff::evidence(&handoff, &generator, &files)?;
-    files.push((crate::handoff::MESH_EVIDENCE, &evidence));
-    dir.write_bundle(name, &files)
+    // each file goes to disk as it is written, hashed on the way
+    let fail = crate::handoff::stream_error;
+    let mut bundle = dir
+        .bundle(name)
         .map_err(|e| EngineError::new(ErrorCode::IoError, e))?;
+    bundle
+        .stream("volume.vtu", |w| mesh_io::duct::volume(&mesh, w))
+        .map_err(fail)?;
+    bundle
+        .stream("mesh.msh", |w| {
+            mesh_io::duct::gmsh(&mesh, mesh_io::GmshVersion::V4_1, w)
+        })
+        .map_err(fail)?;
+    bundle
+        .stream("mesh.vtm", |w| w.write_all(mesh_io::channel::MULTIBLOCK))
+        .map_err(fail)?;
+    for (i, file) in ["inlet.vtu", "outlet.vtu", "walls.vtu"]
+        .into_iter()
+        .enumerate()
+    {
+        bundle
+            .stream(file, |w| mesh_io::duct::patch(&mesh, i + 1, w))
+            .map_err(fail)?;
+    }
+    bundle
+        .stream("report.json", |w| w.write_all(&report_json))
+        .map_err(fail)?;
+    bundle
+        .stream(crate::handoff::FOEHNCRAFT_VTU, |w| {
+            crate::handoff::write_foehncraft(&handoff, &[], w)
+        })
+        .map_err(fail)?;
+    let evidence = crate::handoff::evidence(&handoff, &generator, bundle.files())?;
+    bundle
+        .stream(crate::handoff::MESH_EVIDENCE, |w| w.write_all(&evidence))
+        .map_err(fail)?;
+    bundle.finish();
     Ok(report)
 }
 

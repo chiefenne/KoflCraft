@@ -1,12 +1,16 @@
 use std::ffi::OsStr;
+use std::io::{self, Write};
 use std::str::FromStr;
 
 use mesh_core::geometry::BoxSide;
 use mesh_core::mesh::Mesh;
-use mesh_io::handoff::{HandoffMesh, PatchRole, patches_from_names, write_polymesh};
-use mesh_io::{ExportError, GmshVersion, write_gmsh_domain, write_vtu_domain};
+use mesh_io::handoff::{
+    HandoffMesh, POLYMESH_FILES, PatchRole, patches_from_names, write_polymesh, write_polymesh_file,
+};
+use mesh_io::{ExportError, GmshVersion, StreamError, write_gmsh_domain, write_vtu_domain};
 use mesh_quality::{MeshDomain, validate_domain};
 
+use crate::artifact::ArtifactDomain;
 use crate::{EngineError, ErrorCode, MeshArtifact, MeshDirectory};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,6 +44,7 @@ impl FromStr for ExportFormat {
     }
 }
 
+/// An export in memory (see [`Export::to_memory`]).
 pub enum ExportData {
     Vtu(Vec<u8>),
     Gmsh(Vec<u8>),
@@ -48,20 +53,26 @@ pub enum ExportData {
     Bundle(Vec<(&'static str, Vec<u8>)>),
 }
 
-impl ExportData {
-    pub fn write_new(&self, dir: &MeshDirectory, name: &OsStr) -> Result<(), EngineError> {
-        match self {
-            Self::Vtu(bytes) | Self::Gmsh(bytes) | Self::FoehnCraft(bytes) => {
-                dir.write_new(name, bytes)
-            }
-            Self::Bundle(files) => {
-                let files: Vec<(&str, &[u8])> =
-                    files.iter().map(|(n, b)| (*n, b.as_slice())).collect();
-                dir.write_bundle(name, &files)
-            }
-        }
-        .map_err(|error| EngineError::new(ErrorCode::IoError, error))
-    }
+/// What [`Export::write_new`] wrote, with the SHA-256 of every file.
+pub enum Written {
+    /// One file at the output path.
+    File(String),
+    /// A new directory: its files in order, each with its digest.
+    Bundle(Vec<(String, String)>),
+}
+
+/// A validated export of a saved mesh, not yet written: streamed to disk by
+/// [`Export::write_new`] (one block of each file in memory at a time) or
+/// gathered by [`Export::to_memory`].
+pub struct Export {
+    format: ExportFormat,
+    domain: ArtifactDomain,
+    mesh: Mesh,
+    /// The face-based mesh of the FoehnCraft and OpenFOAM formats.
+    handoff: Option<HandoffMesh>,
+    /// Field data of the FoehnCraft VTU (FC-05).
+    provenance: Vec<(&'static str, String)>,
+    algorithm: String,
 }
 
 /// Validate a saved mesh and render its export through the shared format writers.
@@ -69,42 +80,136 @@ pub fn export_mesh(
     artifact: &MeshArtifact,
     format: ExportFormat,
 ) -> Result<ExportData, EngineError> {
+    prepare_export(artifact, format)?.to_memory()
+}
+
+/// Validate a saved mesh for an export and build what its format needs.
+pub fn prepare_export(
+    artifact: &MeshArtifact,
+    format: ExportFormat,
+) -> Result<Export, EngineError> {
     let (domain, mesh) = artifact.verified_connectivity()?;
-    let domain = domain.as_domain();
-    let data = match format {
-        ExportFormat::Vtu => {
-            let mut vtu = Vec::new();
-            write_vtu_domain(domain, &mesh, &mut vtu).map_err(export_error)?;
-            ExportData::Vtu(vtu)
-        }
-        ExportFormat::Gmsh(version) => {
-            let mut msh = Vec::new();
-            write_gmsh_domain(domain, &mesh, version, &mut msh).map_err(export_error)?;
-            ExportData::Gmsh(msh)
-        }
-        ExportFormat::FoehnCraft => {
-            let handoff = artifact_handoff(domain, &mesh, artifact.patch_roles())?;
-            let build = artifact.build();
-            ExportData::FoehnCraft(crate::handoff::foehncraft_vtu(
-                &handoff,
-                &[
-                    ("koflcraft_mesh_digest", build.mesh_digest.clone()),
-                    ("koflcraft_topology_digest", build.topology_digest.clone()),
-                    ("koflcraft_input_digest", build.input_digest.clone()),
-                    ("koflcraft_algorithm", build.algorithm.clone()),
-                ],
-            )?)
-        }
-        ExportFormat::OpenFoam => {
-            let handoff = artifact_handoff(domain, &mesh, artifact.patch_roles())?;
-            let mut files = write_polymesh(&handoff).map_err(crate::handoff::export_error)?;
-            let all: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (*n, b.as_slice())).collect();
-            let evidence = crate::handoff::evidence(&handoff, &artifact.build().algorithm, &all)?;
-            files.push((crate::handoff::MESH_EVIDENCE, evidence));
-            ExportData::Bundle(files)
-        }
+    let handoff = match format {
+        ExportFormat::FoehnCraft | ExportFormat::OpenFoam => Some(artifact_handoff(
+            domain.as_domain(),
+            &mesh,
+            artifact.patch_roles(),
+        )?),
+        ExportFormat::Vtu | ExportFormat::Gmsh(_) => None,
     };
-    Ok(data)
+    let build = artifact.build();
+    Ok(Export {
+        format,
+        domain,
+        mesh,
+        handoff,
+        provenance: vec![
+            ("koflcraft_mesh_digest", build.mesh_digest.clone()),
+            ("koflcraft_topology_digest", build.topology_digest.clone()),
+            ("koflcraft_input_digest", build.input_digest.clone()),
+            ("koflcraft_algorithm", build.algorithm.clone()),
+        ],
+        algorithm: build.algorithm.clone(),
+    })
+}
+
+impl Export {
+    /// Write the export as the new file (or, for `openfoam`, the new
+    /// directory) `name` in `dir`, each file streamed and hashed as it is
+    /// written. Nothing is left behind on an error.
+    pub fn write_new(&self, dir: &MeshDirectory, name: &OsStr) -> Result<Written, EngineError> {
+        if self.format == ExportFormat::OpenFoam {
+            let handoff = self.handoff()?;
+            let fail = crate::handoff::stream_error;
+            let mut bundle = dir
+                .bundle(name)
+                .map_err(|e| EngineError::new(ErrorCode::IoError, e))?;
+            for file in POLYMESH_FILES {
+                bundle
+                    .stream(file, |w| write_polymesh_file(handoff, file, w))
+                    .map_err(fail)?;
+            }
+            let evidence = crate::handoff::evidence(handoff, &self.algorithm, bundle.files())?;
+            bundle
+                .stream(crate::handoff::MESH_EVIDENCE, |w| w.write_all(&evidence))
+                .map_err(fail)?;
+            return Ok(Written::Bundle(bundle.finish()));
+        }
+        let mut failure = None;
+        let written = dir.stream_new(name, |w| self.write_single(w, &mut failure));
+        match (written, failure) {
+            (Ok(digest), _) => Ok(Written::File(digest)),
+            (Err(StreamError::Content(_)), Some(error)) => Err(export_error(error)),
+            (Err(error), _) => Err(crate::handoff::stream_error(error)),
+        }
+    }
+
+    /// The export in memory, for tests and small meshes.
+    pub fn to_memory(&self) -> Result<ExportData, EngineError> {
+        if self.format == ExportFormat::OpenFoam {
+            let handoff = self.handoff()?;
+            let mut files = write_polymesh(handoff).map_err(crate::handoff::export_error)?;
+            let digests: Vec<(String, String)> = files
+                .iter()
+                .map(|(n, b)| (n.to_string(), crate::artifact::sha256(b)))
+                .collect();
+            let evidence = crate::handoff::evidence(handoff, &self.algorithm, &digests)?;
+            files.push((crate::handoff::MESH_EVIDENCE, evidence));
+            return Ok(ExportData::Bundle(files));
+        }
+        let mut bytes = Vec::new();
+        let mut failure = None;
+        if let Err(error) = self.write_single(&mut bytes, &mut failure) {
+            return Err(match failure {
+                Some(error) => export_error(error),
+                None => crate::handoff::export_error(error),
+            });
+        }
+        Ok(match self.format {
+            ExportFormat::Vtu => ExportData::Vtu(bytes),
+            ExportFormat::Gmsh(_) => ExportData::Gmsh(bytes),
+            _ => ExportData::FoehnCraft(bytes),
+        })
+    }
+
+    fn handoff(&self) -> Result<&HandoffMesh, EngineError> {
+        self.handoff.as_ref().ok_or_else(|| {
+            EngineError::new(ErrorCode::ExportFailed, "the export has no hand-off mesh")
+        })
+    }
+
+    /// The file of a single-file format into `out`. A writer error that is
+    /// not plain I/O (validation, subdivision) is kept in `failure`, so it
+    /// keeps its diagnostic code.
+    fn write_single(
+        &self,
+        out: &mut dyn Write,
+        failure: &mut Option<ExportError>,
+    ) -> io::Result<()> {
+        let mut keep = |result: Result<(), ExportError>| match result {
+            Ok(()) => Ok(()),
+            Err(ExportError::Io(e)) => Err(e),
+            Err(error) => {
+                let e = io::Error::other(error.to_string());
+                *failure = Some(error);
+                Err(e)
+            }
+        };
+        let domain = self.domain.as_domain();
+        match self.format {
+            ExportFormat::Vtu => keep(write_vtu_domain(domain, &self.mesh, out)),
+            ExportFormat::Gmsh(version) => {
+                keep(write_gmsh_domain(domain, &self.mesh, version, out))
+            }
+            ExportFormat::FoehnCraft => match &self.handoff {
+                Some(handoff) => crate::handoff::write_foehncraft(handoff, &self.provenance, out),
+                None => Err(io::Error::other("the export has no hand-off mesh")),
+            },
+            ExportFormat::OpenFoam => Err(io::Error::other(
+                "openfoam is a directory, not a single file",
+            )),
+        }
+    }
 }
 
 /// The hand-off mesh; patch roles from a patch map replace the roles the

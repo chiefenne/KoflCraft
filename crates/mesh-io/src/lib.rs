@@ -6,7 +6,7 @@ mod gmsh;
 pub mod handoff;
 mod msh;
 
-pub use directory::MeshDirectory;
+pub use directory::{BLOCK, Bundle, MeshDirectory, StreamError};
 pub use gmsh::{write_gmsh, write_gmsh_domain};
 pub use msh::GmshVersion;
 

@@ -20,6 +20,19 @@ strings, so a FoehnCraft run record that hashes the mesh file can be traced
 to the KoflCraft build and inputs. MSH files carry no metadata; their hash
 is in the bundle's `mesh-evidence.json`.
 
+## Writing large meshes
+
+Every file of a bundle and of an export is streamed to disk as it is
+written: a second thread hashes each block of 1 MiB with SHA-256 and writes
+it while the next block is formatted, and `mesh-evidence.json` (and the
+`sha256` in the `mesh.export` result) takes the digests from that stream,
+so no file is ever held in memory. A failed file removes the whole bundle
+or export. The files are byte for byte the ones the in-memory writers made
+before (checked on the fixtures and on a 1.28 million cell sweep). On a
+2.5 million cell sweep block (3.4 GB of files) the peak memory fell from
+6.5 GB to 3.5 GB and the run from 35 to 29 s; what remains is the meshes
+themselves (see [pitfalls](pitfalls.md#whole-files-in-memory)).
+
 ## One face between two cells
 
 FoehnCraft, like most finite-volume solvers, refuses two cells that share

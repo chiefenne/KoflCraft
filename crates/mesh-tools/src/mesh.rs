@@ -8,9 +8,8 @@ use mesh_engine::channel::{ChannelConfig, generate_channel};
 use mesh_engine::duct::{self, Mode, Partition, PatchMap};
 use mesh_engine::sweep::SweepConfig;
 use mesh_engine::{
-    ExportData, MeshArtifact, MeshConfig, SCHEMA_VERSION, StlMeshConfig, build_mesh,
-    build_stl_mesh, check_mesh, export_mesh, inspect_domain, inspect_stl_domain, mesh_report,
-    stl_site_count,
+    MeshArtifact, MeshConfig, SCHEMA_VERSION, StlMeshConfig, Written, build_mesh, build_stl_mesh,
+    check_mesh, inspect_domain, inspect_stl_domain, mesh_report, prepare_export, stl_site_count,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -286,17 +285,13 @@ pub(crate) fn export(input: Value, ctx: &Context) -> Run {
     let format = i.format.parse()?;
     let (dir, name) = ctx.target(&i.output)?;
     let a = artifact(ctx, &i.artifact)?;
-    let data = export_mesh(&a, format)?;
-    data.write_new(&dir, &name)?;
-    // the digests of what was written, so a journal replay compares content
-    let sha = |b: &[u8]| crate::journal::hex(&sha2::Sha256::digest(b));
-    let files: Vec<Value> = match &data {
-        ExportData::Vtu(b) | ExportData::Gmsh(b) | ExportData::FoehnCraft(b) => {
-            vec![json!({ "path": i.output, "sha256": sha(b) })]
-        }
-        ExportData::Bundle(files) => files
+    // streamed to disk; the digests of what was written, so a journal
+    // replay compares content
+    let files: Vec<Value> = match prepare_export(&a, format)?.write_new(&dir, &name)? {
+        Written::File(sha) => vec![json!({ "path": i.output, "sha256": sha })],
+        Written::Bundle(files) => files
             .iter()
-            .map(|(n, b)| json!({ "path": format!("{}/{n}", i.output), "sha256": sha(b) }))
+            .map(|(n, sha)| json!({ "path": format!("{}/{n}", i.output), "sha256": sha }))
             .collect(),
     };
     Ok(
