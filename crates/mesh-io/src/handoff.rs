@@ -188,6 +188,30 @@ pub struct HandoffMesh {
     pub merged_faces: usize,
 }
 
+/// The faces of every cell as one list (see [`HandoffMesh::cell_face_list`]):
+/// a few bytes per face instead of a vector per cell, which matters at
+/// millions of cells.
+pub struct CellFaceList {
+    start: Vec<usize>,
+    /// `2 f` for a face the cell owns (wound outward), `2 f + 1` for one
+    /// it is the neighbour of (wound inward).
+    faces: Vec<usize>,
+}
+
+impl CellFaceList {
+    /// The faces of cell `c`: (face, wound outward from `c`).
+    pub fn cell(&self, c: usize) -> impl Iterator<Item = (usize, bool)> + '_ {
+        self.faces[self.start[c]..self.start[c + 1]]
+            .iter()
+            .map(|&k| (k / 2, k % 2 == 0))
+    }
+
+    /// The number of faces of cell `c`.
+    pub fn len(&self, c: usize) -> usize {
+        self.start[c + 1] - self.start[c]
+    }
+}
+
 /// Counts and conserved sums FoehnCraft must reproduce (FC-06).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct HandoffSummary {
@@ -514,30 +538,50 @@ impl HandoffMesh {
 
     /// The cells as lists of (face, outward from this cell).
     pub fn cell_faces(&self) -> Vec<Vec<(usize, bool)>> {
-        let mut cells = vec![Vec::new(); self.cell_count()];
+        let list = self.cell_face_list();
+        (0..self.cell_count())
+            .map(|c| list.cell(c).collect())
+            .collect()
+    }
+
+    /// The faces of every cell in one flat list, in the order of
+    /// [`Self::cell_faces`] (owned faces, then neighbour faces, each by
+    /// face number), without a vector per cell.
+    pub fn cell_face_list(&self) -> CellFaceList {
+        let mut start = vec![0usize; self.cell_count() + 1];
+        for &c in self.owner.iter().chain(&self.neighbour) {
+            start[c + 1] += 1;
+        }
+        for c in 0..self.cell_count() {
+            start[c + 1] += start[c];
+        }
+        let mut next = start.clone();
+        let mut faces = vec![0usize; start[self.cell_count()]];
         for (f, &o) in self.owner.iter().enumerate() {
-            cells[o].push((f, true));
+            faces[next[o]] = 2 * f;
+            next[o] += 1;
         }
         for (f, &n) in self.neighbour.iter().enumerate() {
-            cells[n].push((f, false));
+            faces[next[n]] = 2 * f + 1;
+            next[n] += 1;
         }
-        cells
+        CellFaceList { start, faces }
     }
 
     /// Per cell: volume, |Σ n dS|, Σ |dS| and centroid, all from the
     /// tetrahedra (cell origin, face node average, edge), the decomposition
     /// FoehnCraft uses too (its `geometry` module).
     fn cell_measures(&self) -> Vec<(f64, f64, f64, Vec3)> {
-        let cells = self.cell_faces();
-        cells
-            .iter()
-            .map(|faces| {
-                let origin = self.points[self.face(faces[0].0)[0]];
+        let cells = self.cell_face_list();
+        (0..self.cell_count())
+            .map(|c| {
+                let first = cells.cell(c).next().map_or(0, |(f, _)| f);
+                let origin = self.points[self.face(first)[0]];
                 let mut v6 = 0.0;
                 let mut moment = Vec3::ZERO;
                 let mut sum = Vec3::ZERO;
                 let mut total = 0.0;
-                for &(f, out) in faces {
+                for (f, out) in cells.cell(c) {
                     let s = if out { 1.0 } else { -1.0 };
                     let ring = self.face(f);
                     let mut c = Vec3::ZERO;
@@ -644,9 +688,10 @@ impl HandoffMesh {
 
     /// Number of faces per cell, for statistics.
     pub fn faces_per_cell(&self) -> BTreeMap<usize, usize> {
+        let cells = self.cell_face_list();
         let mut counts = BTreeMap::new();
-        for faces in self.cell_faces() {
-            *counts.entry(faces.len()).or_insert(0) += 1;
+        for c in 0..self.cell_count() {
+            *counts.entry(cells.len(c)).or_insert(0) += 1;
         }
         counts
     }
@@ -655,38 +700,109 @@ impl HandoffMesh {
 // ---------------------------------------------------------------------
 // writers
 
-fn string_array(out: &mut dyn Write, name: &str, values: &[String]) -> io::Result<()> {
-    write!(
-        out,
-        "      <DataArray type=\"String\" Name=\"{name}\" NumberOfTuples=\"{}\" format=\"ascii\">",
-        values.len()
-    )?;
-    for v in values {
-        for b in v.bytes() {
-            write!(out, "{b} ")?;
-        }
-        write!(out, "0 ")?;
-    }
-    writeln!(out, "</DataArray>")
+/// Text gathered in a buffer and handed on in large writes: the writers
+/// below print hundreds of millions of numbers for a large mesh, and one
+/// formatted write per number costs more than the numbers.
+struct Text<'a> {
+    out: &'a mut dyn Write,
+    buf: Vec<u8>,
 }
 
-/// Write the single-file VTU FoehnCraft reads (FC-02, its D192): every cell
-/// a polyhedron (type 42), every boundary face a polygon (type 7), the cell
+impl<'a> Text<'a> {
+    const SPILL: usize = 1 << 16;
+
+    fn new(out: &'a mut dyn Write) -> Self {
+        Self {
+            out,
+            buf: Vec::with_capacity(Self::SPILL + 4096),
+        }
+    }
+
+    fn str(&mut self, s: &str) {
+        self.buf.extend_from_slice(s.as_bytes());
+    }
+
+    /// A non-negative integer in decimal, as `{}` prints it.
+    fn uint(&mut self, mut v: usize) {
+        let mut digits = [0u8; 20];
+        let mut i = digits.len();
+        loop {
+            i -= 1;
+            digits[i] = b'0' + (v % 10) as u8;
+            v /= 10;
+            if v == 0 {
+                break;
+            }
+        }
+        self.buf.extend_from_slice(&digits[i..]);
+    }
+
+    fn byte(&mut self, b: u8) {
+        self.buf.push(b);
+    }
+
+    /// Hand the buffer on once it is large; call between lines.
+    fn spill(&mut self) -> io::Result<()> {
+        if self.buf.len() >= Self::SPILL {
+            self.out.write_all(&self.buf)?;
+            self.buf.clear();
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> io::Result<()> {
+        self.out.write_all(&self.buf)
+    }
+}
+
+fn string_array(t: &mut Text<'_>, name: &str, values: &[String]) -> io::Result<()> {
+    t.str("      <DataArray type=\"String\" Name=\"");
+    t.str(name);
+    t.str("\" NumberOfTuples=\"");
+    t.uint(values.len());
+    t.str("\" format=\"ascii\">");
+    for v in values {
+        for b in v.bytes() {
+            t.uint(usize::from(b));
+            t.byte(b' ');
+        }
+        t.str("0 ");
+        t.spill()?;
+    }
+    t.str("</DataArray>\n");
+    Ok(())
+}
+
+/// The sorted distinct nodes of cell `c` (its VTK connectivity) into
+/// `nodes`.
+fn cell_nodes(mesh: &HandoffMesh, cells: &CellFaceList, c: usize, nodes: &mut Vec<usize>) {
+    nodes.clear();
+    for (f, _) in cells.cell(c) {
+        nodes.extend_from_slice(mesh.face(f));
+    }
+    nodes.sort_unstable();
+    nodes.dedup();
+}
+
+/// Write the single-file VTU FoehnCraft reads (FC-02, its D192): every cell a
+/// polyhedron (type 42), every boundary face a polygon (type 7), the cell
 /// array `region` (zone index for cells, patch index for faces) and the
 /// field-data string arrays `zone_names` and `boundary_names` (`id=name`).
 /// `metadata` adds string arrays such as the mesh digest (FC-05).
+///
+/// The file is produced in one pass into `out` (no copy of it in memory);
+/// besides the mesh it needs the cell-face list and the cell offsets.
 pub fn write_foehncraft_vtu(
     mesh: &HandoffMesh,
     metadata: &[(&str, String)],
     out: &mut dyn Write,
 ) -> io::Result<()> {
-    let cells = mesh.cell_faces();
+    let cells = mesh.cell_face_list();
+    let n_cells = mesh.cell_count();
     let boundary = mesh.neighbour.len()..mesh.face_count();
-    let total = cells.len() + boundary.len();
-    writeln!(
-        out,
-        "<?xml version=\"1.0\"?>\n<VTKFile type=\"UnstructuredGrid\" version=\"1.0\" byte_order=\"LittleEndian\">\n  <UnstructuredGrid>\n    <FieldData>"
-    )?;
+    let total = n_cells + boundary.len();
+    let mut t = Text::new(out);
+    t.str("<?xml version=\"1.0\"?>\n<VTKFile type=\"UnstructuredGrid\" version=\"1.0\" byte_order=\"LittleEndian\">\n  <UnstructuredGrid>\n    <FieldData>\n");
     let ids = |names: Vec<&str>| -> Vec<String> {
         names
             .iter()
@@ -695,17 +811,17 @@ pub fn write_foehncraft_vtu(
             .collect()
     };
     string_array(
-        out,
+        &mut t,
         "zone_names",
         &ids(mesh.zones.iter().map(String::as_str).collect()),
     )?;
     string_array(
-        out,
+        &mut t,
         "boundary_names",
         &ids(mesh.patches.iter().map(|p| p.name.as_str()).collect()),
     )?;
     string_array(
-        out,
+        &mut t,
         "boundary_roles",
         &ids(mesh
             .patches
@@ -721,116 +837,111 @@ pub fn write_foehncraft_vtu(
             .collect()),
     )?;
     for (name, value) in metadata {
-        string_array(out, name, std::slice::from_ref(value))?;
+        string_array(&mut t, name, std::slice::from_ref(value))?;
     }
-    writeln!(
-        out,
-        "    </FieldData>\n    <Piece NumberOfPoints=\"{}\" NumberOfCells=\"{total}\">\n      <Points>\n        <DataArray type=\"Float64\" NumberOfComponents=\"3\" format=\"ascii\">",
-        mesh.points.len()
-    )?;
+    t.str("    </FieldData>\n    <Piece NumberOfPoints=\"");
+    t.uint(mesh.points.len());
+    t.str("\" NumberOfCells=\"");
+    t.uint(total);
+    t.str("\">\n      <Points>\n        <DataArray type=\"Float64\" NumberOfComponents=\"3\" format=\"ascii\">\n");
     for p in &mesh.points {
-        writeln!(out, "{:e} {:e} {:e}", p.x, p.y, p.z)?;
+        writeln!(t.buf, "{:e} {:e} {:e}", p.x, p.y, p.z)?;
+        t.spill()?;
     }
-    writeln!(out, "        </DataArray>\n      </Points>\n      <Cells>")?;
+    t.str("        </DataArray>\n      </Points>\n      <Cells>\n");
 
-    let ring = |f: usize, outward: bool| -> Vec<usize> {
-        let mut r = mesh.face(f).to_vec();
-        if !outward {
-            r.reverse();
-        }
-        r
-    };
-    writeln!(
-        out,
-        "        <DataArray type=\"Int64\" Name=\"connectivity\" format=\"ascii\">"
-    )?;
+    t.str("        <DataArray type=\"Int64\" Name=\"connectivity\" format=\"ascii\">\n");
     let mut offsets = Vec::with_capacity(total);
+    let mut nodes = Vec::new();
     let mut n = 0usize;
-    for faces in &cells {
-        let mut nodes: Vec<usize> = faces
-            .iter()
-            .flat_map(|&(f, _)| mesh.face(f).iter().copied())
-            .collect();
-        nodes.sort_unstable();
-        nodes.dedup();
-        for v in &nodes {
-            write!(out, "{v} ")?;
+    for c in 0..n_cells {
+        cell_nodes(mesh, &cells, c, &mut nodes);
+        for &v in &nodes {
+            t.uint(v);
+            t.byte(b' ');
         }
-        writeln!(out)?;
+        t.byte(b'\n');
+        t.spill()?;
         n += nodes.len();
         offsets.push(n);
     }
     for f in boundary.clone() {
-        for v in mesh.face(f) {
-            write!(out, "{v} ")?;
+        for &v in mesh.face(f) {
+            t.uint(v);
+            t.byte(b' ');
         }
-        writeln!(out)?;
+        t.byte(b'\n');
+        t.spill()?;
         n += mesh.face(f).len();
         offsets.push(n);
     }
-    writeln!(
-        out,
-        "        </DataArray>\n        <DataArray type=\"Int64\" Name=\"offsets\" format=\"ascii\">"
-    )?;
+    t.str("        </DataArray>\n        <DataArray type=\"Int64\" Name=\"offsets\" format=\"ascii\">\n");
     for o in offsets {
-        writeln!(out, "{o}")?;
+        t.uint(o);
+        t.byte(b'\n');
+        t.spill()?;
     }
-    writeln!(
-        out,
-        "        </DataArray>\n        <DataArray type=\"UInt8\" Name=\"types\" format=\"ascii\">"
-    )?;
-    for _ in 0..cells.len() {
-        writeln!(out, "42")?;
+    t.str("        </DataArray>\n        <DataArray type=\"UInt8\" Name=\"types\" format=\"ascii\">\n");
+    for _ in 0..n_cells {
+        t.str("42\n");
+        t.spill()?;
     }
     for _ in boundary.clone() {
-        writeln!(out, "7")?;
+        t.str("7\n");
+        t.spill()?;
     }
-    writeln!(
-        out,
-        "        </DataArray>\n        <DataArray type=\"Int64\" Name=\"faces\" format=\"ascii\">"
-    )?;
-    let mut face_offsets = Vec::with_capacity(total);
-    let mut n = 0i64;
-    for faces in &cells {
-        write!(out, "{}", faces.len())?;
+    t.str("        </DataArray>\n        <DataArray type=\"Int64\" Name=\"faces\" format=\"ascii\">\n");
+    let mut face_offsets = Vec::with_capacity(n_cells);
+    let mut n = 0usize;
+    for c in 0..n_cells {
+        t.uint(cells.len(c));
         n += 1;
-        for &(f, outward) in faces {
-            let r = ring(f, outward);
-            write!(out, " {}", r.len())?;
-            for v in &r {
-                write!(out, " {v}")?;
+        for (f, outward) in cells.cell(c) {
+            let ring = mesh.face(f);
+            t.byte(b' ');
+            t.uint(ring.len());
+            let mut put = |v: usize| {
+                t.byte(b' ');
+                t.uint(v);
+            };
+            if outward {
+                ring.iter().for_each(|&v| put(v));
+            } else {
+                ring.iter().rev().for_each(|&v| put(v));
             }
-            n += 1 + r.len() as i64;
+            n += 1 + ring.len();
         }
-        writeln!(out)?;
+        t.byte(b'\n');
+        t.spill()?;
         face_offsets.push(n);
     }
-    writeln!(
-        out,
-        "        </DataArray>\n        <DataArray type=\"Int64\" Name=\"faceoffsets\" format=\"ascii\">"
-    )?;
+    t.str("        </DataArray>\n        <DataArray type=\"Int64\" Name=\"faceoffsets\" format=\"ascii\">\n");
     for o in face_offsets {
-        writeln!(out, "{o}")?;
+        t.uint(o);
+        t.byte(b'\n');
+        t.spill()?;
     }
     for _ in boundary.clone() {
-        writeln!(out, "-1")?;
+        t.str("-1\n");
+        t.spill()?;
     }
-    writeln!(
-        out,
-        "        </DataArray>\n      </Cells>\n      <CellData Scalars=\"region\">\n        <DataArray type=\"Int32\" Name=\"region\" format=\"ascii\">"
-    )?;
+    t.str("        </DataArray>\n      </Cells>\n      <CellData Scalars=\"region\">\n        <DataArray type=\"Int32\" Name=\"region\" format=\"ascii\">\n");
     for &z in &mesh.cell_zone {
-        writeln!(out, "{z}")?;
+        t.uint(z);
+        t.byte(b'\n');
+        t.spill()?;
     }
     for p in 0..mesh.patches.len() {
         for _ in mesh.patch_faces(p) {
-            writeln!(out, "{p}")?;
+            t.uint(p);
+            t.byte(b'\n');
+            t.spill()?;
         }
     }
-    writeln!(
-        out,
-        "        </DataArray>\n      </CellData>\n    </Piece>\n  </UnstructuredGrid>\n</VTKFile>"
-    )
+    t.str(
+        "        </DataArray>\n      </CellData>\n    </Piece>\n  </UnstructuredGrid>\n</VTKFile>\n",
+    );
+    t.finish()
 }
 
 fn foam_header(out: &mut dyn Write, class: &str, object: &str, note: &str) -> io::Result<()> {
@@ -840,11 +951,22 @@ fn foam_header(out: &mut dyn Write, class: &str, object: &str, note: &str) -> io
     )
 }
 
-/// The five (or, with zones, six) files of an OpenFOAM `constant/polyMesh`
-/// directory (FC-03): `points`, `faces`, `owner`, `neighbour`, `boundary`
-/// and `cellZones`. Patch types follow the roles (`wall`, `symmetry`,
-/// otherwise `patch`); empty patches are left out, as OpenFOAM tools do.
-pub fn write_polymesh(mesh: &HandoffMesh) -> io::Result<Vec<(&'static str, Vec<u8>)>> {
+/// The files of an OpenFOAM `constant/polyMesh` directory (FC-03), in the
+/// order they are written.
+pub const POLYMESH_FILES: [&str; 6] = [
+    "points",
+    "faces",
+    "owner",
+    "neighbour",
+    "boundary",
+    "cellZones",
+];
+
+/// Write one file of [`POLYMESH_FILES`] (FC-03): `points`, `faces`, `owner`,
+/// `neighbour`, `boundary` or `cellZones`. Patch types follow the roles
+/// (`wall`, `symmetry`, otherwise `patch`); empty patches are left out, as
+/// OpenFOAM tools do.
+pub fn write_polymesh_file(mesh: &HandoffMesh, file: &str, out: &mut dyn Write) -> io::Result<()> {
     let note = format!(
         "nPoints:{} nCells:{} nFaces:{} nInternalFaces:{}",
         mesh.points.len(),
@@ -852,92 +974,123 @@ pub fn write_polymesh(mesh: &HandoffMesh) -> io::Result<Vec<(&'static str, Vec<u
         mesh.face_count(),
         mesh.neighbour.len()
     );
-    let mut points = Vec::new();
-    foam_header(&mut points, "vectorField", "points", &note)?;
-    writeln!(points, "{}\n(", mesh.points.len())?;
-    for p in &mesh.points {
-        writeln!(points, "({:e} {:e} {:e})", p.x, p.y, p.z)?;
-    }
-    writeln!(points, ")")?;
-
-    let mut faces = Vec::new();
-    foam_header(&mut faces, "faceList", "faces", &note)?;
-    writeln!(faces, "{}\n(", mesh.face_count())?;
-    for f in 0..mesh.face_count() {
-        let r = mesh.face(f);
-        write!(faces, "{}(", r.len())?;
-        for (i, v) in r.iter().enumerate() {
-            write!(faces, "{}{v}", if i == 0 { "" } else { " " })?;
+    let mut t = Text::new(out);
+    let list = |t: &mut Text<'_>, values: &[usize]| -> io::Result<()> {
+        t.uint(values.len());
+        t.str("\n(\n");
+        for &x in values {
+            t.uint(x);
+            t.byte(b'\n');
+            t.spill()?;
         }
-        writeln!(faces, ")")?;
-    }
-    writeln!(faces, ")")?;
-
-    let list = |object: &str, values: &[usize]| -> io::Result<Vec<u8>> {
-        let mut v = Vec::new();
-        foam_header(&mut v, "labelList", object, &note)?;
-        writeln!(v, "{}\n(", values.len())?;
-        for x in values {
-            writeln!(v, "{x}")?;
-        }
-        writeln!(v, ")")?;
-        Ok(v)
+        t.str(")\n");
+        Ok(())
     };
-    let owner = list("owner", &mesh.owner)?;
-    let neighbour = list("neighbour", &mesh.neighbour)?;
-
-    let mut boundary = Vec::new();
-    foam_header(&mut boundary, "polyBoundaryMesh", "boundary", &note)?;
-    let used: Vec<usize> = (0..mesh.patches.len())
-        .filter(|&p| !mesh.patch_faces(p).is_empty())
-        .collect();
-    writeln!(boundary, "{}\n(", used.len())?;
-    for p in used {
-        let patch = &mesh.patches[p];
-        let range = mesh.patch_faces(p);
-        let group = if patch.role == PatchRole::Wall {
-            "\n        inGroups    List<word> 1(wall);"
-        } else {
-            ""
-        };
-        writeln!(
-            boundary,
-            "    {}\n    {{\n        type        {};{group}\n        nFaces      {};\n        startFace   {};\n    }}",
-            patch.name,
-            patch.role.openfoam_type(),
-            range.len(),
-            range.start
-        )?;
-    }
-    writeln!(boundary, ")")?;
-
-    let mut zones = Vec::new();
-    foam_header(&mut zones, "regIOobject", "cellZones", &note)?;
-    writeln!(zones, "{}\n(", mesh.zones.len())?;
-    for (z, name) in mesh.zones.iter().enumerate() {
-        let members: Vec<usize> = (0..mesh.cell_count())
-            .filter(|&c| mesh.cell_zone[c] == z)
-            .collect();
-        writeln!(
-            zones,
-            "{name}\n{{\n    type cellZone;\ncellLabels      List<label> {}\n(",
-            members.len()
-        )?;
-        for c in members {
-            writeln!(zones, "{c}")?;
+    match file {
+        "points" => {
+            foam_header(&mut t.buf, "vectorField", "points", &note)?;
+            t.uint(mesh.points.len());
+            t.str("\n(\n");
+            for p in &mesh.points {
+                writeln!(t.buf, "({:e} {:e} {:e})", p.x, p.y, p.z)?;
+                t.spill()?;
+            }
+            t.str(")\n");
         }
-        writeln!(zones, ")\n;\n}}")?;
+        "faces" => {
+            foam_header(&mut t.buf, "faceList", "faces", &note)?;
+            t.uint(mesh.face_count());
+            t.str("\n(\n");
+            for f in 0..mesh.face_count() {
+                let r = mesh.face(f);
+                t.uint(r.len());
+                t.byte(b'(');
+                for (i, &v) in r.iter().enumerate() {
+                    if i > 0 {
+                        t.byte(b' ');
+                    }
+                    t.uint(v);
+                }
+                t.str(")\n");
+                t.spill()?;
+            }
+            t.str(")\n");
+        }
+        "owner" => {
+            foam_header(&mut t.buf, "labelList", "owner", &note)?;
+            list(&mut t, &mesh.owner)?;
+        }
+        "neighbour" => {
+            foam_header(&mut t.buf, "labelList", "neighbour", &note)?;
+            list(&mut t, &mesh.neighbour)?;
+        }
+        "boundary" => {
+            foam_header(&mut t.buf, "polyBoundaryMesh", "boundary", &note)?;
+            let used: Vec<usize> = (0..mesh.patches.len())
+                .filter(|&p| !mesh.patch_faces(p).is_empty())
+                .collect();
+            writeln!(t.buf, "{}\n(", used.len())?;
+            for p in used {
+                let patch = &mesh.patches[p];
+                let range = mesh.patch_faces(p);
+                let group = if patch.role == PatchRole::Wall {
+                    "\n        inGroups    List<word> 1(wall);"
+                } else {
+                    ""
+                };
+                writeln!(
+                    t.buf,
+                    "    {}\n    {{\n        type        {};{group}\n        nFaces      {};\n        startFace   {};\n    }}",
+                    patch.name,
+                    patch.role.openfoam_type(),
+                    range.len(),
+                    range.start
+                )?;
+            }
+            t.str(")\n");
+        }
+        "cellZones" => {
+            foam_header(&mut t.buf, "regIOobject", "cellZones", &note)?;
+            let mut members: Vec<Vec<usize>> = vec![Vec::new(); mesh.zones.len()];
+            for (c, &z) in mesh.cell_zone.iter().enumerate() {
+                members[z].push(c);
+            }
+            writeln!(t.buf, "{}\n(", mesh.zones.len())?;
+            for (name, members) in mesh.zones.iter().zip(&members) {
+                writeln!(
+                    t.buf,
+                    "{name}\n{{\n    type cellZone;\ncellLabels      List<label> {}\n(",
+                    members.len()
+                )?;
+                for &c in members {
+                    t.uint(c);
+                    t.byte(b'\n');
+                    t.spill()?;
+                }
+                t.str(")\n;\n}\n");
+            }
+            t.str(")\n");
+        }
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{other} is not a polyMesh file"),
+            ));
+        }
     }
-    writeln!(zones, ")")?;
+    t.finish()
+}
 
-    Ok(vec![
-        ("points", points),
-        ("faces", faces),
-        ("owner", owner),
-        ("neighbour", neighbour),
-        ("boundary", boundary),
-        ("cellZones", zones),
-    ])
+/// The files of [`POLYMESH_FILES`] in memory, for tests and small meshes.
+pub fn write_polymesh(mesh: &HandoffMesh) -> io::Result<Vec<(&'static str, Vec<u8>)>> {
+    POLYMESH_FILES
+        .iter()
+        .map(|&name| {
+            let mut bytes = Vec::new();
+            write_polymesh_file(mesh, name, &mut bytes)?;
+            Ok((name, bytes))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1122,6 +1275,225 @@ mod writer_tests {
         b.sort_unstable();
         assert_eq!(a, b);
         assert_eq!(merged.summary().inverted_faces, 0);
+    }
+
+    /// The VTU writer as it was before it streamed: one formatted write
+    /// per number, the cells' faces in vectors.
+    fn reference_string_array(
+        out: &mut dyn Write,
+        name: &str,
+        values: &[String],
+    ) -> io::Result<()> {
+        write!(
+            out,
+            "      <DataArray type=\"String\" Name=\"{name}\" NumberOfTuples=\"{}\" format=\"ascii\">",
+            values.len()
+        )?;
+        for v in values {
+            for b in v.bytes() {
+                write!(out, "{b} ")?;
+            }
+            write!(out, "0 ")?;
+        }
+        writeln!(out, "</DataArray>")
+    }
+
+    fn reference_vtu(
+        mesh: &HandoffMesh,
+        metadata: &[(&str, String)],
+        out: &mut dyn Write,
+    ) -> io::Result<()> {
+        // the cells' faces as the writer built them before the cell-face list
+        let mut cells = vec![Vec::new(); mesh.cell_count()];
+        for (f, &o) in mesh.owner.iter().enumerate() {
+            cells[o].push((f, true));
+        }
+        for (f, &n) in mesh.neighbour.iter().enumerate() {
+            cells[n].push((f, false));
+        }
+        let boundary = mesh.neighbour.len()..mesh.face_count();
+        let total = cells.len() + boundary.len();
+        writeln!(
+            out,
+            "<?xml version=\"1.0\"?>\n<VTKFile type=\"UnstructuredGrid\" version=\"1.0\" byte_order=\"LittleEndian\">\n  <UnstructuredGrid>\n    <FieldData>"
+        )?;
+        let ids = |names: Vec<&str>| -> Vec<String> {
+            names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| format!("{i}={n}"))
+                .collect()
+        };
+        reference_string_array(
+            out,
+            "zone_names",
+            &ids(mesh.zones.iter().map(String::as_str).collect()),
+        )?;
+        reference_string_array(
+            out,
+            "boundary_names",
+            &ids(mesh.patches.iter().map(|p| p.name.as_str()).collect()),
+        )?;
+        reference_string_array(
+            out,
+            "boundary_roles",
+            &ids(mesh
+                .patches
+                .iter()
+                .map(|p| match p.role {
+                    PatchRole::Wall => "wall",
+                    PatchRole::Inlet => "inlet",
+                    PatchRole::Outlet => "outlet",
+                    PatchRole::Symmetry => "symmetry",
+                    PatchRole::Interface => "interface",
+                    PatchRole::Unspecified => "unspecified",
+                })
+                .collect()),
+        )?;
+        for (name, value) in metadata {
+            reference_string_array(out, name, std::slice::from_ref(value))?;
+        }
+        writeln!(
+            out,
+            "    </FieldData>\n    <Piece NumberOfPoints=\"{}\" NumberOfCells=\"{total}\">\n      <Points>\n        <DataArray type=\"Float64\" NumberOfComponents=\"3\" format=\"ascii\">",
+            mesh.points.len()
+        )?;
+        for p in &mesh.points {
+            writeln!(out, "{:e} {:e} {:e}", p.x, p.y, p.z)?;
+        }
+        writeln!(out, "        </DataArray>\n      </Points>\n      <Cells>")?;
+
+        let ring = |f: usize, outward: bool| -> Vec<usize> {
+            let mut r = mesh.face(f).to_vec();
+            if !outward {
+                r.reverse();
+            }
+            r
+        };
+        writeln!(
+            out,
+            "        <DataArray type=\"Int64\" Name=\"connectivity\" format=\"ascii\">"
+        )?;
+        let mut offsets = Vec::with_capacity(total);
+        let mut n = 0usize;
+        for faces in &cells {
+            let mut nodes: Vec<usize> = faces
+                .iter()
+                .flat_map(|&(f, _)| mesh.face(f).iter().copied())
+                .collect();
+            nodes.sort_unstable();
+            nodes.dedup();
+            for v in &nodes {
+                write!(out, "{v} ")?;
+            }
+            writeln!(out)?;
+            n += nodes.len();
+            offsets.push(n);
+        }
+        for f in boundary.clone() {
+            for v in mesh.face(f) {
+                write!(out, "{v} ")?;
+            }
+            writeln!(out)?;
+            n += mesh.face(f).len();
+            offsets.push(n);
+        }
+        writeln!(
+            out,
+            "        </DataArray>\n        <DataArray type=\"Int64\" Name=\"offsets\" format=\"ascii\">"
+        )?;
+        for o in offsets {
+            writeln!(out, "{o}")?;
+        }
+        writeln!(
+            out,
+            "        </DataArray>\n        <DataArray type=\"UInt8\" Name=\"types\" format=\"ascii\">"
+        )?;
+        for _ in 0..cells.len() {
+            writeln!(out, "42")?;
+        }
+        for _ in boundary.clone() {
+            writeln!(out, "7")?;
+        }
+        writeln!(
+            out,
+            "        </DataArray>\n        <DataArray type=\"Int64\" Name=\"faces\" format=\"ascii\">"
+        )?;
+        let mut face_offsets = Vec::with_capacity(total);
+        let mut n = 0i64;
+        for faces in &cells {
+            write!(out, "{}", faces.len())?;
+            n += 1;
+            for &(f, outward) in faces {
+                let r = ring(f, outward);
+                write!(out, " {}", r.len())?;
+                for v in &r {
+                    write!(out, " {v}")?;
+                }
+                n += 1 + r.len() as i64;
+            }
+            writeln!(out)?;
+            face_offsets.push(n);
+        }
+        writeln!(
+            out,
+            "        </DataArray>\n        <DataArray type=\"Int64\" Name=\"faceoffsets\" format=\"ascii\">"
+        )?;
+        for o in face_offsets {
+            writeln!(out, "{o}")?;
+        }
+        for _ in boundary.clone() {
+            writeln!(out, "-1")?;
+        }
+        writeln!(
+            out,
+            "        </DataArray>\n      </Cells>\n      <CellData Scalars=\"region\">\n        <DataArray type=\"Int32\" Name=\"region\" format=\"ascii\">"
+        )?;
+        for &z in &mesh.cell_zone {
+            writeln!(out, "{z}")?;
+        }
+        for p in 0..mesh.patches.len() {
+            for _ in mesh.patch_faces(p) {
+                writeln!(out, "{p}")?;
+            }
+        }
+        writeln!(
+            out,
+            "        </DataArray>\n      </CellData>\n    </Piece>\n  </UnstructuredGrid>\n</VTKFile>"
+        )
+    }
+
+    /// Invariant: the streamed writer prints the same bytes as the plain
+    /// one it replaced, and its integer printing equals `{}`. Breaks if the
+    /// buffered digits, the cell-face order or a section header drift;
+    /// FoehnCraft and MurmelCraft read these files and their digests are
+    /// recorded, and the layout test below checks only a few markers.
+    #[test]
+    fn streamed_vtu_equals_the_plain_writer() {
+        let m = two_hexes();
+        let meta = [
+            ("koflcraft_mesh_digest", "abc".to_string()),
+            ("koflcraft_algorithm", "x y".to_string()),
+        ];
+        for metadata in [&meta[..], &[]] {
+            let (mut new, mut old) = (Vec::new(), Vec::new());
+            write_foehncraft_vtu(&m, metadata, &mut new).unwrap();
+            reference_vtu(&m, metadata, &mut old).unwrap();
+            assert_eq!(
+                String::from_utf8(new).unwrap(),
+                String::from_utf8(old).unwrap()
+            );
+        }
+        let mut out = Vec::new();
+        let mut t = Text::new(&mut out);
+        let values = [0, 7, 9, 10, 99, 100, 12_345, u32::MAX as usize, usize::MAX];
+        for v in values {
+            t.uint(v);
+            t.byte(b' ');
+        }
+        t.finish().unwrap();
+        let expected: String = values.iter().map(|v| format!("{v} ")).collect();
+        assert_eq!(String::from_utf8(out).unwrap(), expected);
     }
 
     /// Invariant: the VTU holds every cell as a polyhedron and every

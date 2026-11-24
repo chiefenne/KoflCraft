@@ -6,11 +6,11 @@ use std::path::Path;
 
 use mesh_engine::channel::{ChannelConfig, generate_channel};
 use mesh_engine::duct::{self, Mode, Partition, PatchMap};
+use mesh_engine::handoff::HandoffFormat;
 use mesh_engine::sweep::SweepConfig;
 use mesh_engine::{
-    ExportData, MeshArtifact, MeshConfig, SCHEMA_VERSION, StlMeshConfig, build_mesh,
-    build_stl_mesh, check_mesh, export_mesh, inspect_domain, inspect_stl_domain, mesh_report,
-    stl_site_count,
+    MeshArtifact, MeshConfig, SCHEMA_VERSION, StlMeshConfig, Written, build_mesh, build_stl_mesh,
+    check_mesh, inspect_domain, inspect_stl_domain, mesh_report, prepare_export, stl_site_count,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -72,11 +72,18 @@ pub struct GenerateStlInput {
     pub patches: Option<String>,
 }
 
+fn is_vtu(format: &HandoffFormat) -> bool {
+    *format == HandoffFormat::Vtu
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SweepInput {
     pub config: SweepConfig,
     pub output: String,
+    /// The FoehnCraft file of the bundle: `vtu` (default) or `vtkhdf`.
+    #[serde(default, skip_serializing_if = "is_vtu")]
+    pub handoff: HandoffFormat,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -84,6 +91,9 @@ pub struct SweepInput {
 pub struct ChannelInput {
     pub config: ChannelConfig,
     pub output: String,
+    /// The FoehnCraft file of the bundle: `vtu` (default) or `vtkhdf`.
+    #[serde(default, skip_serializing_if = "is_vtu")]
+    pub handoff: HandoffFormat,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -94,6 +104,9 @@ pub struct DuctInput {
     pub partition: String,
     pub mode: Mode,
     pub output: String,
+    /// The FoehnCraft file of the bundle: `vtu` (default) or `vtkhdf`.
+    #[serde(default, skip_serializing_if = "is_vtu")]
+    pub handoff: HandoffFormat,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -202,7 +215,7 @@ pub(crate) fn sweep(input: Value, ctx: &Context) -> Run {
         .limits
         .as_ref()
         .map_or(usize::MAX / 1024, |l| l.max_sweep_cells);
-    let report = mesh_engine::sweep::generate(&i.config, &dir, &name, budget)?;
+    let report = mesh_engine::sweep::generate(&i.config, &dir, &name, budget, i.handoff)?;
     Ok(json!({"schema_version": SCHEMA_VERSION, "output": i.output, "report": report}))
 }
 
@@ -213,7 +226,7 @@ pub(crate) fn channel(input: Value, ctx: &Context) -> Run {
         l.max_channel_axial_cells
     })?;
     let (dir, name) = ctx.target(&i.output)?;
-    let report = generate_channel(&i.config, &dir, &name)?;
+    let report = generate_channel(&i.config, &dir, &name, i.handoff)?;
     Ok(json!({ "schema_version": SCHEMA_VERSION, "output": i.output, "report": report }))
 }
 
@@ -242,6 +255,7 @@ pub(crate) fn duct(input: Value, ctx: &Context) -> Run {
         scaffold.as_deref(),
         &dir,
         &name,
+        i.handoff,
     )?;
     Ok(json!({"schema_version": SCHEMA_VERSION, "output": i.output, "report": report}))
 }
@@ -286,17 +300,13 @@ pub(crate) fn export(input: Value, ctx: &Context) -> Run {
     let format = i.format.parse()?;
     let (dir, name) = ctx.target(&i.output)?;
     let a = artifact(ctx, &i.artifact)?;
-    let data = export_mesh(&a, format)?;
-    data.write_new(&dir, &name)?;
-    // the digests of what was written, so a journal replay compares content
-    let sha = |b: &[u8]| crate::journal::hex(&sha2::Sha256::digest(b));
-    let files: Vec<Value> = match &data {
-        ExportData::Vtu(b) | ExportData::Gmsh(b) | ExportData::FoehnCraft(b) => {
-            vec![json!({ "path": i.output, "sha256": sha(b) })]
-        }
-        ExportData::Bundle(files) => files
+    // streamed to disk; the digests of what was written, so a journal
+    // replay compares content
+    let files: Vec<Value> = match prepare_export(&a, format)?.write_new(&dir, &name)? {
+        Written::File(sha) => vec![json!({ "path": i.output, "sha256": sha })],
+        Written::Bundle(files) => files
             .iter()
-            .map(|(n, b)| json!({ "path": format!("{}/{n}", i.output), "sha256": sha(b) }))
+            .map(|(n, sha)| json!({ "path": format!("{}/{n}", i.output), "sha256": sha }))
             .collect(),
     };
     Ok(
@@ -363,6 +373,17 @@ pub(crate) fn limitations(id: &str, output: &Value) -> Vec<String> {
             }
         }
         "mesh.generate_channel" => l.push("planar walls only".into()),
+        "block.grid" => {
+            l.push("transfinite interpolation only: no elliptic smoothing or wall orthogonality control yet (MB1b)".into());
+            l.push("no OpenFOAM polyMesh in the bundle; FoehnCraft VTU and MSH 4.1 only".into());
+            if let Some(d) = report["reference"]["relative_deviation"].as_f64() {
+                l.push(format!(
+                    "volume differs from the template's analytic shape by {:.3} % (chords between wall nodes)",
+                    100.0 * d
+                ));
+            }
+            l.push("flow accuracy on this mesh is untested".into());
+        }
         "mesh.generate_duct" => {
             if let (Some(v), Some(s)) =
                 (report["volume"].as_f64(), report["source_volume"].as_f64())

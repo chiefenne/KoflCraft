@@ -8,6 +8,7 @@
 //! `diag.codes`, `format`/`format_version` on every machine format,
 //! diagnostic codes as `AREA000`.
 
+mod block;
 pub mod context;
 pub mod diag;
 mod estimate;
@@ -352,13 +353,14 @@ pub static TOOLS: &[Tool] = &[
         id: "mesh.generate_sweep",
         version: 1,
         action: Action::StartBuild,
-        summary: "Generate a graded polyhedral block with one inlet or a straight pipe with two ports into a new directory.",
+        summary: "Generate a graded polyhedral block with one inlet or a straight pipe with two ports into a new directory. `handoff` picks the FoehnCraft file: foehncraft.vtu (default) or the blocked binary foehncraft.vtkhdf.",
         legacy_name: Some("generate_sweep"),
         outputs: &["output"],
         input_schema: || {
             schemas::input(
-                json!({"config": schemas::sweep_schema(), "output": schemas::path()}),
-                &[],
+                json!({"config": schemas::sweep_schema(), "output": schemas::path(),
+                       "handoff": {"enum": ["vtu", "vtkhdf"]}}),
+                &["handoff"],
             )
         },
         output_schema: out!("generate_sweep"),
@@ -368,13 +370,14 @@ pub static TOOLS: &[Tool] = &[
         id: "mesh.generate_channel",
         version: 1,
         action: Action::StartBuild,
-        summary: "Generate and check a layered rectangular channel into a new directory (VTU, Gmsh, FoehnCraft files).",
+        summary: "Generate and check a layered rectangular channel into a new directory (VTU, Gmsh, FoehnCraft files). `handoff` picks the FoehnCraft file: foehncraft.vtu (default) or the blocked binary foehncraft.vtkhdf.",
         legacy_name: Some("generate_channel"),
         outputs: &["output"],
         input_schema: || {
             schemas::input(
-                json!({"config": schemas::channel_config(), "output": schemas::path()}),
-                &[],
+                json!({"config": schemas::channel_config(), "output": schemas::path(),
+                       "handoff": {"enum": ["vtu", "vtkhdf"]}}),
+                &["handoff"],
             )
         },
         output_schema: out!("generate_channel"),
@@ -404,14 +407,15 @@ pub static TOOLS: &[Tool] = &[
         id: "mesh.generate_duct",
         version: 1,
         action: Action::StartBuild,
-        summary: "Generate and validate a partitioned STL bulk, wall-layer or polyhedral duct volume into a new directory.",
+        summary: "Generate and validate a partitioned STL bulk, wall-layer or polyhedral duct volume into a new directory. `handoff` picks the FoehnCraft file: foehncraft.vtu (default) or the blocked binary foehncraft.vtkhdf.",
         legacy_name: Some("generate_duct"),
         outputs: &["output"],
         input_schema: || {
             schemas::input(
                 json!({"surface": schemas::path(), "patches": schemas::path(), "partition": schemas::path(),
-                       "mode": {"enum": ["bulk", "layered", "polyhedral"]}, "output": schemas::path()}),
-                &[],
+                       "mode": {"enum": ["bulk", "layered", "polyhedral"]}, "output": schemas::path(),
+                       "handoff": {"enum": ["vtu", "vtkhdf"]}}),
+                &["handoff"],
             )
         },
         output_schema: out!("generate_duct"),
@@ -449,18 +453,61 @@ pub static TOOLS: &[Tool] = &[
         id: "mesh.export",
         version: 1,
         action: Action::WriteFiles,
-        summary: "Validate a saved artifact and export it to a new file: vtu, gmsh (MSH 4.1), gmsh-2.2, foehncraft (single-file VTU) or openfoam (polyMesh directory).",
+        summary: "Validate a saved artifact and export it to a new file: vtu, gmsh (MSH 4.1), gmsh-2.2, foehncraft (single-file VTU), foehncraft-vtkhdf (the same as blocked binary VTKHDF) or openfoam (polyMesh directory).",
         legacy_name: Some("export_mesh"),
         outputs: &["output"],
         input_schema: || {
             schemas::input(
                 json!({"artifact": schemas::path(), "output": schemas::path(),
-                       "format": {"enum": ["vtu", "gmsh", "gmsh-2.2", "foehncraft", "openfoam"]}}),
+                       "format": {"enum": ["vtu", "gmsh", "gmsh-2.2", "foehncraft", "foehncraft-vtkhdf", "openfoam"]}}),
                 &[],
             )
         },
         output_schema: out!("export_mesh"),
         run: mesh::export,
+    },
+    Tool {
+        id: "block.template",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Write a block topology (`koflcraft.block-topology`, BS-02/BS-03) for a standard case: `channel` (one block, optional two-sided wall clustering) or `pipe_ogrid` (H-core and four O-grid blocks, optional wall spacing). The file is checked before it is written.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: || {
+            schemas::input(
+                json!({"config": schemas::block_template(), "output": schemas::path()}),
+                &[],
+            )
+        },
+        output_schema: || json!({"type": "object", "description": "`koflcraft.block-result` with the written file and its check"}),
+        run: block::template,
+    },
+    Tool {
+        id: "block.check",
+        version: 1,
+        action: Action::Read,
+        summary: "Check a block topology before any grid is built (BS-05): indices, right-handed blocks, edge curves and laws, one cell count per chain of opposite edges, faces shared by at most two blocks, every boundary face in exactly one patch. Reports cells, points and the chains, or every issue with the blocks, edge or face it concerns.",
+        legacy_name: None,
+        outputs: &[],
+        input_schema: || schemas::input(json!({"topology": schemas::path()}), &[]),
+        output_schema: || json!({"type": "object", "description": "`koflcraft.block-result` with `check`"}),
+        run: block::check,
+    },
+    Tool {
+        id: "block.grid",
+        version: 1,
+        action: Action::StartBuild,
+        summary: "Build a block-structured hexahedral mesh from a topology by transfinite interpolation (BS-09, TFI only so far), validate it (positive corner Jacobians, conservation, conforming closed cells, BS-13) and write `volume.vtu`, `mesh.msh` (MSH 4.1), `foehncraft.vtu`, `report.json` and `mesh-evidence.json` (with each block's cell range) into a new directory (BS-14).",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: || {
+            schemas::input(
+                json!({"topology": schemas::path(), "output": schemas::path()}),
+                &[],
+            )
+        },
+        output_schema: || json!({"type": "object", "description": "`koflcraft.block-result` with the `koflcraft.block-report`"}),
+        run: block::grid,
     },
     Tool {
         id: "mesh.estimate",

@@ -202,3 +202,14 @@ Recorded as section 4c of [the requirements](../docs/requirements.md)
 | 7 | PyAero and pyaeroflow | First "don't use them"; refined the same minute: check PyAero branch `v3.0` for modern parts and take them into use. Done in section 6a (design ideas, no code port); pyaeroflow and PyAero master stay unused | 2026-11-24 |
 | 8 | Milestone | Own track after M5: new milestone MB1 (templates, explicit tools, TFI + elliptic, export) starts once M5 boundary layers settle; polyhedral work keeps priority | 2026-11-24 |
 | 9 | Where it lives | This research note plus requirements v1.0: section 4c (BS-01 to BS-19), OBJ-21, milestone MB1 | 2026-11-24 |
+
+## 10. Build steps
+
+| Step | Scope | Date |
+|---|---|---|
+| Start | The maintainer asked to start MB1 at once ("can we start with the blockmesher?"), although card 8 had placed it after M5: MB1 runs as a parallel track next to M5 | 2026-11-24 |
+| MB1a | Card: "Channel + pipe O-grid end to end". Topology model (`mesh-core::block`) and file `koflcraft.block-topology` 1.0 (`mesh-engine::block`); check of indices, handedness, curves, laws, count chains, faces and patches; uniform, geometric and two-sided tanh (Vinokur) laws with achieved spacings reported; lines and circular arcs; 2D TFI of faces and 3D TFI of blocks with parameters blended from the edge distributions; every edge and face gridded once and read through the orientation map of each block's frame (no welding); corner Jacobians, aspect ratios, conservation against the boundary-enclosed volume; VTU, MSH 4.1, FoehnCraft VTU and evidence with block ranges; templates `channel` and `pipe_ogrid`; tools `block.template`, `block.check`, `block.grid` | 2026-11-24 |
+
+MB1a results (`block.grid`, release build): pipe R = 0.05, L = 0.5, 8 core cells per quarter, 10 radial, 40 axial, wall spacing 5e-4: 15,360 hexahedra, minimum scaled Jacobian 0.707 (the core corners), volume 0.641 % below πR²L, which is the chord error of 32 wall nodes per circle; the sum of cell volumes equals the boundary-enclosed volume to rounding. Channel 1 × 0.1 × 0.05 with 50 × 20 × 12 cells and wall spacing 5e-4: 12,000 hexahedra, exact volume, scaled Jacobian 1.
+
+Open for MB1b, each to be put on a card: elliptic smoothing (Winslow / Thompson–Thames–Mastin with Steger–Sorenson control), the orthogonal wall block, the explicit `block.*` edit tools (BS-04), elbow and airfoil C-grid templates, polyMesh in the bundle, the FoehnCraft round trip in the acceptance runner, and the ALG-16 benchmark against harmonic maps.

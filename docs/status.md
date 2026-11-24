@@ -5,7 +5,7 @@
 The verification grade of every feature (AG-17), how it was checked and what is still missing. A partial result is never presented as success; every tool result also carries a `limitations` list.
 
 - **verified** (9): checked against an exact or independent reference by a named test
-- **partial** (10): works on the named fixtures, with known gaps
+- **partial** (11): works on the named fixtures, with known gaps
 - **unverified** (1): built, not yet checked
 - **open** (0): not built
 
@@ -22,7 +22,7 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 | Straight channel with port-terminated layers (M3, BL-10) | partial | Native prisms and the Gmsh core subdivision share the tagged boundary; both full ports exported; colliding layers rejected (research/open-port-layers.md) | Planar walls only | BL-10 |
 | Nonconvex duct, bulk, layered and polyhedral (M4/M5 prototype) | partial | Elbow volume and patch areas to 1e-9; every layer reaches both ports; no face with S·d ≤ 0 in any mode of the elbow or Manifold; the hand-off's fanned volume equals the mesher's exact volume | The elbow needs a Gmsh scaffold and a Python preparation script (OPEN-07); with conforming wall seeds the wall columns reach 56.6° (elbow) and 74.5° (Manifold) non-orthogonality and volume ratio 77 and 1,882; sharp convex corners and flat walls have no seeds, and a wall triangle pair the seeds flip is cut in two; the repair of torn contacts at reentrant edges has no test; core sphericity on Manifold fell to 0.74 at the median; Manifold builds in about 130 s; flow accuracy untested | M4, M5 |
 | Rust scaffold for nonconvex ducts: wall remeshed to a chord tolerance, Delaunay tetrahedralization (OPEN-07) | partial | A remeshed sphere stays within the chord tolerance both ways with edges at the chord length; a box keeps its twelve feature edges, eight corners, kept facets and exact volume; exact orientation and in-sphere signs on coplanar and cospherical input; a Delaunay grid has empty spheres and fills its box; scaffolds of a sphere and a nonconvex box pair every interior face, use every wall triangle once and fill the enclosed volume to 1e-12; the Manifold wall built from the STL is within 0.05 of it both ways and its polyhedral mesh is valid in the hand-off | Ports are kept as they are (the elbow, with two-triangle ports, keeps its Gmsh scaffold); scaffold mean ratio floor 0.05 against Gmsh's 0.26, no vertex smoothing; features by dihedral angle only; a finer wall makes the Manifold mesh 2.4 times larger and its build about 3 minutes | M4, GEO-04, ALG-11 |
-| FoehnCraft hand-off: MSH 4.1, single-file VTU, names, evidence (FC-01, FC-02, FC-04 to FC-06) | partial | CI reads 35 exports back with `foehn mesh` (elbow and Manifold ducts in all three modes among them): every one valid, counts, volume, closure and patch areas agree to 1e-12 | Binary MSH open | FC-01, FC-02, FC-04, FC-05, FC-06 |
+| FoehnCraft hand-off: MSH 4.1, single-file VTU or blocked VTKHDF, names, evidence (FC-01, FC-02, FC-04 to FC-06) | partial | CI reads 35 exports back with `foehn mesh` (elbow and Manifold ducts in all three modes among them): every one valid, counts, volume, closure and patch areas agree to 1e-12; every file is streamed to disk and hashed as written, the VTU byte for byte equal to the plain writer it replaced; the blocked VTKHDF file is read back in tests (every cell owned once, ghosts exactly the point neighbours, faces outward, HDF5 checksums) and opened by h5py and VTK 9.7 by hand | FoehnCraft cannot read foehncraft.vtkhdf yet (its reader is in progress), so CI round-trips only the VTU; binary MSH open; the meshes themselves still take about 1.4 GB per million sweep cells while the files are written | FC-01, FC-02, FC-04, FC-05, FC-06 |
 | OpenFOAM polyMesh export (FC-03) | unverified | Written for every mesh type from the hand-off mesh, with patch types and cellZones; boundary ranges tile the faces | No independent reader in tests or CI; the box round trip is an ignored test | FC-03 |
 | Tool registry, result envelope and diagnostic codes (AG-12, AG-18, FC-07) | verified | Ids unique and dotted, schemas closed, docs/tools.md regenerated and compared, `kofl commands` and `kofl call` agree, codes unique and every engine code registered | — | AG-12, AG-18, FC-07 |
 | Journal and replay (AG-13) | verified | A recorded session replays in a fresh directory with equal status, exit code and result digests; a changed call is reported as TOOL005; MCP calls are journaled | — | AG-13 |
@@ -31,6 +31,7 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 | Summary first, paged detail over MCP (AG-16) | verified | Following `next_cursor` returns every cell and face exactly once at every page and kind boundary; foreign and malformed cursors are refused; the acceptance runner reassembles the MCP pages and compares them with the CLI's full report on all six fixtures | Only mesh.report has per-row detail today; the CLI keeps the full report (decided 2026-11-22) | AG-16 |
 | Verification grades and limitations (AG-17) | verified | docs/status.md is regenerated from this file and compared; every listed test must exist; every result envelope carries `limitations` | — | AG-17 |
 | Crate layering check (SW-19) | verified | Every workspace dependency points to a lower layer or an allowed same-layer use; front ends name no crate below mesh-tools | — | SW-19 |
+| Block-structured variant MB1a: topology file, check, edge laws, TFI, point-matched hexahedra, channel and pipe O-grid templates, block.* tools | partial | Box channel reproduced exactly (volume, unit scaled Jacobians); pipe O-grid volume equals the prism of the inscribed wall polygon to 1e-12 and πR²L within the chord error, wall nodes on the cylinder to 1e-12; every face conforms; permuted and rotated block frames give the same grid; bad count chains, open faces and left-handed blocks refused; CLI chain template → grid writes FoehnCraft files and evidence with block ranges | TFI only (elliptic, hyperbolic, orthogonal wall block and smoothers come in MB1b); explicit block.* edit tools, elbow and airfoil templates, geometry association and polyMesh in the bundle are not built; FoehnCraft round trip (FC-06) run by hand, not yet in the acceptance runner | BS-01, BS-02, BS-03, BS-05, BS-06, BS-08, BS-13, BS-14 |
 
 ## Checks per feature
 
@@ -145,12 +146,21 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 - `nonconvex_elbow_preserves_volume_and_exposes_each_port_layer` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
 - `nonconvex_manifold_preserves_volume_and_exposes_each_port_layer` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
 
-### FoehnCraft hand-off: MSH 4.1, single-file VTU, names, evidence (FC-01, FC-02, FC-04 to FC-06)
+### FoehnCraft hand-off: MSH 4.1, single-file VTU or blocked VTKHDF, names, evidence (FC-01, FC-02, FC-04 to FC-06)
 
 - `foehncraft_vtu_holds_cells_faces_and_names` in [crates/mesh-io/src/handoff.rs](../crates/mesh-io/src/handoff.rs)
+- `streamed_vtu_equals_the_plain_writer` in [crates/mesh-io/src/handoff.rs](../crates/mesh-io/src/handoff.rs)
 - `two_faces_between_one_pair_merge_into_one` in [crates/mesh-io/src/handoff.rs](../crates/mesh-io/src/handoff.rs)
 - `handoff_names_are_bare_keys_and_unique` in [crates/mesh-io/src/handoff.rs](../crates/mesh-io/src/handoff.rs)
 - `both_versions_carry_the_same_model` in [crates/mesh-io/src/msh.rs](../crates/mesh-io/src/msh.rs)
+- `a_streamed_file_and_its_digest_match_the_bytes_written` in [crates/mesh-io/src/directory.rs](../crates/mesh-io/src/directory.rs)
+- `a_failed_stream_removes_its_file_and_keeps_existing_ones` in [crates/mesh-io/src/directory.rs](../crates/mesh-io/src/directory.rs)
+- `a_bundle_is_complete_or_removed` in [crates/mesh-io/src/directory.rs](../crates/mesh-io/src/directory.rs)
+- `every_cell_is_owned_once_and_each_block_holds_its_point_neighbours` in [crates/mesh-io/src/vtkhdf.rs](../crates/mesh-io/src/vtkhdf.rs)
+- `hilbert_index_walks_the_grid_one_step_at_a_time` in [crates/mesh-io/src/vtkhdf.rs](../crates/mesh-io/src/vtkhdf.rs)
+- `lookup3_matches_the_published_values` in [crates/mesh-io/src/hdf5.rs](../crates/mesh-io/src/hdf5.rs)
+- `datasets_must_get_exactly_their_bytes_in_order` in [crates/mesh-io/src/hdf5.rs](../crates/mesh-io/src/hdf5.rs)
+- `vtkhdf_handoff_replaces_the_vtu_in_bundles_and_exports` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
 - `cargo m1 --require-gmsh --require-foehn` (CI)
 
 ### OpenFOAM polyMesh export (FC-03)
@@ -202,3 +212,12 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 - `the_workspace_is_layered` in [crates/xtask/src/main.rs](../crates/xtask/src/main.rs)
 - `reads_only_the_dependencies_table` in [crates/xtask/src/main.rs](../crates/xtask/src/main.rs)
 - `cargo xtask layering` (CI)
+
+### Block-structured variant MB1a: topology file, check, edge laws, TFI, point-matched hexahedra, channel and pipe O-grid templates, block.* tools
+
+- `channel_is_exact` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `pipe_ogrid_matches_its_cylinder` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `local_frames_do_not_change_the_grid` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `inconsistent_counts_are_named` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `pipe_validates_for_foehncraft` in [crates/mesh-engine/src/block.rs](../crates/mesh-engine/src/block.rs)
+- `block_tools_build_a_pipe_from_a_template` in [crates/mesh-cli/tests/kofl.rs](../crates/mesh-cli/tests/kofl.rs)

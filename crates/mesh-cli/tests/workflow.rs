@@ -302,6 +302,62 @@ fn channel_exports_both_full_ports_and_rejects_colliding_layers() {
     assert!(!work.path().join("collision").exists());
 }
 
+fn sha256(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Invariant: `--handoff vtkhdf` puts the blocked binary
+/// `foehncraft.vtkhdf` in a bundle instead of `foehncraft.vtu`, listed in
+/// `mesh-evidence.json` with its SHA-256 and the same summary, and
+/// `export … foehncraft-vtkhdf` writes it with the artifact's digests.
+/// Breaks if: the option is lost between the command line and the engine,
+/// the evidence misses the file, or the export drops its provenance. No
+/// other test: the mesh-io tests write the file without a tool.
+#[test]
+fn vtkhdf_handoff_replaces_the_vtu_in_bundles_and_exports() {
+    let work = WorkDirectory::new();
+    fs::write(
+        work.path().join("duct.json"),
+        include_bytes!("../../../test-fixtures/straight-channel.json"),
+    )
+    .unwrap();
+    work.run(&["generate-channel", "duct.json", "ascii"]);
+    work.run(&[
+        "generate-channel",
+        "duct.json",
+        "binary",
+        "--handoff",
+        "vtkhdf",
+    ]);
+    let evidence = |bundle: &str| -> Value {
+        let path = work.path().join(bundle).join("mesh-evidence.json");
+        serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+    };
+    let (ascii, binary) = (evidence("ascii"), evidence("binary"));
+    assert_eq!(ascii["summary"], binary["summary"]);
+    assert!(!work.path().join("binary/foehncraft.vtu").exists());
+    let bytes = fs::read(work.path().join("binary/foehncraft.vtkhdf")).unwrap();
+    assert_eq!(&bytes[..8], b"\x89HDF\r\n\x1a\n");
+    let listed = binary["files"].as_array().unwrap();
+    assert!(
+        listed
+            .iter()
+            .any(|f| f[0] == "foehncraft.vtkhdf" && f[1] == sha256(&bytes).as_str()),
+        "{listed:?}"
+    );
+
+    let build = work.run(&["generate", "input.json", "m.json"])["build"].clone();
+    let export = work.run(&["export", "m.json", "foehncraft-vtkhdf", "m.vtkhdf"]);
+    let bytes = fs::read(work.path().join("m.vtkhdf")).unwrap();
+    assert_eq!(export["files"][0]["sha256"], sha256(&bytes).as_str());
+    let digest = build["mesh_digest"].as_str().unwrap().as_bytes();
+    assert!(bytes.windows(digest.len()).any(|w| w == digest));
+}
+
 /// Keep rule (SW-18). Invariant: `"wall_join": "split_cap"` still builds the
 /// join of PR #22 (native wedges plus one split-cap polyhedron per shared
 /// wall triangle) and FoehnCraft accepts it. Breaking the option or the old

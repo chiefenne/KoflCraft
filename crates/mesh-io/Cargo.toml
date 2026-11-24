@@ -10,3 +10,4 @@ mesh-core.workspace = true
 mesh-quality.workspace = true
 mesh-algorithms.workspace = true
 serde.workspace = true
+sha2.workspace = true

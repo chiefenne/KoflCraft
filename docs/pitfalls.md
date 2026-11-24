@@ -74,6 +74,28 @@ A reader that allocates from a count declared in the header can abort on a
 broken file. FoehnCraft found this in four of its mesh readers. Compare the
 declared count with the remaining file size before allocating.
 
+## Whole files in memory
+
+The writers once built each file in a `Vec<u8>` and the bundle wrote them
+all at the end, so a 2.5 million cell sweep held its 3.4 GB of files next
+to its meshes (peak 6.5 GB; about 12 GB of `foehncraft.vtu` alone at 10
+million polyhedra). Hashing for the evidence wanted the bytes, which is why
+they were kept. Stream instead: `MeshDirectory::stream_new` and
+`Bundle::stream` hash while writing and return the digest. Inside a writer,
+gather a line in a buffer and write it at once: a `write!` per number into
+a `&mut dyn Write` costs more than the number. Keep per-cell data flat
+(`HandoffMesh::cell_face_list`), not a `Vec` per cell.
+
+## VTK reads collection blocks in link creation order
+
+`vtkHDFReader` walks the blocks of a `PartitionedDataSetCollection` (and its
+`Assembly`) by link creation order. An HDF5 group that does not track it
+reads fine with h5py, but VTK stops with "creation order not tracked for
+links in group" and then runs out of memory. `mesh_io::hdf5` therefore
+tracks and indexes the creation order of every group (Link Info flags 3,
+a creation order in each Link message). Check a new HDF5 layout with
+`vtkHDFReader`, not only with h5py.
+
 ## Tetrahedral subdivision is not the polyhedral mesh
 
 The Gmsh export subdivides polyhedra into tetrahedra (and the duct export
