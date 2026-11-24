@@ -38,6 +38,11 @@ pub enum VolumeAlgorithm {
         /// patches with the role `wall` (default true).
         #[serde(default = "yes")]
         wall_orthogonality: bool,
+        /// Let the wall nodes slide along the curved wall contours toward
+        /// orthogonal, smooth grid lines; corners sharper than 30° stay
+        /// fixed (default false). Needs `wall_orthogonality`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        wall_sliding: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_iterations: Option<usize>,
     },
@@ -716,8 +721,16 @@ pub fn grid(
         VolumeAlgorithm::Tfi => options.max_iterations = 0,
         VolumeAlgorithm::Elliptic {
             wall_orthogonality,
+            wall_sliding,
             max_iterations,
         } => {
+            if wall_sliding && !wall_orthogonality {
+                return Err(EngineError::new(
+                    ErrorCode::InvalidArguments,
+                    "wall_sliding needs wall_orthogonality; set wall_orthogonality to true or wall_sliding to false",
+                ));
+            }
+            options.slide_walls = wall_sliding;
             if wall_orthogonality && walls.is_empty() {
                 // BS-12: a request the algorithm cannot honour is refused
                 return Err(EngineError::new(
@@ -756,6 +769,8 @@ pub fn grid(
         "wall_angle_deg": {"max_tfi": s.wall_angle_max_before, "max": s.wall_angle_max_after,
                            "mean_tfi": s.wall_angle_mean_before, "mean": s.wall_angle_mean_after},
         "first_spacing_change": s.first_spacing_change,
+        "contour_nodes": s.contour_nodes,
+        "contour_slide_max": s.contour_slide_max,
     });
     Ok((grid, report))
 }
@@ -1000,6 +1015,7 @@ mod tests {
             &file,
             &VolumeAlgorithm::Elliptic {
                 wall_orthogonality: true,
+                wall_sliding: false,
                 max_iterations: None,
             },
         )
@@ -1016,6 +1032,22 @@ mod tests {
             let on_high = (p.z - 0.1).abs() < 1e-9;
             assert!(on_low || on_high, "node left its symmetry plane: {p:?}");
         }
+        // wall sliding: the nodes of the section slide and are reported;
+        // it needs the wall controls
+        let sliding = |wall_orthogonality| VolumeAlgorithm::Elliptic {
+            wall_orthogonality,
+            wall_sliding: true,
+            max_iterations: None,
+        };
+        let (_, slid) = super::grid(&file, &sliding(true)).unwrap();
+        assert_eq!(slid["converged"], true);
+        assert!(slid["contour_nodes"].as_u64().unwrap() > 0, "{slid}");
+        assert!(slid["contour_slide_max"].as_f64().unwrap() > 0.0);
+        let e = super::grid(&file, &sliding(false)).unwrap_err();
+        assert!(e.message.contains("wall_sliding needs wall_orthogonality"));
+        let back: VolumeAlgorithm =
+            serde_json::from_str(r#"{"kind": "elliptic", "wall_sliding": true}"#).unwrap();
+        assert_eq!(back, sliding(true));
     }
 
     /// Invariant (BS-12): elliptic smoothing with wall orthogonality on a
@@ -1035,6 +1067,7 @@ mod tests {
         .unwrap();
         let elliptic = VolumeAlgorithm::Elliptic {
             wall_orthogonality: true,
+            wall_sliding: false,
             max_iterations: None,
         };
         let (grid_e, s) = super::grid(&file, &elliptic).unwrap();
@@ -1051,6 +1084,7 @@ mod tests {
             &file,
             &VolumeAlgorithm::Elliptic {
                 wall_orthogonality: false,
+                wall_sliding: false,
                 max_iterations: None,
             },
         )

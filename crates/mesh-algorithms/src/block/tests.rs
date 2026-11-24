@@ -298,6 +298,23 @@ mod elliptic {
         assert!(worst(&g) >= 0.99 * before, "{} < {before}", worst(&g));
     }
 
+    /// Invariant: wall sliding leaves walls on projection surfaces (pipe,
+    /// elbow) alone: no node slides and the grid is the one without it.
+    #[test]
+    fn surface_walls_do_not_slide() {
+        let t = pipe_ogrid(0.05, 0.2, 0.55, [8, 10, 6], Some(0.0005)).unwrap();
+        let mut a = build(&t.topology).unwrap();
+        let mut b = a.clone();
+        smooth(&mut a, &walls(&t.topology)).unwrap();
+        let o = SmoothOptions {
+            slide_walls: true,
+            ..walls(&t.topology)
+        };
+        let res = smooth(&mut b, &o).unwrap();
+        assert_eq!(res.contour_nodes, 0);
+        assert_eq!(a.points, b.points);
+    }
+
     /// Invariant: nodes of a planar sliding patch move inside their plane
     /// and stay on it; a patch that is not planar (the pipe wall) keeps its
     /// nodes fixed even when it is named as sliding.
@@ -585,4 +602,68 @@ fn coordinate_files_read_to_one_section() {
         assert_conforming(&build(&t.topology).unwrap());
     }
     assert!(Section::from_coordinates("x\n1 0\n0 0\n").is_err());
+}
+
+/// Invariant: on the NACA 2412 C-grid the wall nodes slide along the
+/// section (they stay on it), the smoother still converges, and the grid
+/// is no worse than with fixed wall nodes: smaller largest wall angle, no
+/// smaller scaled Jacobian.
+#[test]
+fn wall_nodes_slide_along_the_section() {
+    use super::smooth::{SmoothOptions, smooth};
+    let section = Naca4::parse("2412").unwrap();
+    let mut runs = Vec::new();
+    for slide in [false, true] {
+        let (mut g, _) = naca_case("2412", 48);
+        let cg = airfoil_cgrid(
+            &section.section(),
+            &AirfoilCgrid {
+                chord: 1.0,
+                span: 0.1,
+                farfield: 5.0,
+                wake: 5.0,
+                cells: [48, 24, 24, 1],
+                wall_spacing: 1e-3,
+                le_spacing: None,
+                te_spacing: None,
+            },
+        )
+        .unwrap();
+        let named = |f: &dyn Fn(&str) -> bool| -> Vec<usize> {
+            cg.topology
+                .patches
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| f(&p.name))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let o = SmoothOptions {
+            wall_patches: named(&|n| n.contains("wall")),
+            sliding_patches: named(&|n| n.starts_with("symmetry")),
+            slide_walls: slide,
+            ..SmoothOptions::default()
+        };
+        let res = smooth(&mut g, &o).unwrap();
+        assert!(res.converged, "{res:?}");
+        let jmin = g
+            .quality()
+            .iter()
+            .map(|q| q.min_scaled_jacobian)
+            .fold(1.0, f64::min);
+        runs.push((res, jmin, section_error(&g, &section)));
+    }
+    let (fixed, slid) = (&runs[0], &runs[1]);
+    assert_eq!(fixed.0.contour_nodes, 0);
+    // two contours (upper, lower) on each of the two symmetry planes
+    assert!(slid.0.contour_nodes > 100, "{:?}", slid.0);
+    assert!(slid.0.contour_slide_max > 0.0);
+    assert!(
+        slid.0.wall_angle_max_after < fixed.0.wall_angle_max_after,
+        "{:?} {:?}",
+        slid.0,
+        fixed.0
+    );
+    assert!(slid.1 >= fixed.1, "{} < {}", slid.1, fixed.1);
+    assert!(slid.2 < 2e-5, "wall nodes {} off the section", slid.2);
 }

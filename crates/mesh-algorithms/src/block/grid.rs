@@ -77,6 +77,9 @@ pub struct BlockGrid {
     /// The patch of each of a block's six faces (order of `BLOCK_FACES`),
     /// `None` for a face shared with another block.
     pub face_patches: Vec<[Option<usize>; 6]>,
+    /// For each boundary quad, the projection surface its block face is
+    /// listed under.
+    pub boundary_surfaces: Vec<Option<usize>>,
 }
 
 /// Outward faces of a hexahedron in local node slots.
@@ -194,6 +197,7 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
     let mut hexes = Vec::with_capacity(checked.cells);
     let mut blocks = Vec::with_capacity(t.blocks.len());
     let mut boundary = Vec::new();
+    let mut boundary_surfaces = Vec::new();
     let mut face_patches = Vec::with_capacity(t.blocks.len());
     let mut patch_of: HashMap<[usize; 4], usize> = HashMap::new();
     for (p, patch) in t.patches.iter().enumerate() {
@@ -353,6 +357,9 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
                 continue;
             };
             patches_here[f] = Some(patch);
+            let surface = surface_of
+                .get(&face_key(face_vertices(&block.vertices, f)))
+                .copied();
             for k in 0..n[2] {
                 for j in 0..n[1] {
                     for i in 0..n[0] {
@@ -363,6 +370,7 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
                         let cell = first_cell + i + n[0] * (j + n[1] * k);
                         let hex = hexes[cell];
                         boundary.push((HEX_FACES[f].map(|s| hex[s]), patch, cell));
+                        boundary_surfaces.push(surface);
                     }
                 }
             }
@@ -390,6 +398,7 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
         edges: g.reports,
         checked,
         face_patches,
+        boundary_surfaces,
     })
 }
 
