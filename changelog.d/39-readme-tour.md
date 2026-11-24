@@ -1,0 +1,1 @@
+- README slideshow: eight pictures of KoflCraft meshes (the Manifold duct, a swept block and pipe, a channel and an elbow) made by MurmelCraft's headless `export.image`, an animated WebP near the top of the README with alt text, the stills with captions in [docs/gallery.md](../docs/gallery.md), and the recipe in [tools/readme-tour](../tools/readme-tour/README.md).
