@@ -479,7 +479,7 @@ pub(super) struct Prepared {
 /// Rounds of squeezing the layers where the wall offset spoils the scaffold.
 const OFFSET_ROUNDS: usize = 40;
 /// A scaffold tetrahedron must keep this share of its volume.
-const OFFSET_KEEP: f64 = 0.1;
+const OFFSET_KEEP: f64 = 1e-3;
 const OFFSET_FACTOR: f64 = 0.7;
 const OFFSET_MIN: f64 = 0.02;
 
