@@ -11,7 +11,7 @@ use mesh_core::block::{Curve, Distribution, EdgeEnd};
 use mesh_core::geometry::Vec3;
 
 /// A curve between two points, evaluated at the fraction of its length.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Evaluator {
     Line {
         a: Vec3,
@@ -24,6 +24,113 @@ pub enum Evaluator {
         e2: Vec3,
         angle: f64,
     },
+    Spline(Spline),
+}
+
+/// A natural cubic spline in the chord-length parameter, with a table of
+/// arc length against parameter for evaluation by length.
+#[derive(Clone, Debug)]
+pub struct Spline {
+    knots: Vec<f64>,
+    points: Vec<Vec3>,
+    /// Second derivatives at the knots.
+    second: Vec<Vec3>,
+    /// (parameter, arc length) samples, increasing.
+    table: Vec<(f64, f64)>,
+}
+
+/// Samples of the arc-length table per spline segment.
+const SPLINE_SAMPLES: usize = 64;
+
+impl Spline {
+    fn new(points: Vec<Vec3>) -> Result<Self, String> {
+        let n = points.len();
+        let mut knots = vec![0.0; n];
+        for i in 1..n {
+            let h = (points[i] - points[i - 1]).length();
+            if h.is_nan() || h <= 0.0 {
+                return Err("a spline repeats a point".into());
+            }
+            knots[i] = knots[i - 1] + h;
+        }
+        // natural spline: tridiagonal system for the second derivatives
+        let mut second = vec![Vec3::ZERO; n];
+        if n > 2 {
+            let m = n - 2;
+            let (mut diag, mut rhs) = (vec![0.0; m], vec![Vec3::ZERO; m]);
+            let mut upper = vec![0.0; m];
+            for r in 0..m {
+                let i = r + 1;
+                let (h0, h1) = (knots[i] - knots[i - 1], knots[i + 1] - knots[i]);
+                diag[r] = 2.0 * (h0 + h1);
+                upper[r] = h1;
+                rhs[r] =
+                    ((points[i + 1] - points[i]) / h1 - (points[i] - points[i - 1]) / h0) * 6.0;
+            }
+            // Thomas algorithm (the matrix is symmetric, lower = upper shifted)
+            for r in 1..m {
+                let w = upper[r - 1] / diag[r - 1];
+                diag[r] -= w * upper[r - 1];
+                rhs[r] = rhs[r] - rhs[r - 1] * w;
+            }
+            let mut x = vec![Vec3::ZERO; m];
+            x[m - 1] = rhs[m - 1] / diag[m - 1];
+            for r in (0..m - 1).rev() {
+                x[r] = (rhs[r] - x[r + 1] * upper[r]) / diag[r];
+            }
+            second[1..n - 1].copy_from_slice(&x);
+        }
+        let mut s = Self {
+            knots,
+            points,
+            second,
+            table: Vec::new(),
+        };
+        let total = s.knots[n - 1];
+        let samples = SPLINE_SAMPLES * (n - 1);
+        let mut prev = s.eval(0.0);
+        let mut length = 0.0;
+        s.table.push((0.0, 0.0));
+        for q in 1..=samples {
+            let t = total * q as f64 / samples as f64;
+            let p = s.eval(t);
+            length += (p - prev).length();
+            prev = p;
+            s.table.push((t, length));
+        }
+        Ok(s)
+    }
+
+    fn eval(&self, t: f64) -> Vec3 {
+        let n = self.knots.len();
+        let i = match self.knots.partition_point(|&k| k <= t) {
+            0 => 0,
+            k if k >= n => n - 2,
+            k => k - 1,
+        };
+        let (t0, t1) = (self.knots[i], self.knots[i + 1]);
+        let h = t1 - t0;
+        let (a, b) = ((t1 - t) / h, (t - t0) / h);
+        self.points[i] * a
+            + self.points[i + 1] * b
+            + (self.second[i] * (a * a * a - a) + self.second[i + 1] * (b * b * b - b))
+                * (h * h / 6.0)
+    }
+
+    fn length(&self) -> f64 {
+        self.table[self.table.len() - 1].1
+    }
+
+    fn at(&self, s: f64) -> Vec3 {
+        let target = s * self.length();
+        let k = self
+            .table
+            .partition_point(|&(_, l)| l < target)
+            .clamp(1, self.table.len() - 1);
+        let ((t0, l0), (t1, l1)) = (self.table[k - 1], self.table[k]);
+        let t = t0 + (t1 - t0) * ((target - l0) / (l1 - l0)).clamp(0.0, 1.0);
+        self.eval(t)
+    }
 }
 
 fn unit(v: Vec3) -> Option<Vec3> {
@@ -32,13 +139,23 @@ fn unit(v: Vec3) -> Option<Vec3> {
 }
 
 impl Evaluator {
-    pub fn new(a: Vec3, b: Vec3, curve: Curve) -> Result<Self, String> {
+    pub fn new(a: Vec3, b: Vec3, curve: &Curve) -> Result<Self, String> {
         if (b - a).length() <= 0.0 {
             return Err("an edge joins two coincident vertices".into());
         }
         match curve {
             Curve::Line => Ok(Self::Line { a, b }),
-            Curve::Arc { through: p } => {
+            Curve::Spline { through } => {
+                if through.iter().any(|p| !p.is_finite()) {
+                    return Err("a spline point is not finite".into());
+                }
+                let mut points = Vec::with_capacity(through.len() + 2);
+                points.push(a);
+                points.extend_from_slice(through);
+                points.push(b);
+                Ok(Self::Spline(Spline::new(points)?))
+            }
+            &Curve::Arc { through: p } => {
                 let ab = b - a;
                 let ap = p - a;
                 let n = ab.cross(ap);
@@ -82,6 +199,7 @@ impl Evaluator {
         match *self {
             Self::Line { a, b } => (b - a).length(),
             Self::Arc { radius, angle, .. } => radius * angle,
+            Self::Spline(ref s) => s.length(),
         }
     }
 
@@ -100,7 +218,21 @@ impl Evaluator {
                 let t = s * angle;
                 centre + (e1 * t.cos() + e2 * t.sin()) * radius
             }
+            Self::Spline(ref sp) => sp.at(s),
         }
+    }
+
+    /// The unit tangent at the start (`s = 0`) pointing along the curve,
+    /// or at the end pointing back along it.
+    pub fn end_tangent(&self, at_start: bool) -> Vec3 {
+        let eps = 1e-6;
+        let (p, q) = if at_start {
+            (self.at(0.0), self.at(eps))
+        } else {
+            (self.at(1.0), self.at(1.0 - eps))
+        };
+        let d = q - p;
+        d / d.length()
     }
 }
 
@@ -293,7 +425,7 @@ mod tests {
         let e = Evaluator::new(
             Vec3::new(1.0, 0.0, 0.0),
             Vec3::new(0.0, 1.0, 0.0),
-            Curve::Arc {
+            &Curve::Arc {
                 through: Vec3::new(0.5f64.sqrt(), 0.5f64.sqrt(), 0.0),
             },
         )
@@ -305,11 +437,38 @@ mod tests {
             Evaluator::new(
                 Vec3::new(1.0, 0.0, 0.0),
                 Vec3::new(0.0, 1.0, 0.0),
-                Curve::Arc {
+                &Curve::Arc {
                     through: Vec3::new(2.0, -1.0, 0.0)
                 }
             )
             .is_err()
         );
+    }
+
+    /// Invariant: a spline through points of a circle follows the circle
+    /// closely and is evaluated by arc length.
+    #[test]
+    fn spline_through_a_half_circle() {
+        let through: Vec<Vec3> = (1..40)
+            .map(|i| {
+                let t = std::f64::consts::PI * i as f64 / 40.0;
+                Vec3::new(t.cos(), t.sin(), 0.0)
+            })
+            .collect();
+        let e = Evaluator::new(
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(-1.0, 0.0, 0.0),
+            &Curve::Spline { through },
+        )
+        .unwrap();
+        assert!((e.length() - std::f64::consts::PI).abs() < 1e-3);
+        for k in 1..10 {
+            let p = e.at(k as f64 / 10.0);
+            assert!((p.length() - 1.0).abs() < 1e-4, "{k}: {}", p.length());
+            let angle = p.y.atan2(p.x) / std::f64::consts::PI;
+            assert!((angle - k as f64 / 10.0).abs() < 1e-3);
+        }
+        let t = e.end_tangent(true);
+        assert!(t.y > 0.999);
     }
 }

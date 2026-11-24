@@ -236,3 +236,29 @@ Pipe R = 0.05, L = 0.5, 8/10/40 cells, wall spacing 5e-4 (release build, 8.8 s):
 | Volume, cells and faces | equal | equal |
 
 The minimum scaled Jacobian is set by the O-grid core corners on the inlet and outlet. Those are boundary nodes and do not move.
+
+### MB1c: elbow and airfoil C-grid templates (2026-11-24)
+
+Cards: "Elbow + airfoil C-grid templates" as the next step, "Project faces onto analytic surfaces" for the elbow wall, and "NACA 4-digit + coordinate file" for the airfoil shape.
+
+Built:
+- **Elbow** (`templates::elbow`): the pipe O-grid swept through stations; the bend is split into segments of at most 30°, so every longitudinal block edge is an exact circle about the bend axis; optional straight legs. Axial cells are shared out by centreline length.
+- **Face projection** (BS-07, the blockMesh `projectFaces` idea): the topology gains `surfaces` (cylinder, torus) with the boundary faces projected onto them. Face interior nodes are projected after the face TFI and before the block TFI, so the block interiors see the exact wall. The check refuses a surface on a shared face, a face projected twice, and a face whose corners are off its surface.
+- **Spline edges**: a natural cubic spline in the chord-length parameter through given points, evaluated by arc length from a table of 64 samples per segment.
+- **Handedness along tangents**: the right-handed check uses each curved edge's tangent at the corner instead of its chord, so a block may start at an airfoil's leading edge, where the chords of the surface edge and the normal edge are collinear.
+- **Airfoil C-grid** (`templates::airfoil_cgrid`), extruded along +z: a front and a rear block on each side (split at the data point nearest x/c = 0.3, because the upper and lower surface between the same two vertices would be one edge) and a wake block above and below the wake cut; a half circle about the trailing edge and straight lines to the wake end. The surface edges cluster at the leading and trailing edges (two-sided tanh), the C's arcs carry the same relative distribution, the normal edges grow geometrically from the wall and the wake cut. Sections: NACA 4-digit with the closed trailing edge (160 cosine-spaced points per side, analytic area), or a Selig or Lednicer file, moved to the leading edge at the origin, turned and scaled to unit chord, with a blunt trailing edge closed by a linear thickness correction.
+
+Results:
+
+| Case | Cells | Wall | Volume against the reference |
+|---|---|---|---|
+| Elbow R = 0.5, bend 1.5, 90°, legs 1, TFI without projection | 1,920 / 15,360 / 122,880 | 5e-3 off the torus at every level | stalls with the wall error |
+| Same with projection | same | 4e-16 | 2.7 %, 0.67 %, 0.17 % short (second order) |
+| NACA 0012 C-grid, farfield and wake 5 chords | 864 / 3,456 / 13,824 | 2.6e-7 chords off the section | 0.33 %, 0.095 %, 0.024 % short |
+| NACA 2412, same | same | 5.3e-7 | same (the C's chords dominate) |
+
+FoehnCraft read-back by hand: elbow R = 0.05 (15,360 cells) valid, TFI non-orthogonality max / mean 23.7° / 2.17°; NACA 2412 with farfield 10 chords and wall spacing 5e-4 chords (11,520 cells) valid, non-orthogonality max / mean 60.4° / 3.0°, skewness max 0.27.
+
+Two findings:
+- **Elliptic smoothing makes the elbow's worst cell worse.** Wall angle max 3.17° → 1.84°, but the FoehnCraft max non-orthogonality rises from 23.7° to 38.7°. The worst cells are not located yet; candidates are the joins between the straight legs and the bend, where the frozen TFI controls jump.
+- **An extruded section with one span cell is not smoothed at all**: every node lies on a symmetry plane, and the smoother keeps all boundary nodes fixed. The airfoil's worst TFI cells (60° near the leading edge) stay. Sliding nodes on planar symmetry patches (mirror ghost points) would fix it.
