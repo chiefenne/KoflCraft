@@ -26,6 +26,7 @@ how they were made is in [tools/readme-tour](tools/readme-tour/README.md).</sub>
 > ports exist as prototypes. The milestone plan and every decision are in
 > [docs/requirements.md](docs/requirements.md).
 
+[![CI](https://github.com/chiefenne/KoflCraft/actions/workflows/m1.yml/badge.svg)](https://github.com/chiefenne/KoflCraft/actions/workflows/m1.yml)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](Cargo.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
