@@ -185,7 +185,7 @@ pub fn build(
     if !pending.is_empty() {
         return Err("unpaired surface edges".into());
     }
-    let mut front = front::advance(surface, patches, &labels, &rims, thicknesses)?;
+    let mut front = front::advance(surface, patches, &labels, &rims, thicknesses, None)?;
     let tol = surface.bounds().extent().max_abs_component() * 1e-10;
     let mut kernels = Vec::new();
     for r in regions {

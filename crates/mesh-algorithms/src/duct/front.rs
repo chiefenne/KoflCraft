@@ -5,6 +5,8 @@ pub(super) struct Front {
     pub cells: Vec<Cell>,
     pub boundary: Vec<BoundaryFace>,
     pub inner: Vec<usize>,
+    /// The share of the layer height at each surface vertex (see `squeeze`).
+    pub scale: Vec<f64>,
 }
 
 /// Largest distance of a port vertex from the port plane, relative to the
@@ -19,6 +21,7 @@ pub(super) fn advance(
     labels: &[usize],
     rims: &[Vec<Edge>; 2],
     steps: &[f64],
+    limit: Option<&[f64]>,
 ) -> Result<Front, String> {
     let original = surface.vertices();
     let mut points = original.to_vec();
@@ -143,25 +146,30 @@ pub(super) fn advance(
         .enumerate()
         .flat_map(|(i, r)| r.iter().map(move |&edge| (edge, i + 1)))
         .collect();
-    let mut distance = 0.0;
     let triangles: Vec<_> = surface
         .facets()
         .iter()
         .map(|f| f.triangle.vertices)
         .collect();
+    let extent = surface.bounds().extent().max_abs_component();
+    let scale = squeeze(
+        surface,
+        patches,
+        &triangles,
+        &direction,
+        &on_wall,
+        &port_vertex,
+        steps,
+        limit,
+    )?;
+    let mut distance = 0.0;
     for (level, &step) in steps.iter().enumerate() {
         distance += step;
-        let displaced: Vec<_> = original
-            .iter()
-            .zip(&direction)
-            .map(|(&p, &d)| p + d * distance)
+        let displaced: Vec<_> = (0..original.len())
+            .map(|i| original[i] + direction[i] * (distance * scale[i]))
             .collect();
-        super::intersection::embedded(
-            &displaced,
-            &triangles,
-            surface.bounds().extent().max_abs_component(),
-        )
-        .map_err(|e| format!("layer {} front: {e}", level + 1))?;
+        super::intersection::embedded(&displaced, &triangles, extent)
+            .map_err(|e| format!("layer {} front: {e}", level + 1))?;
         let mut next = inner.clone();
         for (i, &wall) in on_wall.iter().enumerate() {
             if wall {
@@ -204,5 +212,143 @@ pub(super) fn advance(
         cells,
         boundary,
         inner,
+        scale,
     })
+}
+
+/// Share of the local gap that the layers of one wall may fill.
+const GAP_SHARE: f64 = 0.3;
+/// Largest change of the layer height per unit length along the wall.
+const HEIGHT_RATE: f64 = 0.3;
+/// Factor on the height of the vertices of colliding front facets.
+const COLLISION_FACTOR: f64 = 0.7;
+const COLLISION_ROUNDS: usize = 60;
+/// Layers are not squeezed below this share of their height.
+const MIN_SCALE: f64 = 0.02;
+
+/// The share of the layer height each wall vertex gets (1: all of it).
+///
+/// Layers are squeezed where they do not fit, with the same number of
+/// layers everywhere (the height scaling of Garimella & Shephard 2000 and
+/// Dyedov et al. 2009): first each wall vertex is limited to `GAP_SHARE`
+/// of the gap in front of it (the medial-ball thickness of
+/// `sizing::thickness`), then the vertices of front facets that still
+/// intersect are scaled by `COLLISION_FACTOR` until every front is
+/// embedded. The height changes by at most `HEIGHT_RATE` per unit length
+/// along the wall. Vertices on the port rims keep the full height, so the
+/// caps stay similar to themselves.
+fn squeeze(
+    surface: &ClosedSurface,
+    patches: &[usize],
+    triangles: &[[usize; 3]],
+    direction: &[Vec3],
+    on_wall: &[bool],
+    port_vertex: &[bool],
+    steps: &[f64],
+    start: Option<&[f64]>,
+) -> Result<Vec<f64>, String> {
+    use crate::sizing::surface::SurfaceGeometry;
+    use crate::sizing::thickness::OrientedSet;
+    let original = surface.vertices();
+    let mut scale = start.map_or_else(|| vec![1.0; original.len()], <[f64]>::to_vec);
+    let total: f64 = steps.iter().sum();
+    if steps.is_empty() {
+        return Ok(scale);
+    }
+    let free = |v: usize| on_wall[v] && !port_vertex[v];
+    let geometry = SurfaceGeometry::new(surface);
+    let set = OrientedSet::new(&geometry);
+    let wedge = 45f64.to_radians();
+    let cap = 1.01 * total / GAP_SHARE;
+    for (f, t) in triangles.iter().enumerate() {
+        if patches[f] != 3 {
+            continue;
+        }
+        let n = geometry.normals[f];
+        for &v in t {
+            if !free(v) {
+                continue;
+            }
+            if let Some(gap) = set.thickness(original[v], n, n * -1.0, wedge, cap) {
+                scale[v] = scale[v].min(GAP_SHARE * gap / total);
+            }
+        }
+    }
+    let mut neighbours = vec![Vec::new(); original.len()];
+    for (f, t) in triangles.iter().enumerate() {
+        if patches[f] != 3 {
+            continue;
+        }
+        for (a, b) in edges(*t) {
+            neighbours[a].push(b);
+            neighbours[b].push(a);
+        }
+    }
+    let limit = |scale: &mut Vec<f64>| {
+        let mut queue: std::collections::VecDeque<usize> =
+            (0..original.len()).filter(|&v| scale[v] < 1.0).collect();
+        while let Some(v) = queue.pop_front() {
+            for &u in &neighbours[v] {
+                if !free(u) {
+                    continue;
+                }
+                let bound = scale[v] + HEIGHT_RATE * (original[u] - original[v]).length() / total;
+                if scale[u] > bound {
+                    scale[u] = bound;
+                    queue.push_back(u);
+                }
+            }
+        }
+    };
+    limit(&mut scale);
+    let extent = surface.bounds().extent().max_abs_component();
+    let mut rounds = 0;
+    loop {
+        // every front must be embedded; fix the outermost first
+        let mut hit = Vec::new();
+        let mut distance = total;
+        for level in (0..steps.len()).rev() {
+            let displaced: Vec<_> = (0..original.len())
+                .map(|i| original[i] + direction[i] * (distance * scale[i]))
+                .collect();
+            hit = super::intersection::collisions(&displaced, triangles, extent, usize::MAX);
+            if !hit.is_empty() {
+                break;
+            }
+            distance -= steps[level];
+        }
+        if hit.is_empty() {
+            break;
+        }
+        rounds += 1;
+        let mut touched = vec![false; original.len()];
+        for (i, j) in hit {
+            for v in triangles[i].into_iter().chain(triangles[j]) {
+                touched[v] = true;
+            }
+        }
+        let mut changed = false;
+        for v in 0..original.len() {
+            if touched[v] && free(v) && scale[v] * COLLISION_FACTOR >= MIN_SCALE {
+                scale[v] *= COLLISION_FACTOR;
+                changed = true;
+            }
+        }
+        if !changed || rounds > COLLISION_ROUNDS {
+            // the caller's embedding check reports the place
+            break;
+        }
+        limit(&mut scale);
+    }
+    if crate::trace_enabled() {
+        let squeezed = (0..original.len())
+            .filter(|&v| free(v) && scale[v] < 1.0)
+            .count();
+        let least = scale.iter().copied().fold(1.0, f64::min);
+        eprintln!(
+            "kofl trace: layers squeezed at {squeezed} of {} wall vertices, least share {least:.3}, {rounds} collision rounds",
+            on_wall.iter().filter(|&&w| w).count()
+        );
+    }
+    Ok(scale)
 }

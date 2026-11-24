@@ -476,6 +476,13 @@ pub(super) struct Prepared {
 }
 
 /// Check the scaffold, build its boundary surface and the wall layers.
+/// Rounds of squeezing the layers where the wall offset spoils the scaffold.
+const OFFSET_ROUNDS: usize = 40;
+/// A scaffold tetrahedron must keep this share of its volume.
+const OFFSET_KEEP: f64 = 0.1;
+const OFFSET_FACTOR: f64 = 0.7;
+const OFFSET_MIN: f64 = 0.02;
+
 pub(super) fn prepare(scaffold: &Scaffold, steps: &[f64]) -> Result<Prepared, String> {
     if scaffold
         .boundary
@@ -542,7 +549,64 @@ pub(super) fn prepare(scaffold: &Scaffold, steps: &[f64]) -> Result<Prepared, St
     for ((a, b), tag) in port_edges {
         rims[tag - 1].push((b, a));
     }
-    let front = front::advance(&surface, &patches, &vec![0; ts.len()], &rims, steps)?;
+    // Squeeze the layers further where the wall offset would turn a
+    // scaffold tetrahedron over or flatten it (thin ribs, tight corners).
+    let labels = vec![0; ts.len()];
+    let mut front = front::advance(&surface, &patches, &labels, &rims, steps, None)?;
+    if !steps.is_empty() {
+        let mut neighbours = vec![Vec::new(); scaffold.points.len()];
+        for t in &scaffold.tetrahedra {
+            for i in 0..4 {
+                for j in 0..4 {
+                    if i != j {
+                        neighbours[t[i]].push(t[j]);
+                    }
+                }
+            }
+        }
+        for round in 0..OFFSET_ROUNDS {
+            let displacement = offset_interior(scaffold, &surface_ids, &front)?;
+            let mut scale = front.scale.clone();
+            let mut bad = 0usize;
+            for t in &scaffold.tetrahedra {
+                let [a, b, c, d] = t.map(|n| scaffold.points[n]);
+                let [e, f, g, h] = t.map(|n| scaffold.points[n] + displacement[n]);
+                let before = (b - a).cross(c - a).dot(d - a);
+                let after = (f - e).cross(g - e).dot(h - e);
+                if after.is_finite() && after > OFFSET_KEEP * before {
+                    continue;
+                }
+                bad += 1;
+                // the wall vertices of the tetrahedron, or the nearest ones
+                let mut ring: Vec<usize> = t.to_vec();
+                for _ in 0..4 {
+                    if ring.iter().any(|n| surface_ids.contains_key(n)) {
+                        break;
+                    }
+                    ring = ring
+                        .iter()
+                        .flat_map(|&n| neighbours[n].iter().copied())
+                        .collect();
+                    ring.sort_unstable();
+                    ring.dedup();
+                }
+                for n in ring {
+                    if let Some(&v) = surface_ids.get(&n) {
+                        scale[v] = (front.scale[v] * OFFSET_FACTOR).max(OFFSET_MIN);
+                    }
+                }
+            }
+            if crate::trace_enabled() {
+                eprintln!(
+                    "kofl trace: wall offset round {round}: {bad} scaffold tetrahedra turned over or flattened"
+                );
+            }
+            if bad == 0 || scale == front.scale {
+                break;
+            }
+            front = front::advance(&surface, &patches, &labels, &rims, steps, Some(&scale))?;
+        }
+    }
     Ok(Prepared {
         surface,
         patches,

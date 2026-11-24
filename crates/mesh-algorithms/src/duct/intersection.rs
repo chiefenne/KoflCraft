@@ -128,6 +128,26 @@ pub(super) fn embedded(
     triangles: &[[usize; 3]],
     scale: f64,
 ) -> Result<(), String> {
+    match collisions(points, triangles, scale, 1).first() {
+        None => Ok(()),
+        Some(&(i, j)) => {
+            let c = |t: [usize; 3]| (points[t[0]] + points[t[1]] + points[t[2]]) / 3.0;
+            let (a, b) = (c(triangles[i]), c(triangles[j]));
+            Err(format!(
+                "surface collision between facets {i} and {j} near ({:.4}, {:.4}, {:.4}) and ({:.4}, {:.4}, {:.4})",
+                a.x, a.y, a.z, b.x, b.y, b.z
+            ))
+        }
+    }
+}
+
+/// The first `limit` pairs of triangles that intersect.
+pub(super) fn collisions(
+    points: &[Vec3],
+    triangles: &[[usize; 3]],
+    scale: f64,
+    limit: usize,
+) -> Vec<(usize, usize)> {
     let tol = 64.0 * f64::EPSILON * scale;
     let boxes: Vec<_> = triangles
         .iter()
@@ -146,6 +166,7 @@ pub(super) fn embedded(
     let mut nodes = Vec::new();
     tree(&mut ids, 0, &boxes, &mut nodes);
     let mut stack = Vec::new();
+    let mut found = Vec::new();
     for (i, &tri) in triangles.iter().enumerate() {
         stack.push(0);
         while let Some(n) = stack.pop() {
@@ -162,17 +183,15 @@ pub(super) fn embedded(
                     && boxes[i].overlaps(boxes[j], tol)
                     && intersects(tri, triangles[j], points, tol)
                 {
-                    let c = |t: [usize; 3]| (points[t[0]] + points[t[1]] + points[t[2]]) / 3.0;
-                    let (a, b) = (c(tri), c(triangles[j]));
-                    return Err(format!(
-                        "surface collision between facets {i} and {j} near ({:.4}, {:.4}, {:.4}) and ({:.4}, {:.4}, {:.4})",
-                        a.x, a.y, a.z, b.x, b.y, b.z
-                    ));
+                    found.push((i, j));
+                    if found.len() >= limit {
+                        return found;
+                    }
                 }
             }
         }
     }
-    Ok(())
+    found
 }
 
 #[cfg(test)]
