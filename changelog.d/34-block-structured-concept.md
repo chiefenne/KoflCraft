@@ -1,0 +1,1 @@
+- Concept and requirements for a block-structured mesher variant: `research/block-structured-concept.md`, requirements v1.0 section 4c (BS-01 to BS-19), OBJ-21 and milestone MB1.
