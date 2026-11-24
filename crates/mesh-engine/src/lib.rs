@@ -1,6 +1,7 @@
 mod artifact;
 mod assembly;
 pub mod block;
+pub mod block_edit;
 pub mod channel;
 mod export;
 pub mod handoff;

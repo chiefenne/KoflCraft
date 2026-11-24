@@ -293,3 +293,25 @@ FoehnCraft max non-orthogonality (release build; pipe R = 0.05 with 8/10/40 cell
 No inverted faces in any case. The elbow's minimum scaled Jacobian is 0.704 against 0.706 for TFI.
 
 What the freeze costs: interior skew that TFI puts away from the walls stays. On the pipe the MB1b smoother reached 19.3° because it was free to move the core; the frozen one keeps 23.3°. On the airfoil the worst cell sits in the lower front block below the leading edge, in the frozen TFI interior. The airfoil needs about 2,500 sweeps because the wall controls near the trailing edge and the wake cut settle slowly. Next candidates, each for a card: a 2D cap-smoothing pass for extruded sections, a line solver with relaxed freeze away from walls, and an O-grid around the airfoil.
+
+Relaxed freeze, measured after MB1d and not kept: the frozen residual weighted by exp(−a (d − 1)), d the hop distance from the nearest wall node. FoehnCraft max non-orthogonality for a = 0 / 0.1 / 0.25 / 1: pipe 23.3° / 20.7° / 19.3° / 19.4°, elbow 23.45° / 26.0° / 31.0° / 34.8°; the NACA 2412 C-grid did not converge for any a > 0 (last move 5 % of the shortest edge after 10,000 sweeps). The elbow core drifts toward the bend centre again as soon as the interior is free.
+
+### MB1e: edit tools (2026-11-24)
+
+Cards: "block.* edit tools (BS-04)" as the next step; scope "Both in one step" (editing existing blocks was built first while the card was open, then the topology tools).
+
+Built (`mesh-engine::block_edit`, tools in `mesh-tools::block`):
+- `block.list`: vertices with points, blocks with vertices and counts, edges with curve and law, patches with role and face count, surfaces, the reference and the check with its chains.
+- `block.set_count`: the count of a whole chain of opposite edges, found from the named edge by growing over shared block edges, so a count edit can never break BS-05.
+- `block.set_distribution`, `block.set_edge_curve`: one edge, named by its two vertices in either order. A law or spline given from the other end is stored reversed, so it means the same spacing at the same vertex.
+- `block.move_vertex` (`to` or `by`) and `block.set_patch` (rename, role).
+- `block.add_vertex`, `block.remove_vertex` (only a vertex nothing uses; higher indices move down).
+- `block.add_block`: faces that meet an existing block's face become shared and leave their patches (a patch left empty is removed); the other faces go to a named patch.
+- `block.remove_block`: faces it shared open into a named patch; its own boundary faces leave their patches and surfaces; unused edge entries are dropped.
+- `block.split_block`: split after cell `at` along an axis. The split runs through the whole chain, oriented edge by edge, so faces stay point-matched. New vertices sit on the TFI grid nodes. Each half of a split edge keeps a line as a line, gets an arc through one of its nodes, or keeps the spline's own points on its side; its law is fitted to the node spacings measured along the new curve (tanh with Vinokur's slopes corrected until the end cells match, geometric for two cells or a geometric original). The edges of the cut face are fitted to the TFI line the same way.
+
+Split results: pipe O-grid along its axis and channel across its clustered direction keep every grid node to 3e-14 (a piece of a Vinokur distribution is again one). NACA 2412 C-grid, front block along the wall: wall nodes within 1.5e-8 chords; with chord-based spacings it was 1.2e-3, so the arc-length fit matters. Interior nodes follow the TFI of the new blocks, which is not the TFI of the whole: up to 2.2e-3 chords on the airfoil; on the elbow the projected wall face interiors slide along the torus by 4.8e-5 at radius 0.5.
+
+Every edit checks the input, applies the change and checks the result; a refused edit writes nothing. Edits that change the shape (curve, vertex) remove the template's `reference`, since its analytic volume no longer applies. A chain of template, list, edits, a refused move and a grid replays from the journal with every result digest the same.
+
+Next, each for a card: projection surface tools, merging blocks, collapsed (prism) blocks, and the FoehnCraft round trip for block meshes in the acceptance runner.
