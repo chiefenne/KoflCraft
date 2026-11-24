@@ -59,6 +59,14 @@ The standard jacket does not yet produce a mesh. What stops it now is downstream
 | Larger weld (1e-8 × scale) | No effect on the failing cells, and it would join distinct points that the planarity check (1e-10 × diameter) tells apart |
 | Merge all wall polygons of a cell on one triangle | Area excess and straight vertices on Manifold; only needles are merged now |
 
+### Follow-up: wall polygons that are not convex
+
+The wall columns and the patch area check fanned every wall polygon from its first corner, which is only valid for a convex polygon. The columns now triangulate each polygon by ear clipping (`ears` in [`duct/columns.rs`](../crates/mesh-algorithms/src/duct/columns.rs)): straight corners (below 1e-9 of the longest edge squared) are taken out first and put back by splitting the triangle on their edge, and among the free ears the roundest is cut first. The area check uses the vector area of a boundary face. With that all layer cells of the standard jacket pass (23 sub-wedges were inverted), and the elbow and Manifold are unchanged in their counts.
+
+The jacket then stops in the last check, on core cells. A census with the check made non-fatal found 61 core faces beyond the planarity limit of 1e-10 × diameter (32 beyond 1e-9, 4 beyond 1e-8, largest 2.3e-8), only 8 of them with an edge below 1e-6, 2 faces seen from behind by a rounding amount and 1 cell with an open shell. A weld of 1e-12 × scale instead of 1e-10 makes it worse (needle wall polygons, open wall rings). The cause of the off-plane points is not yet established.
+
+The maintainer then chose a planarity limit of 1e-7 of the face size (`PLANAR_SHARE` in [`duct/verify.rs`](../crates/mesh-algorithms/src/duct/verify.rs)); a face within it is fanned from its vertex mean, as FoehnCraft fans every face. That covers all 61 faces. What remains on the jacket, measured with the checks made non-fatal: 5 faces with one fan triangle seen from behind by 1e-11 to 1e-9 (each at an edge of 3e-8 to 2.6e-5 whose end points are a few 1e-9 off the plane), 3 pairs of cells with a missing triangle or quadrilateral between them (an open shell), and at least one cell whose volume differs from its pieces.
+
 ## What the literature offers beyond this step
 
 Read on 2026-11-24 from the papers (the arXiv texts were cut at about 40,000 characters, so later sections were read as summaries; none of the texts read names a code licence).
@@ -72,9 +80,9 @@ Read on 2026-11-24 from the papers (the arXiv texts were cut at about 40,000 cha
 
 - The side decisions are consistent by rule, not exact. A real crossing closer than the clip tolerance to a scaffold node is called a tie.
 - A position falls back to the edge crossing for nearly cocircular sites, so the weld still carries part of the consistency.
-- The jackets do not finish (see results). The wall columns need polygons that are convex, or a fan that does not assume it.
+- The jackets do not finish (see the follow-up above): a few fan triangles seen from behind and three missing faces between cells remain.
 - Manifold's counts changed slightly, as they do with any change of the site layout.
 
 ## Regression
 
-`neighbouring_tetrahedra_share_names_and_coordinates`, `two_sites_name_their_common_face_alike` and `a_scaffold_vertex_on_the_bisector_belongs_to_both_pieces` in `symbolic.rs`; `the_weld_is_the_same_for_every_order` and `a_pinched_ring_is_cut_not_dropped` in `voronoi_core.rs`. The jacket is confidential, so no test in the repository reproduces the original failure on a whole part; the unit tests hold the properties it violated.
+`neighbouring_tetrahedra_share_names_and_coordinates`, `two_sites_name_their_common_face_alike` and `a_scaffold_vertex_on_the_bisector_belongs_to_both_pieces` in `symbolic.rs`; `the_weld_is_the_same_for_every_order` and `a_pinched_ring_is_cut_not_dropped` in `voronoi_core.rs`; `ears_of_notched_and_straight_rings_are_positive` in `columns.rs`; `notched_boundary_face_has_its_true_area` in `verify.rs`. The jacket is confidential, so no test in the repository reproduces the original failure on a whole part; the unit tests hold the properties it violated.

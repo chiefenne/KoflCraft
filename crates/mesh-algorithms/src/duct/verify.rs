@@ -59,6 +59,13 @@ fn same_ring(a: &[usize], b: &[usize], reverse: bool) -> bool {
             (0..n).all(|i| a[(start + if reverse { n - i } else { i }) % n] == b[i])
         })
 }
+/// A face counts as planar when its corners are within this share of its
+/// size of the fitted plane. Such a face is fanned from its vertex mean, as
+/// FoehnCraft does with every face, so the checked volume is the solver's.
+/// The core welds points up to 1e-10 of the model size apart, which moves a
+/// corner of a small face by more than 1e-10 of that face's size.
+const PLANAR_SHARE: f64 = 1e-7;
+
 /// Two-point Gauss rule on [0, 1].
 const GAUSS: [f64; 2] = [0.211_324_865_405_187_1, 0.788_675_134_594_812_9];
 
@@ -90,7 +97,7 @@ fn face_integral(
     let planar = face.len() == 3
         || face.iter().all(|&v| {
             (points[v] - centre).dot(unit).abs()
-                <= 1e-10 * diameter + 256.0 * f64::EPSILON * coordinate_scale
+                <= PLANAR_SHARE * diameter + 256.0 * f64::EPSILON * coordinate_scale
         });
     if !planar {
         if face.len() != 4 {
@@ -198,6 +205,18 @@ pub(super) fn check(
     )
 }
 
+/// Area of a boundary face from its vector area. For a planar face this is
+/// the area also when the face is not convex, where a sum of unsigned fan
+/// triangles counts a notch twice.
+fn boundary_area(p: &[Vec3], nodes: &[usize]) -> f64 {
+    let a = p[nodes[0]];
+    nodes[1..]
+        .windows(2)
+        .fold(Vec3::ZERO, |s, w| s + (p[w[0]] - a).cross(p[w[1]] - a))
+        .length()
+        * 0.5
+}
+
 pub(super) fn check_with_interface_count(
     surface: &ClosedSurface,
     patches: &[usize],
@@ -214,11 +233,7 @@ pub(super) fn check_with_interface_count(
         if exterior.insert(key(&face.nodes), face).is_some() {
             return Err("duplicate outer boundary face".into());
         }
-        let a = p[face.nodes[0]];
-        let area = face.nodes[1..]
-            .windows(2)
-            .map(|s| (p[s[0]] - a).cross(p[s[1]] - a).length() * 0.5)
-            .sum::<f64>();
+        let area = boundary_area(p, &face.nodes);
         areas[face.patch - 1] += area;
         if face.patch <= 2 {
             port_layer_areas[face.patch - 1][cells[face.owner].layer] += area;
@@ -461,5 +476,18 @@ mod tests {
             face_integral(&points, &ring, origin).err(),
             Some("nonplanar polyhedron face")
         );
+    }
+
+    /// Invariant: the area of a notched planar boundary face is its true
+    /// area. Summing unsigned fan triangles from the first corner (the code
+    /// before) counts the notch twice, and the patch area check then fails
+    /// a valid mesh; the fixtures only have convex boundary faces.
+    #[test]
+    fn notched_boundary_face_has_its_true_area() {
+        let v = |x: f64, y: f64| Vec3::new(x, y, 0.0);
+        let points = [v(0., 0.), v(4., 0.), v(4., 4.), v(2., 1.), v(0., 4.)];
+        // square of 16 without the triangle (4,4) (2,1) (0,4) of area 6
+        let area = boundary_area(&points, &[0, 1, 2, 3, 4]);
+        assert!((area - 10.0).abs() < 1e-12);
     }
 }

@@ -167,6 +167,8 @@ tests = [
   "crates/mesh-cli/tests/workflow.rs::split_cap_wall_join_stays_available_and_valid_on_the_elbow",
   "crates/mesh-cli/tests/workflow.rs::columns_wall_join_is_valid_on_the_manifold",
   "crates/mesh-algorithms/src/duct/columns.rs::contact_chains",
+  "crates/mesh-algorithms/src/duct/columns.rs::ears_of_notched_and_straight_rings_are_positive",
+  "crates/mesh-algorithms/src/duct/verify.rs::notched_boundary_face_has_its_true_area",
   "crates/mesh-algorithms/src/duct/wall_seeds.rs::seed_is_on_the_three_balls_on_the_fluid_side",
   "crates/mesh-algorithms/src/duct/wall_seeds.rs::seed_cells_cut_the_wall_in_their_triangles",
   "crates/mesh-algorithms/src/duct/wall_seeds.rs::pair_that_is_not_regular_is_flipped",
