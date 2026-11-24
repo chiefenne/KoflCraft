@@ -33,6 +33,8 @@ pub struct SolverRules {
     pub cells: usize,
     /// Cells failing at least one rule.
     pub failing_cells: usize,
+    /// Failing cells of the wall layers (layer > 0); the rest are core cells.
+    pub failing_layer_cells: usize,
     /// Shell not closed: an edge not used by exactly two faces of the cell,
     /// or the face area vectors not summing to zero (1e-6 of their sum).
     pub open_cells: usize,
@@ -158,7 +160,12 @@ pub fn solver_rules(p: &[Vec3], cells: &[Cell]) -> SolverRules {
     }
     out.maximum_non_orthogonality = worst;
     out.faces_turned_away = turned.iter().filter(|&&t| t).count();
-    out.failing_cells = bad.iter().zip(&turned).filter(|(b, t)| **b || **t).count();
+    for ((b, t), cell) in bad.iter().zip(&turned).zip(cells) {
+        if *b || *t {
+            out.failing_cells += 1;
+            out.failing_layer_cells += usize::from(cell.layer > 0);
+        }
+    }
     out
 }
 
@@ -375,9 +382,10 @@ pub(super) fn check_with_interface_count(
     let solver_rules = solver_rules(p, cells);
     if crate::trace_enabled() {
         eprintln!(
-            "kofl trace: solver rules: {} of {} cells fail (open {}, volume {}, pyramids {}, turned away {}), max non-orthogonality {:.2}°",
+            "kofl trace: solver rules: {} of {} cells fail ({} in layers; open {}, volume {}, pyramids {}, turned away {}), max non-orthogonality {:.2}°",
             solver_rules.failing_cells,
             solver_rules.cells,
+            solver_rules.failing_layer_cells,
             solver_rules.open_cells,
             solver_rules.nonpositive_volume,
             solver_rules.negative_pyramids,
