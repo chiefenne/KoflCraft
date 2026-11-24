@@ -73,6 +73,9 @@ pub(super) struct SeedStats {
 pub(super) struct WallSeeds {
     /// Seed and size of its triangle.
     pub seeds: Vec<(Vec3, f64)>,
+    /// The wall vertices whose balls each seed lies on (its triangle after
+    /// the flips), parallel to `seeds`.
+    pub corners: Vec<[usize; 3]>,
     /// Ball radius by wall vertex; zero where no kept seed uses the vertex.
     pub radius: Vec<f64>,
     pub stats: SeedStats,
@@ -351,10 +354,12 @@ pub(super) fn wall_seeds(points: &[Vec3], triangles: &[[usize; 3]]) -> WallSeeds
         }
     }
     let mut out = Vec::new();
+    let mut corners = Vec::new();
     let mut active = vec![false; count];
     for (i, s) in seeds.iter().enumerate() {
         if let Some(s) = *s {
             out.push((s, balls.size(mesh.tris[i])));
+            corners.push(mesh.tris[i]);
             for v in mesh.tris[i] {
                 active[v] = true;
             }
@@ -364,6 +369,7 @@ pub(super) fn wall_seeds(points: &[Vec3], triangles: &[[usize; 3]]) -> WallSeeds
     stats.dropped = mesh.tris.len() - out.len();
     WallSeeds {
         seeds: out,
+        corners,
         radius: (0..count)
             .map(|v| {
                 if active[v] {

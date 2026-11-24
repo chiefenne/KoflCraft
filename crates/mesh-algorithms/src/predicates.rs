@@ -321,11 +321,10 @@ pub fn bisector_side(
     o: Vec3,
     tied: &dyn Fn(usize, Option<usize>) -> bool,
 ) -> Option<Ordering> {
-    let n = corners.len();
-    if n == 0 || n > 4 || on.len() + 1 != n {
+    if on.len() + 1 != corners.len() {
         return None;
     }
-    let offset = |j: usize, site: Option<usize>| -> Entry {
+    offset_side(corners.len(), &|j, site| {
         if tied(j, site) {
             Entry::Zero
         } else {
@@ -336,13 +335,26 @@ pub fn bisector_side(
                 k,
             }
         }
-    };
+    })
+}
+
+/// As [`bisector_side`], from the offsets themselves: `offset(j, None)` is
+/// the offset of the tested bisector at corner j of `n` corners, and
+/// `offset(j, Some(i))` that of the i-th of the n − 1 bisectors the point is
+/// on. The caller may take each offset from its own table of squared
+/// distances, as long as every offset is the difference of two entries of
+/// one table; the answer is then the same whichever site of the point the
+/// offsets are taken from.
+pub fn offset_side(n: usize, offset: &dyn Fn(usize, Option<usize>) -> Entry) -> Option<Ordering> {
+    if n == 0 || n > 4 {
+        return None;
+    }
     let mut top = [[Entry::Zero; 4]; 4];
     let mut bottom = [[Entry::Zero; 4]; 4];
     for j in 0..n {
         top[0][j] = offset(j, None);
         bottom[0][j] = Entry::One;
-        for i in 0..on.len() {
+        for i in 0..n - 1 {
             top[i + 1][j] = offset(j, Some(i));
             bottom[i + 1][j] = top[i + 1][j];
         }
