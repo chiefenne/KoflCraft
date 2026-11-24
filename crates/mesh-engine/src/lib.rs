@@ -1,5 +1,6 @@
 mod artifact;
 mod assembly;
+pub mod block;
 pub mod channel;
 mod export;
 pub mod handoff;
@@ -44,6 +45,7 @@ pub enum ErrorCode {
     InvalidSizeField,
     InvalidArguments,
     InvalidPatchMap,
+    InvalidBlockTopology,
     UnknownPatch,
     InvalidPatchName,
     EmptySelection,

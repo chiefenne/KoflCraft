@@ -107,6 +107,10 @@ pub(crate) fn cells(
                 scaffold.as_deref(),
             )?
         }
+        "block.grid" => {
+            let i: crate::block::GridInput = decode(input)?;
+            mesh_engine::block::cell_count(&crate::block::topology(ctx, &i.topology)?)?
+        }
         "journal.replay" => {
             let (n, b) = replay_cells(input, ctx)?;
             basis = b;

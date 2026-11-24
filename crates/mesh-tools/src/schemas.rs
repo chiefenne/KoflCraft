@@ -476,3 +476,23 @@ pub(crate) fn object_schema(properties: Value) -> Value {
         "properties": properties
     })
 }
+
+/// The input of `block.template` (BS-03).
+pub(crate) fn block_template() -> Value {
+    let positive = json!({"type": "number", "exclusiveMinimum": 0});
+    let count = json!({"type": "integer", "minimum": 1});
+    let channel = input(
+        json!({"template": {"const": "channel"}, "length": positive, "width": positive,
+               "height": positive, "cells": {"type": "array", "items": count, "minItems": 3, "maxItems": 3},
+               "wall_spacing": positive}),
+        &["wall_spacing"],
+    );
+    let pipe = input(
+        json!({"template": {"const": "pipe_ogrid"}, "radius": positive, "length": positive,
+               "core_fraction": {"type": "number", "exclusiveMinimum": 0.1, "exclusiveMaximum": 0.9},
+               "core_cells": count, "radial_cells": count, "axial_cells": count,
+               "wall_spacing": positive}),
+        &["core_fraction", "wall_spacing"],
+    );
+    json!({"oneOf": [channel, pipe]})
+}

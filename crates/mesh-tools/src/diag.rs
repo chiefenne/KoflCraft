@@ -222,6 +222,15 @@ pub const CODES: &[Code] = &[
         ),
     ),
     code(
+        "BLOCK001",
+        "invalid_block_topology",
+        Error,
+        "A block topology is not consistent (BS-05): a bad index, a left-handed or collapsed block, an edge curve or law that cannot be built, a chain of opposite edges with two cell counts, a face shared by more than two blocks, or a boundary face in no patch or two.",
+        Some(
+            "Read the issues in the message; each names the blocks, edge or face. Start again from `block.template` for a standard case.",
+        ),
+    ),
+    code(
         "IO001",
         "unsupported_format",
         Error,
