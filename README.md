@@ -8,6 +8,15 @@
   An open-source polyhedral mesh generator for CFD and multi-physics simulations, written in Rust. The companion mesher of <a href="https://github.com/chiefenne/Foehncraft">Foehncraft</a>.
 </p>
 
+<p align="center">
+  <a href="docs/gallery.md"><img src="assets/readme/tour.webp" width="880" alt="A slideshow of KoflCraft's Manifold mesh, three slides that change every four seconds, pictured with MurmelCraft: the Manifold duct coloured by patch; the Manifold cut in half and coloured by cell type, polyhedra in the core and prisms along the walls; the non-orthogonality of the cells on a flat cut, in the light theme"></a>
+</p>
+
+<sub>KoflCraft's Manifold mesh pictured with <a href="https://github.com/chiefenne/MurmelCraft">MurmelCraft</a>:
+229,615 cells, Voronoi polyhedra in the core with prism layers at the
+walls. The slides are also [still images with captions](docs/gallery.md);
+how they were made is in [tools/readme-tour](tools/readme-tour/README.md).</sub>
+
 ---
 
 > **Status: milestone M1 done (clipped Voronoi polyhedra in a box, validated,
