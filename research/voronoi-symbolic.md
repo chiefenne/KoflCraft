@@ -90,6 +90,30 @@ The elbow has 1,004 cells as before. Manifold is valid with the same counts as b
 
 **Cost.** The long Manifold test (elbow and Manifold builds with their checks) takes 233 s against 158 s before; the jacket build 5.5 minutes against 2.5. Part of it is the exact arithmetic, part the more careful stop rule, which clips against more sites. The two have not been separated.
 
+## Where the work stopped (2026-11-24)
+
+The maintainer closed the hardening for now. State on the standard jacket at size factor 2 (about 335,000 cells, part about 200 mm long, cells 0.2 to 1 mm), counted with every final check made non-fatal:
+
+| Finding | Count | Size |
+|---|---|---|
+| Wall columns with inverted layer sub-wedges | 3 (7 sub-wedges) | at wall polygon edges of 6.3e-6 and 2.9e-8 |
+| Core faces with a fan triangle seen from behind | 2 | signed area −8e-12 and −8e-10, at edges of 3.9e-8 and 2.6e-5 |
+| Volume mismatch | 1 | −5.4e-6 relative |
+
+The mesh is not exported. Elbow and Manifold are valid.
+
+**Cause, traced for the wall columns.** The names of the vertices and the side tests are exact, the coordinates are not. `Frame::position` evaluates the name in floating point and, where that lands more than 1e4 tolerances from the crossing of the clipped edge, takes the crossing, which itself comes from rounded points. At a vertex that its bisectors fix badly the coordinates are off by up to about 1e-5. Two true vertices of a cell can be closer than that (four or five sites almost on one sphere), and the polygon then folds: the two wall polygons that share the 6.3e-6 edge each hold one vertex on the wrong side of it, and ear clipping has no positive triangle left for that corner.
+
+**Experiment, not merged.** Coordinates from exact weights: the barycentric weights of a named vertex are λ_j = C_j / Σ C with C_j the cofactors of the row of ones in the determinant of the side test; with expansions for the C_j, Σ C_j p_j and Σ C_j are exact and one division rounds. A floating point filter keeps the old formula where the weights are good to 1e-11. Result on the jacket: no inverted sub-wedge is left (3 columns before), but 10 core faces have a fan triangle seen from behind (2 before; edges 2e-8 to 6e-6, signed area −8e-12 to −4e-9) and one cell is off in volume by −1.2e-8. Why the core faces got worse is not known; candidates are the global weld (1e-10 of the model size, about 2e-8 here, the length of most of these edges) and the fan from the vertex mean on faces with such an edge. Manifold and elbow were not run with it. The patch is kept outside the repository.
+
+**Open options.**
+
+1. Exact coordinates as above, after finding the second cause in the core faces.
+2. Merge vertices of a cell closer than a limit. Removes the tiny edges themselves, but it is a tolerance decision that changes which cells touch, so it has to be taken once per vertex, not per cell.
+3. Open, not checked here: a jacket set up afresh (`detect_ports` and `setup_duct`, tolerance 0.026 instead of the 0.0442 of the runs above) was reported not to leave the wall remesh within 15 minutes.
+
+Also still open: the thin jacket runs out of memory in the core stage under 3.5 GB, and the jacket build takes 5.5 minutes with exact sides (2.5 before).
+
 ## What the literature offers beyond this step
 
 Read on 2026-11-24 from the papers (the arXiv texts were cut at about 40,000 characters, so later sections were read as summaries; none of the texts read names a code licence).
