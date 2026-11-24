@@ -34,8 +34,8 @@ const USAGE: &str = "Usage: kofl [--journal FILE] [--check] COMMAND
   kofl export ARTIFACT.json vtu|gmsh|gmsh-2.2|foehncraft|foehncraft-vtkhdf OUTPUT
   kofl export ARTIFACT.json openfoam NEW_OUTPUT_DIR
 
-`--handoff vtkhdf` writes the FoehnCraft file of a bundle as the
-blocked binary foehncraft.vtkhdf instead of foehncraft.vtu.
+A bundle hands its mesh to FoehnCraft as the blocked binary
+foehncraft.vtkhdf; `--handoff vtu` writes foehncraft.vtu instead.
 `--check` prints the estimate of a build command (`mesh.estimate`:
 cells, memory, output, files) instead of running it.
 Boundary patches are defined with the `patch.*` tools through
