@@ -263,6 +263,82 @@ mod elliptic {
             );
         }
     }
+
+    fn patch(t: &mesh_core::block::BlockTopology, name: &str) -> usize {
+        t.patches.iter().position(|p| p.name == name).unwrap()
+    }
+
+    /// Invariant: on the elbow, the interior block vertices and the bend
+    /// joins move (frozen TFI residual, so only the wall controls act),
+    /// the wall nodes stay on the pipe, the wall angle drops and the worst
+    /// scaled Jacobian stays within 1 % of the TFI grid's (measured: 0.704
+    /// against 0.706; FoehnCraft max non-orthogonality 23.45° against
+    /// 23.7° for TFI and 34.5° for the MB1b smoother).
+    #[test]
+    fn elbow_smoothing_is_not_worse_than_tfi() {
+        let (r, big) = (0.5, 1.5);
+        let t = elbow(r, big, 90.0, 1.0, 1.0, 0.5, [6, 6, 36], Some(0.01)).unwrap();
+        let mut g = build(&t.topology).unwrap();
+        let worst = |g: &BlockGrid| {
+            g.quality()
+                .iter()
+                .map(|q| q.min_scaled_jacobian)
+                .fold(f64::INFINITY, f64::min)
+        };
+        let before = worst(&g);
+        let res = smooth(&mut g, &walls(&t.topology)).unwrap();
+        assert!(res.converged, "{res:?}");
+        assert!(res.vertex_nodes > 0 && res.face_nodes > 0, "{res:?}");
+        assert!(
+            res.wall_angle_max_after < 0.5 * res.wall_angle_max_before,
+            "{res:?}"
+        );
+        assert!(elbow_wall_error(&g, r, big, 1.0) < 1e-12);
+        assert_conforming(&g);
+        assert!(worst(&g) >= 0.99 * before, "{} < {before}", worst(&g));
+    }
+
+    /// Invariant: nodes of a planar sliding patch move inside their plane
+    /// and stay on it; a patch that is not planar (the pipe wall) keeps its
+    /// nodes fixed even when it is named as sliding.
+    #[test]
+    fn sliding_nodes_stay_on_their_plane() {
+        let t = pipe_ogrid(0.05, 0.2, 0.55, [8, 10, 6], Some(0.0005)).unwrap();
+        let mut g = build(&t.topology).unwrap();
+        let tfi = g.points.clone();
+        let (inlet, outlet, wall) = (
+            patch(&t.topology, "inlet"),
+            patch(&t.topology, "outlet"),
+            patch(&t.topology, "walls"),
+        );
+        let options = SmoothOptions {
+            sliding_patches: vec![inlet, outlet, wall],
+            ..walls(&t.topology)
+        };
+        let res = smooth(&mut g, &options).unwrap();
+        assert!(res.converged && res.sliding_nodes > 0, "{res:?}");
+        let mut moved = 0;
+        for &(q, p, _) in &g.boundary {
+            for v in q {
+                let (a, b) = (g.points[v], tfi[v]);
+                if p == wall {
+                    // rim nodes of the discs lie on the wall too
+                    assert!((a.y.hypot(a.z) - 0.05).abs() < 1e-12, "{a:?}");
+                    continue;
+                }
+                // the discs are the planes x = 0 and x = length
+                assert!((a.x - b.x).abs() < 1e-12, "{a:?} left its plane");
+                if a != b {
+                    moved += 1;
+                }
+            }
+        }
+        assert!(moved > 0, "no disc node slid");
+        assert_conforming(&g);
+        for q in g.quality() {
+            assert!(q.min_jacobian > 0.0, "{q:?}");
+        }
+    }
 }
 
 /// Largest distance of a wall node of a 90° elbow (bend in the x-y plane

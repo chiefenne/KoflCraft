@@ -378,9 +378,12 @@ pub(crate) fn limitations(id: &str, output: &Value) -> Vec<String> {
                 l.push("transfinite interpolation only: no smoothing or wall orthogonality control (use algorithm kind elliptic)".into());
             } else {
                 l.push("elliptic smoothing holds wall orthogonality and spacing on the interior of wall faces; along block edges that meet a wall it follows the nearest controlled node".into());
-                l.push("nodes on every boundary patch stay fixed, symmetry planes included: an extruded section with one span cell is not smoothed".into());
-                if report["smoothing"]["moved_block_nodes"] == 0
-                    && report["smoothing"]["moved_face_nodes"] == 0
+                l.push("nodes on symmetry patches slide only when the patch is planar; nodes on every other boundary patch stay fixed".into());
+                l.push("the TFI grid is frozen as a fixed point: only the wall controls move nodes, so interior skew from TFI away from walls stays".into());
+                let s = &report["smoothing"];
+                if s["moved_block_nodes"] == 0
+                    && s["moved_face_nodes"] == 0
+                    && s["moved_vertex_nodes"] == 0
                 {
                     l.push("no node could move: this grid is the TFI grid".into());
                 }

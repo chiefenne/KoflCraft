@@ -925,18 +925,27 @@ pub fn airfoil_cgrid(section: &Section, p: &AirfoilCgrid) -> Result<Template, St
                         at: EdgeEnd::Start,
                     },
                 });
-                // wake cut and the C's straight lines, clustered at the TE
-                for (a, b) in [(1, 9), (5, 10), (6, 11)] {
-                    edges.push(EdgeSpec {
-                        vertices: [at(a, layer), at(b, layer)],
-                        curve: Curve::Line,
-                        distribution: Distribution::Geometric {
-                            spacing: te,
-                            at: EdgeEnd::Start,
-                        },
-                    });
-                }
+                // the wake cut, clustered like the trailing edge
+                edges.push(EdgeSpec {
+                    vertices: [at(1, layer), at(9, layer)],
+                    curve: Curve::Line,
+                    distribution: Distribution::Geometric {
+                        spacing: te,
+                        at: EdgeEnd::Start,
+                    },
+                });
             }
+            // the C's straight line on this side starts with the cell length
+            // that the arc ends with, so the cells match across the vertical
+            // line above (below) the trailing edge
+            edges.push(EdgeSpec {
+                vertices: [at(c_end, layer), at(if s == 0 { 10 } else { 11 }, layer)],
+                curve: Curve::Line,
+                distribution: Distribution::Geometric {
+                    spacing: te * lr / rear,
+                    at: EdgeEnd::Start,
+                },
+            });
         }
         if s == 0 {
             // i along the surface from the LE, j away from the wall

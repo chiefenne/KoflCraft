@@ -262,3 +262,34 @@ FoehnCraft read-back by hand: elbow R = 0.05 (15,360 cells) valid, TFI non-ortho
 Two findings:
 - **Elliptic smoothing makes the elbow's worst cell worse.** Wall angle max 3.17° → 1.84°, but the FoehnCraft max non-orthogonality rises from 23.7° to 38.7°. The worst cells are not located yet; candidates are the joins between the straight legs and the bend, where the frozen TFI controls jump.
 - **An extruded section with one span cell is not smoothed at all**: every node lies on a symmetry plane, and the smoother keeps all boundary nodes fixed. The airfoil's worst TFI cells (60° near the leading edge) stay. Sliding nodes on planar symmetry patches (mirror ghost points) would fix it.
+
+### MB1d: smoother base, symmetry sliding and the elbow (2026-11-24)
+
+Cards: "Smoother: symmetry sliding + elbow" as the next step, then "Thomas–Middlecoff controls" to try first for curved ducts. After the measurement below, a third card asks for the smoother base; this step was built on its recommended option (full residual freeze plus wall controls).
+
+Where the elbow's worst cells were: the O-grid core corners at the joins between bend segments. Interior block vertices were held fixed, and the Laplace part of the system straightens the swept lines, so the whole core drifted about 5 % of the radius toward the bend centre and sheared the cells next to the fixed vertices.
+
+Built:
+- **Interior block vertices move**, normal to the grid line through them, and nodes on inner block edges move in the plane normal to the edge, both with the TFI offset frozen.
+- **Full residual freeze.** The residual of every node at the TFI grid is stored and subtracted at every update. The TFI grid becomes a fixed point, and only the wall controls move nodes.
+- **Symmetry sliding.** A patch with role `symmetry` that is planar (to 1e-9 of the domain extent) lets its nodes slide in the plane. The stencil reaches across the plane to the mirror images of the interior nodes, the node is projected back onto the plane after each update, and the wall control continues to the rims of wall faces on such a plane. A symmetry patch that is not planar keeps its nodes fixed.
+- **Line Gauss–Seidel.** Each grid line inside a block is solved at once with the Thomas algorithm, and the line axis turns every sweep. Convergence: the largest move below 1e-4 of the shortest TFI edge at the node, and the first spacing off every wall within 1e-4 in log. The default iteration cap went from 3,000 to 10,000.
+
+FoehnCraft max non-orthogonality (release build; pipe R = 0.05 with 8/10/40 cells and wall spacing 5e-4, elbow R = 0.05 at the same resolution, 15,360 cells each):
+
+| Variant | Pipe | Elbow |
+|---|---|---|
+| TFI | 23.4° | 23.7° |
+| MB1b smoother | 19.3° | 34.5° to 38.7° |
+| Thomas–Middlecoff (residual kept at fixed nodes, Laplace-interpolated inside) | 23.1° | 27.3° to 33° |
+| Full residual freeze + walls (built) | 23.3° (mean 1.99°) | 23.45° (mean 2.07°) |
+
+| Case (built smoother) | Sweeps | Time | Wall angle max / mean, TFI → smoothed | FoehnCraft non-orthogonality max / mean | Skewness max |
+|---|---|---|---|---|---|
+| Pipe | 129 | 1.0 s | 3.12° / 2.26° → 0.44° / 0.29° | 23.3° / 1.99° | 0.328 |
+| Elbow | 196 | 1.8 s | 3.17° / 2.25° → 0.63° / 0.37° | 23.45° / 2.07° | 0.327 |
+| NACA 2412 C-grid, farfield 10, 80/48/40 cells, wall spacing 5e-4, one span cell | 2,478 | 35 s | 60.4° / 14.8° → 34.5° / 4.0° | 55.9° / 2.73° (TFI 60.4° / 2.99°) | 0.155 (TFI 0.267) |
+
+No inverted faces in any case. The elbow's minimum scaled Jacobian is 0.704 against 0.706 for TFI.
+
+What the freeze costs: interior skew that TFI puts away from the walls stays. On the pipe the MB1b smoother reached 19.3° because it was free to move the core; the frozen one keeps 23.3°. On the airfoil the worst cell sits in the lower front block below the leading edge, in the frozen TFI interior. The airfoil needs about 2,500 sweeps because the wall controls near the trailing edge and the wake cut settle slowly. Next candidates, each for a card: a 2D cap-smoothing pass for extruded sections, a line solver with relaxed freeze away from walls, and an O-grid around the airfoil.
