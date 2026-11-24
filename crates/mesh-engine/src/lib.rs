@@ -23,7 +23,7 @@ pub use assembly::{
     GeneratedMesh, GenerationError, RELATIVE_WELD_TOLERANCE, generate_mesh, generate_surface_mesh,
 };
 pub use export::{Export, ExportData, ExportFormat, Written, export_mesh, prepare_export};
-pub use mesh_io::{GmshVersion, MeshDirectory};
+pub use mesh_io::{FILE_HASH, GmshVersion, MeshDirectory, file_digest};
 pub use report::{
     CellReport, DomainReport, FaceReport, MeshCheck, MeshReport, check_mesh, inspect_domain,
     mesh_report,

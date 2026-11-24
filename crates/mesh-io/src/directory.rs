@@ -1,5 +1,5 @@
 use std::ffi::OsStr;
-use std::fmt::{self, Write as _};
+use std::fmt;
 use std::io::{self, Read, Write};
 use std::path::{Component, Path};
 use std::sync::Arc;
@@ -9,7 +9,6 @@ use std::thread::{self, JoinHandle};
 
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, File, OpenOptions};
-use sha2::{Digest, Sha256};
 
 /// Access explicitly granted to one working directory.
 pub struct MeshDirectory(Dir);
@@ -75,7 +74,8 @@ impl MeshDirectory {
     /// Create the new file `name` and stream `content` into it. A second
     /// thread hashes and writes each block of [`BLOCK`] bytes while the
     /// next one is produced, so a file of any size needs a few blocks of
-    /// memory. Returns the SHA-256 of the file as lower-case hex. On any
+    /// memory. Returns the BLAKE3 hash of the file as lower-case hex
+    /// ([`FILE_HASH`]). On any
     /// error the file is removed.
     pub fn stream_new(
         &self,
@@ -137,7 +137,7 @@ pub struct Bundle<'a> {
 
 impl Bundle<'_> {
     /// Stream the new file `name` into the bundle (see
-    /// [`MeshDirectory::stream_new`]) and record its SHA-256.
+    /// [`MeshDirectory::stream_new`]) and record its BLAKE3 hash.
     pub fn stream(
         &mut self,
         name: &str,
@@ -159,12 +159,12 @@ impl Bundle<'_> {
         }
     }
 
-    /// The files written so far with their SHA-256, in order.
+    /// The files written so far with their BLAKE3 hash, in order.
     pub fn files(&self) -> &[(String, String)] {
         &self.files
     }
 
-    /// Keep the bundle; returns its files with their SHA-256.
+    /// Keep the bundle; returns its files with their BLAKE3 hash.
     pub fn finish(mut self) -> Vec<(String, String)> {
         self.done = true;
         std::mem::take(&mut self.files)
@@ -211,7 +211,7 @@ impl HashedFile {
         let failed = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&failed);
         let worker = thread::spawn(move || {
-            let mut hash = Sha256::new();
+            let mut hash = blake3::Hasher::new();
             let mut result = Ok(());
             for mut block in incoming {
                 if result.is_ok() {
@@ -227,7 +227,7 @@ impl HashedFile {
             if result.is_ok() {
                 result = file.sync_all();
             }
-            (hex(&hash.finalize()), result)
+            (hash.finalize().to_hex().to_string(), result)
         });
         Self {
             block: Vec::with_capacity(BLOCK),
@@ -307,12 +307,16 @@ impl Drop for HashedFile {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
-    let mut hex = String::with_capacity(2 * bytes.len());
-    for byte in bytes {
-        let _ = write!(hex, "{byte:02x}");
-    }
-    hex
+/// The hash of every file digest KoflCraft writes: in `mesh-evidence.json`
+/// (`file_hash`, format 1.1) and as the key of each entry of a tool
+/// result's `files`. BLAKE3 hashes a large file several times faster than
+/// SHA-256 and on many threads (the maintainer's choice, 2026-11-24:
+/// SHA-256 of a 5 GB mesh took 17 s on a CPU without SHA instructions).
+pub const FILE_HASH: &str = "blake3";
+
+/// The BLAKE3 hash ([`FILE_HASH`]) of `bytes`, lower-case hex.
+pub fn file_digest(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
 }
 
 fn single_entry(name: &OsStr) -> io::Result<&Path> {
@@ -372,7 +376,7 @@ mod tests {
     }
 
     /// Invariant: a streamed file holds exactly the bytes written, and its
-    /// digest is the SHA-256 of those bytes, with writes of any size across
+    /// digest is the BLAKE3 hash of those bytes, with writes of any size across
     /// block borders. Breaks if a block is lost, reordered or hashed
     /// differently from what reaches the disk, or the partial last block is
     /// dropped; the evidence digests of every bundle depend on it, and no
@@ -396,7 +400,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(std::fs::read(scratch.0.join("f.bin")).unwrap(), bytes);
-        assert_eq!(digest, hex(&Sha256::digest(&bytes)));
+        assert_eq!(digest, file_digest(&bytes));
     }
 
     /// Invariant: a writer that fails leaves no file behind and is reported
@@ -449,7 +453,7 @@ mod tests {
         let mut bundle = dir.bundle(OsStr::new("b")).unwrap();
         bundle.stream("a.txt", |out| out.write_all(b"a")).unwrap();
         let files = bundle.finish();
-        assert_eq!(files[0].1, hex(&Sha256::digest(b"a")));
+        assert_eq!(files[0].1, file_digest(b"a"));
         assert_eq!(std::fs::read(scratch.0.join("b/a.txt")).unwrap(), b"a");
     }
 }

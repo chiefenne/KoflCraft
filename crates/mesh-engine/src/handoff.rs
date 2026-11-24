@@ -1,7 +1,7 @@
 //! Files for FoehnCraft (requirements section 16): the single-file VTU of
 //! FC-02 with the digests of FC-05 in its field data, and the side-car
 //! evidence `koflcraft.mesh-evidence` that names the files of a bundle with
-//! their SHA-256, the summary FoehnCraft must reproduce (FC-06) and the
+//! their BLAKE3 hash, the summary FoehnCraft must reproduce (FC-06) and the
 //! patch roles (FC-04).
 
 use std::io::{self, Write};
@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 use crate::{EngineError, ErrorCode};
 
 pub const EVIDENCE_FORMAT: &str = "koflcraft.mesh-evidence";
-pub const EVIDENCE_FORMAT_VERSION: &str = "1.0";
+/// 1.1 (2026-11-24): `files` holds BLAKE3 hashes, named by `file_hash`;
+/// 1.0 had SHA-256 and no `file_hash`.
+pub const EVIDENCE_FORMAT_VERSION: &str = "1.1";
 
 /// The name of the FoehnCraft VTU in a bundle.
 pub const FOEHNCRAFT_VTU: &str = "foehncraft.vtu";
@@ -68,7 +70,9 @@ pub struct MeshEvidence {
     pub generator: String,
     pub summary: HandoffSummary,
     pub patches: Vec<Patch>,
-    /// Every other file of the bundle with its SHA-256.
+    /// The hash of `files`: [`mesh_io::FILE_HASH`] (`blake3`).
+    pub file_hash: &'static str,
+    /// Every other file of the bundle with its BLAKE3 hash.
     pub files: Vec<(String, String)>,
     pub limitations: Vec<String>,
     /// Blocks of a block-structured mesh: the cell range and i, j, k
@@ -91,7 +95,7 @@ pub(crate) fn stream_error(error: StreamError) -> EngineError {
 }
 
 /// The evidence of a bundle whose files (other than the evidence itself)
-/// are `files`, given with their SHA-256 as the bundle wrote them.
+/// are `files`, given with their BLAKE3 hash as the bundle wrote them.
 pub(crate) fn evidence(
     mesh: &HandoffMesh,
     generator: &str,
@@ -141,6 +145,7 @@ pub(crate) fn evidence_with(
         generator: generator.to_string(),
         summary: mesh.summary(),
         patches: mesh.patches.clone(),
+        file_hash: mesh_io::FILE_HASH,
         files: files.to_vec(),
         limitations,
         block_structure,

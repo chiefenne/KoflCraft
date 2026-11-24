@@ -58,7 +58,7 @@ pub enum ExportData {
     Bundle(Vec<(&'static str, Vec<u8>)>),
 }
 
-/// What [`Export::write_new`] wrote, with the SHA-256 of every file.
+/// What [`Export::write_new`] wrote, with the BLAKE3 hash of every file.
 pub enum Written {
     /// One file at the output path.
     File(String),
@@ -154,7 +154,7 @@ impl Export {
             let mut files = write_polymesh(handoff).map_err(crate::handoff::export_error)?;
             let digests: Vec<(String, String)> = files
                 .iter()
-                .map(|(n, b)| (n.to_string(), crate::artifact::sha256(b)))
+                .map(|(n, b)| (n.to_string(), mesh_io::file_digest(b)))
                 .collect();
             let evidence = crate::handoff::evidence(handoff, &self.algorithm, &digests)?;
             files.push((crate::handoff::MESH_EVIDENCE, evidence));
