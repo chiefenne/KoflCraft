@@ -374,7 +374,11 @@ pub(crate) fn limitations(id: &str, output: &Value) -> Vec<String> {
         }
         "mesh.generate_channel" => l.push("planar walls only".into()),
         "block.grid" => {
-            l.push("transfinite interpolation only: no elliptic smoothing or wall orthogonality control yet (MB1b)".into());
+            if report["algorithm"] == "block_tfi_v1" {
+                l.push("transfinite interpolation only: no smoothing or wall orthogonality control (use algorithm kind elliptic)".into());
+            } else {
+                l.push("elliptic smoothing holds wall orthogonality and spacing on the interior of wall faces; along block edges that meet a wall it follows the nearest controlled node".into());
+            }
             l.push("no OpenFOAM polyMesh in the bundle; FoehnCraft VTU and MSH 4.1 only".into());
             if let Some(d) = report["reference"]["relative_deviation"].as_f64() {
                 l.push(format!(

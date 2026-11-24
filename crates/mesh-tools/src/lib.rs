@@ -497,13 +497,14 @@ pub static TOOLS: &[Tool] = &[
         id: "block.grid",
         version: 1,
         action: Action::StartBuild,
-        summary: "Build a block-structured hexahedral mesh from a topology by transfinite interpolation (BS-09, TFI only so far), validate it (positive corner Jacobians, conservation, conforming closed cells, BS-13) and write `volume.vtu`, `mesh.msh` (MSH 4.1), `foehncraft.vtu`, `report.json` and `mesh-evidence.json` (with each block's cell range) into a new directory (BS-14).",
+        summary: "Build a block-structured hexahedral mesh from a topology (BS-09): `algorithm` `{\"kind\": \"tfi\"}` (default, transfinite interpolation) or `{\"kind\": \"elliptic\"}` (TFI, then Thompson–Thames–Mastin smoothing of every node off the boundary, across block faces, with orthogonality and first-spacing control at wall patches unless `wall_orthogonality` is false). Validate it (positive corner Jacobians, conservation, conforming closed cells, BS-13) and write `volume.vtu`, `mesh.msh` (MSH 4.1), `foehncraft.vtu`, `report.json` and `mesh-evidence.json` (with each block's cell range) into a new directory (BS-14).",
         legacy_name: None,
         outputs: &["output"],
         input_schema: || {
             schemas::input(
-                json!({"topology": schemas::path(), "output": schemas::path()}),
-                &[],
+                json!({"topology": schemas::path(), "output": schemas::path(),
+                       "algorithm": schemas::block_algorithm()}),
+                &["algorithm"],
             )
         },
         output_schema: || json!({"type": "object", "description": "`koflcraft.block-result` with the `koflcraft.block-report`"}),

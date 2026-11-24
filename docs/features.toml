@@ -358,3 +358,18 @@ tests = [
 ]
 commands = []
 gaps = "TFI only (elliptic, hyperbolic, orthogonal wall block and smoothers come in MB1b); explicit block.* edit tools, elbow and airfoil templates, geometry association and polyMesh in the bundle are not built; FoehnCraft round trip (FC-06) run by hand, not yet in the acceptance runner"
+
+[[feature]]
+id = "block-mb1b-elliptic"
+title = "Block-structured variant MB1b: Thompson–Thames–Mastin elliptic smoothing across block faces with wall orthogonality and first-spacing control"
+requirements = ["BS-08", "BS-09", "BS-12", "BS-13"]
+grade = "partial"
+how = "A stretched orthogonal channel is a fixed point (nodes move less than 1e-9); on the pipe O-grid the wall angle of the first grid line drops from 3.1° to below 0.5° with the first spacing kept to 1e-4, boundary nodes bit-identical, shared-face and inner-edge nodes moved, volume unchanged to 1e-12, faces conforming, Jacobians positive; wall orthogonality without a wall patch is refused (BS-12); FoehnCraft read the smoothed 15,360-cell pipe back by hand (max non-orthogonality 19.4° against 23.4° for TFI)"
+tests = [
+  "crates/mesh-algorithms/src/block/tests.rs::smoothing_keeps_a_stretched_channel",
+  "crates/mesh-algorithms/src/block/tests.rs::pipe_walls_become_orthogonal",
+  "crates/mesh-engine/src/block.rs::elliptic_needs_walls_and_improves_them",
+  "crates/mesh-cli/tests/kofl.rs::block_tools_build_a_pipe_from_a_template",
+]
+commands = []
+gaps = "Wall control acts on the interior of wall faces; nodes next to block edges that meet a wall follow the nearest controlled node (12 % first-spacing change there on the pipe). Point SOR: 8.8 s for 15,360 cells. Hyperbolic marching, the orthogonal wall block, post-smoothers and the ALG-16 benchmark against harmonic maps are not built"

@@ -496,3 +496,14 @@ pub(crate) fn block_template() -> Value {
     );
     json!({"oneOf": [channel, pipe]})
 }
+
+/// The volume algorithm of `block.grid` (BS-09).
+pub(crate) fn block_algorithm() -> Value {
+    let tfi = input(json!({"kind": {"const": "tfi"}}), &[]);
+    let elliptic = input(
+        json!({"kind": {"const": "elliptic"}, "wall_orthogonality": {"type": "boolean"},
+               "max_iterations": {"type": "integer", "minimum": 1}}),
+        &["wall_orthogonality", "max_iterations"],
+    );
+    json!({"oneOf": [tfi, elliptic]})
+}

@@ -3,7 +3,7 @@
 //! counts and chains or every issue, `block.grid` builds and validates the
 //! hexahedral mesh into a new directory.
 
-use mesh_engine::block::{self, TemplateConfig, TopologyFile};
+use mesh_engine::block::{self, TemplateConfig, TopologyFile, VolumeAlgorithm};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::Digest;
@@ -32,6 +32,9 @@ pub struct CheckInput {
 pub struct GridInput {
     pub topology: String,
     pub output: String,
+    /// The volume algorithm; TFI when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub algorithm: Option<VolumeAlgorithm>,
 }
 
 pub(crate) fn topology(ctx: &Context, path: &str) -> Result<TopologyFile, Diagnostic> {
@@ -75,7 +78,7 @@ pub(crate) fn grid(input: Value, ctx: &Context) -> Run {
     let cells = block::cell_count(&file).map_err(|e| Diagnostic::from(e).with_path(&i.topology))?;
     ctx.limit("block cells", cells, |l| l.max_build_cells)?;
     let (dir, name) = ctx.target(&i.output)?;
-    let report = block::generate(&file, &dir, &name)?;
+    let report = block::generate(&file, &i.algorithm.unwrap_or_default(), &dir, &name)?;
     Ok(json!({
         "format": BLOCK_RESULT_FORMAT,
         "format_version": crate::FORMAT_VERSION,

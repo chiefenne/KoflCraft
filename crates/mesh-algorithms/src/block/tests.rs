@@ -194,3 +194,73 @@ fn open_faces_and_left_handed_blocks_are_refused() {
     t.blocks[0].vertices = [0, 3, 2, 1, 4, 7, 6, 5];
     assert!(check(&t).unwrap_err().iter().any(|i| i.kind == "block"));
 }
+
+mod elliptic {
+    use super::super::smooth::{SmoothOptions, smooth};
+    use super::*;
+
+    fn walls(t: &mesh_core::block::BlockTopology) -> SmoothOptions {
+        SmoothOptions {
+            wall_patches: t
+                .patches
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.name == "walls")
+                .map(|(i, _)| i)
+                .collect(),
+            ..SmoothOptions::default()
+        }
+    }
+
+    /// Invariant: a channel of straight, orthogonal, stretched lines
+    /// already solves the system with its distribution controls, so
+    /// smoothing leaves it in place. A sign error in a control or in the
+    /// SOR update moves it.
+    #[test]
+    fn smoothing_keeps_a_stretched_channel() {
+        let t = channel([1.0, 0.2, 0.1], [6, 12, 8], Some(0.002)).unwrap();
+        let mut g = build(&t.topology).unwrap();
+        let tfi = g.points.clone();
+        let r = smooth(&mut g, &walls(&t.topology)).unwrap();
+        assert!(r.converged && r.wall_faces == 4, "{r:?}");
+        for (a, b) in g.points.iter().zip(&tfi) {
+            assert!((*a - *b).length() < 1e-9, "{a:?} {b:?}");
+        }
+        assert!(r.wall_angle_max_after < 1e-6);
+    }
+
+    /// Invariant: on the pipe O-grid, nodes on shared faces and inner
+    /// block edges move, boundary nodes do not (BS-08), the first grid
+    /// line leaves the wall at a right angle with the first spacing kept,
+    /// cells stay valid and conforming, and the volume is unchanged.
+    #[test]
+    fn pipe_walls_become_orthogonal() {
+        let t = pipe_ogrid(0.05, 0.2, 0.55, [8, 10, 6], Some(0.0005)).unwrap();
+        let mut g = build(&t.topology).unwrap();
+        let tfi = g.points.clone();
+        let volume = total(&g);
+        let r = smooth(&mut g, &walls(&t.topology)).unwrap();
+        assert!(r.converged, "{r:?}");
+        assert!(r.face_nodes > 0 && r.edge_nodes == 4 * 5, "{r:?}");
+        assert!(
+            r.wall_angle_max_before > 2.0 && r.wall_angle_max_after < 0.5,
+            "{r:?}"
+        );
+        assert!(r.first_spacing_change < 1e-4, "{r:?}");
+        for &(q, _, _) in &g.boundary {
+            for v in q {
+                assert_eq!(g.points[v], tfi[v]);
+            }
+        }
+        let moved = g.points.iter().zip(&tfi).filter(|(a, b)| a != b).count();
+        assert!(moved > r.block_nodes, "shared-face nodes must move too");
+        assert_conforming(&g);
+        assert!((total(&g) / volume - 1.0).abs() < 1e-12);
+        for q in g.quality() {
+            assert!(
+                q.min_jacobian > 0.0 && q.min_scaled_jacobian > 0.69,
+                "{q:?}"
+            );
+        }
+    }
+}
