@@ -1,5 +1,3 @@
-### Added
-
 - Block-structured mesher, first step MB1a (OBJ-21, BS-01..BS-14 in part):
   the block topology file `koflcraft.block-topology` 1.0, a check of
   indices, handedness, edge curves and laws, count chains, faces and
