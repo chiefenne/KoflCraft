@@ -281,6 +281,7 @@ dependencies = [
  "mesh-core",
  "mesh-quality",
  "serde",
+ "sha2",
 ]
 
 [[package]]
