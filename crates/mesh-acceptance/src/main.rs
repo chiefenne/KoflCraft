@@ -426,6 +426,116 @@ fn round_trip(cli: &Path, foehn: &Path, root: &Path, workspace: &Path) -> RunRes
             foehn::Kind::Subdivision,
         )?;
     }
+    // MB1 (BS-13, BS-14): block-structured meshes from the templates, with
+    // TFI and with elliptic smoothing, and one split with the edit tools;
+    // FoehnCraft reads each back, and smoothing must not make the worst
+    // non-orthogonality FoehnCraft measures larger than TFI's
+    let blocks = bundles.join("block");
+    fs::create_dir(&blocks)?;
+    let block_cases = [
+        (
+            "pipe",
+            json!({"template": "pipe_ogrid", "radius": 0.05, "length": 0.5,
+                   "core_cells": 8, "radial_cells": 10, "axial_cells": 40, "wall_spacing": 5e-4}),
+        ),
+        (
+            "elbow",
+            json!({"template": "elbow", "radius": 0.05, "bend_radius": 0.15, "angle": 90,
+                   "inlet_length": 0.1, "outlet_length": 0.1,
+                   "core_cells": 8, "radial_cells": 10, "axial_cells": 40, "wall_spacing": 5e-4}),
+        ),
+        (
+            "airfoil",
+            json!({"template": "airfoil_cgrid", "naca": "2412", "span": 0.1, "farfield": 5,
+                   "wake_length": 5, "surface_cells": 40, "normal_cells": 20, "wake_cells": 20,
+                   "wall_spacing": 2e-3}),
+        ),
+    ];
+    let non_orthogonality = |dir: &Path, file: &str| -> RunResult<f64> {
+        let out = dir.join(format!("foehn-{}", file.replace('/', "-")));
+        let report: Value = serde_json::from_slice(&fs::read(out.join("mesh_report.json"))?)?;
+        report["quality"]["non_orthogonality"]["max"]
+            .as_f64()
+            .ok_or_else(|| "missing non_orthogonality in the FoehnCraft report".into())
+    };
+    let mut block_quality = Vec::new();
+    for (case, config) in &block_cases {
+        let topology = format!("{case}.json");
+        let call = |tool: &str, file: &str, input: Value| -> RunResult<()> {
+            write_json(&blocks.join(file), &input)?;
+            let envelope = run_cli(cli, &blocks, &["call", tool, "--input", file])?;
+            require(
+                envelope["status"] == "finished",
+                &format!("{file}: {envelope}"),
+            )
+        };
+        call(
+            "block.template",
+            &format!("template-{case}.json"),
+            json!({"config": config, "output": topology}),
+        )?;
+        let mut worst = Vec::new();
+        for kind in ["tfi", "elliptic"] {
+            let name = format!("{case}-{kind}");
+            call(
+                "block.grid",
+                &format!("grid-{name}.json"),
+                json!({"topology": topology, "output": name, "algorithm": {"kind": kind}}),
+            )?;
+            let evidence = blocks.join(&name).join("mesh-evidence.json");
+            let vtu = format!("{name}/foehncraft.vtu");
+            run(&blocks, &vtu, &evidence, foehn::Kind::Faces)?;
+            run(
+                &blocks,
+                &format!("{name}/mesh.msh"),
+                &evidence,
+                foehn::Kind::Subdivision,
+            )?;
+            worst.push(non_orthogonality(&blocks, &vtu)?);
+        }
+        require(
+            worst[1] <= worst[0] + 1e-9,
+            &format!(
+                "{case}: elliptic smoothing raises the max non-orthogonality from {:.2}° (TFI) to {:.2}°",
+                worst[0], worst[1]
+            ),
+        )?;
+        println!(
+            "block {case}: FoehnCraft max non-orthogonality TFI {:.2}°, elliptic {:.2}°",
+            worst[0], worst[1]
+        );
+        block_quality.push(json!({"case": case, "tfi_deg": worst[0], "elliptic_deg": worst[1]}));
+    }
+    // BS-04: a pipe split through its chain by the edit tools still meshes
+    write_json(
+        &blocks.join("split-pipe.json"),
+        &json!({"topology": "pipe.json", "output": "pipe-split.json", "block": 0, "axis": 2, "at": 15}),
+    )?;
+    let envelope = run_cli(
+        cli,
+        &blocks,
+        &["call", "block.split_block", "--input", "split-pipe.json"],
+    )?;
+    require(
+        envelope["status"] == "finished",
+        &format!("block.split_block: {envelope}"),
+    )?;
+    write_json(
+        &blocks.join("grid-pipe-split.json"),
+        &json!({"topology": "pipe-split.json", "output": "pipe-split", "algorithm": {"kind": "elliptic"}}),
+    )?;
+    run_cli(
+        cli,
+        &blocks,
+        &["call", "block.grid", "--input", "grid-pipe-split.json"],
+    )?;
+    run(
+        &blocks,
+        "pipe-split/foehncraft.vtu",
+        &blocks.join("pipe-split/mesh-evidence.json"),
+        foehn::Kind::Faces,
+    )?;
+    write_json(&blocks.join("quality.json"), &block_quality)?;
     // BC-01, BC-02: a boundary defined with the patch tools reaches
     // FoehnCraft under its names in every format
     let patched = bundles.join("patched-box");

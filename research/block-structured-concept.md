@@ -315,3 +315,7 @@ Split results: pipe O-grid along its axis and channel across its clustered direc
 Every edit checks the input, applies the change and checks the result; a refused edit writes nothing. Edits that change the shape (curve, vertex) remove the template's `reference`, since its analytic volume no longer applies. A chain of template, list, edits, a refused move and a grid replays from the journal with every result digest the same.
 
 Next, each for a card: projection surface tools, merging blocks, collapsed (prism) blocks, and the FoehnCraft round trip for block meshes in the acceptance runner.
+
+### FoehnCraft check in the acceptance runner (2026-11-24)
+
+Card: "FoehnCraft check in acceptance". `cargo m1 --require-foehn` now builds pipe (8/10/40, wall spacing 5e-4), elbow (R = 0.05, bend 0.15, legs 0.1) and an extruded NACA 2412 C-grid (40/20/20, farfield 5) with TFI and with elliptic smoothing, and a pipe split through its chain with `block.split_block`. FoehnCraft reads every `foehncraft.vtu` (same cells and faces, volume and patch areas to 1e-12, no inverted face) and `mesh.msh` (volume and areas) back. The run fails if smoothing raises the max non-orthogonality FoehnCraft measures above the TFI grid's. First run with FoehnCraft 1.0.1: pipe 23.39° → 23.30°, elbow 23.77° → 23.58°, airfoil 60.54° → 47.00°; 56 files read and matched in all.
