@@ -378,6 +378,12 @@ pub(crate) fn limitations(id: &str, output: &Value) -> Vec<String> {
                 l.push("transfinite interpolation only: no smoothing or wall orthogonality control (use algorithm kind elliptic)".into());
             } else {
                 l.push("elliptic smoothing holds wall orthogonality and spacing on the interior of wall faces; along block edges that meet a wall it follows the nearest controlled node".into());
+                l.push("nodes on every boundary patch stay fixed, symmetry planes included: an extruded section with one span cell is not smoothed".into());
+                if report["smoothing"]["moved_block_nodes"] == 0
+                    && report["smoothing"]["moved_face_nodes"] == 0
+                {
+                    l.push("no node could move: this grid is the TFI grid".into());
+                }
             }
             l.push("no OpenFOAM polyMesh in the bundle; FoehnCraft VTU and MSH 4.1 only".into());
             if let Some(d) = report["reference"]["relative_deviation"].as_f64() {

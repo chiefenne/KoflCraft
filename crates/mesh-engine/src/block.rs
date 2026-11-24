@@ -8,7 +8,8 @@ use std::ffi::OsStr;
 use mesh_algorithms::block::smooth::{SmoothOptions, smooth};
 use mesh_algorithms::block::{self as algo, BlockGrid, Issue, templates};
 use mesh_core::block::{
-    BlockSpec, BlockTopology, Curve, Distribution, EdgeEnd, EdgeSpec, PatchSpec,
+    BlockSpec, BlockTopology, Curve, Distribution, EdgeEnd, EdgeSpec, PatchSpec, Surface,
+    SurfaceSpec,
 };
 use mesh_core::geometry::Vec3;
 use mesh_io::handoff::{PatchRole, patches_from_names};
@@ -53,7 +54,13 @@ pub const CONSERVATION_TOLERANCE: f64 = 1e-10;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CurveFile {
     Line,
-    Arc { through: [f64; 3] },
+    Arc {
+        through: [f64; 3],
+    },
+    /// Natural cubic spline through these points between the two vertices.
+    Spline {
+        through: Vec<[f64; 3]>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -112,6 +119,32 @@ pub struct PatchFile {
     pub faces: Vec<[usize; 4]>,
 }
 
+/// An analytic surface in the file.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SurfaceShape {
+    Cylinder {
+        point: [f64; 3],
+        axis: [f64; 3],
+        radius: f64,
+    },
+    Torus {
+        centre: [f64; 3],
+        axis: [f64; 3],
+        major: f64,
+        minor: f64,
+    },
+}
+
+/// A surface and the boundary block faces projected onto it (BS-07).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SurfaceFile {
+    pub name: String,
+    pub shape: SurfaceShape,
+    pub faces: Vec<[usize; 4]>,
+}
+
 /// Where a topology came from and what its shape's analytic volume is.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -132,6 +165,8 @@ pub struct TopologyFile {
     pub edges: Vec<EdgeFile>,
     pub blocks: Vec<BlockFile>,
     pub patches: Vec<PatchFile>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub surfaces: Vec<SurfaceFile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<Reference>,
 }
@@ -166,6 +201,65 @@ pub enum TemplateConfig {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wall_spacing: Option<f64>,
     },
+    /// A circular pipe elbow: inlet leg along +x ending at the origin, a
+    /// bend about +z through (0, bend_radius, 0), outlet leg; the pipe
+    /// O-grid swept along it, walls projected onto cylinders and the torus.
+    Elbow {
+        radius: f64,
+        /// Radius of the bend's centreline.
+        bend_radius: f64,
+        /// Bend angle in degrees, at most 180.
+        angle: f64,
+        #[serde(default)]
+        inlet_length: f64,
+        #[serde(default)]
+        outlet_length: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        core_fraction: Option<f64>,
+        core_cells: usize,
+        radial_cells: usize,
+        /// Cells along the centreline in total, shared out by length.
+        axial_cells: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wall_spacing: Option<f64>,
+    },
+    /// An airfoil C-grid extruded along +z: leading edge at the origin,
+    /// chord along +x, a half circle of radius `farfield` about the
+    /// trailing edge and wake blocks behind it.
+    AirfoilCgrid {
+        /// NACA 4-digit designation, e.g. "0012" or "2412" (closed
+        /// trailing edge); exactly one of `naca` and `coordinates`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        naca: Option<String>,
+        /// A coordinate file (Selig or Lednicer); a blunt trailing edge is
+        /// closed by a linear thickness correction.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        coordinates: Option<String>,
+        #[serde(default = "one")]
+        chord: f64,
+        span: f64,
+        farfield: f64,
+        wake_length: f64,
+        /// Cells along each side of the airfoil.
+        surface_cells: usize,
+        normal_cells: usize,
+        wake_cells: usize,
+        #[serde(default = "one_cell")]
+        span_cells: usize,
+        /// First cell height at the airfoil and the wake cut.
+        wall_spacing: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        leading_edge_spacing: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trailing_edge_spacing: Option<f64>,
+    },
+}
+
+fn one() -> f64 {
+    1.0
+}
+fn one_cell() -> usize {
+    1
 }
 
 fn invalid(message: impl std::fmt::Display) -> EngineError {
@@ -233,10 +327,13 @@ impl TopologyFile {
                 };
                 Ok(EdgeSpec {
                     vertices: e.vertices,
-                    curve: match e.curve {
+                    curve: match &e.curve {
                         CurveFile::Line => Curve::Line,
                         CurveFile::Arc { through } => Curve::Arc {
-                            through: v3(through),
+                            through: v3(*through),
+                        },
+                        CurveFile::Spline { through } => Curve::Spline {
+                            through: through.iter().copied().map(v3).collect(),
                         },
                     },
                     distribution,
@@ -263,6 +360,36 @@ impl TopologyFile {
                     faces: p.faces.clone(),
                 })
                 .collect(),
+            surfaces: self
+                .surfaces
+                .iter()
+                .map(|s| SurfaceSpec {
+                    name: s.name.clone(),
+                    surface: match s.shape {
+                        SurfaceShape::Cylinder {
+                            point,
+                            axis,
+                            radius,
+                        } => Surface::Cylinder {
+                            point: v3(point),
+                            axis: v3(axis),
+                            radius,
+                        },
+                        SurfaceShape::Torus {
+                            centre,
+                            axis,
+                            major,
+                            minor,
+                        } => Surface::Torus {
+                            centre: v3(centre),
+                            axis: v3(axis),
+                            major,
+                            minor,
+                        },
+                    },
+                    faces: s.faces.clone(),
+                })
+                .collect(),
         })
     }
 
@@ -276,10 +403,13 @@ impl TopologyFile {
                 .iter()
                 .map(|e| EdgeFile {
                     vertices: e.vertices,
-                    curve: match e.curve {
+                    curve: match &e.curve {
                         Curve::Line => CurveFile::Line,
                         Curve::Arc { through } => CurveFile::Arc {
-                            through: a3(through),
+                            through: a3(*through),
+                        },
+                        Curve::Spline { through } => CurveFile::Spline {
+                            through: through.iter().copied().map(a3).collect(),
                         },
                     },
                     distribution: match e.distribution {
@@ -312,6 +442,36 @@ impl TopologyFile {
                     faces: p.faces.clone(),
                 })
                 .collect(),
+            surfaces: t
+                .surfaces
+                .iter()
+                .map(|s| SurfaceFile {
+                    name: s.name.clone(),
+                    shape: match s.surface {
+                        Surface::Cylinder {
+                            point,
+                            axis,
+                            radius,
+                        } => SurfaceShape::Cylinder {
+                            point: a3(point),
+                            axis: a3(axis),
+                            radius,
+                        },
+                        Surface::Torus {
+                            centre,
+                            axis,
+                            major,
+                            minor,
+                        } => SurfaceShape::Torus {
+                            centre: a3(centre),
+                            axis: a3(axis),
+                            major,
+                            minor,
+                        },
+                    },
+                    faces: s.faces.clone(),
+                })
+                .collect(),
             reference,
         }
     }
@@ -319,7 +479,54 @@ impl TopologyFile {
 
 /// Write the topology of a template (`block.template`).
 pub fn template(config: &TemplateConfig) -> Result<TopologyFile, EngineError> {
+    template_with(config, None)
+}
+
+/// As [`template`], with the text of the airfoil coordinate file that an
+/// `airfoil_cgrid` config names.
+pub fn template_with(
+    config: &TemplateConfig,
+    coordinates_text: Option<&str>,
+) -> Result<TopologyFile, EngineError> {
     let (t, name) = match *config {
+        TemplateConfig::AirfoilCgrid {
+            ref naca,
+            ref coordinates,
+            chord,
+            span,
+            farfield,
+            wake_length,
+            surface_cells,
+            normal_cells,
+            wake_cells,
+            span_cells,
+            wall_spacing,
+            leading_edge_spacing,
+            trailing_edge_spacing,
+        } => (
+            match (naca, coordinates, coordinates_text) {
+                (Some(n), None, _) => templates::Naca4::parse(n).map(|s| s.section()),
+                (None, Some(_), Some(text)) => templates::Section::from_coordinates(text),
+                (None, Some(path), None) => Err(format!("the coordinate file {path} was not read")),
+                _ => Err("an airfoil needs exactly one of naca and coordinates".into()),
+            }
+            .and_then(|section| {
+                templates::airfoil_cgrid(
+                    &section,
+                    &templates::AirfoilCgrid {
+                        chord,
+                        span,
+                        farfield,
+                        wake: wake_length,
+                        cells: [surface_cells, normal_cells, wake_cells, span_cells],
+                        wall_spacing,
+                        le_spacing: leading_edge_spacing,
+                        te_spacing: trailing_edge_spacing,
+                    },
+                )
+            }),
+            "airfoil_cgrid",
+        ),
         TemplateConfig::Channel {
             length,
             width,
@@ -347,6 +554,30 @@ pub fn template(config: &TemplateConfig) -> Result<TopologyFile, EngineError> {
                 wall_spacing,
             ),
             "pipe_ogrid",
+        ),
+        TemplateConfig::Elbow {
+            radius,
+            bend_radius,
+            angle,
+            inlet_length,
+            outlet_length,
+            core_fraction,
+            core_cells,
+            radial_cells,
+            axial_cells,
+            wall_spacing,
+        } => (
+            templates::elbow(
+                radius,
+                bend_radius,
+                angle,
+                inlet_length,
+                outlet_length,
+                core_fraction.unwrap_or(0.55),
+                [core_cells, radial_cells, axial_cells],
+                wall_spacing,
+            ),
+            "elbow",
         ),
     };
     let t = t.map_err(invalid)?;
@@ -676,6 +907,95 @@ mod tests {
         // 24 chords on the circle: the inscribed polygon is 1.14 % short
         let d = report["reference"]["relative_deviation"].as_f64().unwrap();
         assert!(d < 0.0 && d > -0.0115, "{d}");
+    }
+
+    /// Invariant (BS-07): the elbow's surfaces survive the file, it
+    /// validates for FoehnCraft, and its volume is within the chord error
+    /// of the Pappus value.
+    #[test]
+    fn elbow_validates_with_its_surfaces() {
+        let file = template(&TemplateConfig::Elbow {
+            radius: 0.5,
+            bend_radius: 1.5,
+            angle: 90.0,
+            inlet_length: 1.0,
+            outlet_length: 0.5,
+            core_fraction: None,
+            core_cells: 6,
+            radial_cells: 4,
+            axial_cells: 24,
+            wall_spacing: Some(0.01),
+        })
+        .unwrap();
+        let text = serde_json::to_string(&file).unwrap();
+        let back: TopologyFile = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, file);
+        let names: Vec<_> = file.surfaces.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["cylinder_0", "torus", "cylinder_4"]);
+        let (grid, _) = super::grid(&file, &VolumeAlgorithm::Tfi).unwrap();
+        let (report, handoff, _) = validate(&file, &grid).unwrap();
+        assert_eq!(handoff.summary().cells, 24 * (36 + 4 * 24));
+        // 24 chords round the circle (1.14 %) plus the chords along the
+        // bend: 1.25 % short
+        let d = report["reference"]["relative_deviation"].as_f64().unwrap();
+        assert!(d < -0.0114 && d > -0.0135, "{d}");
+    }
+
+    /// Invariant (BS-03, BS-19): the extruded NACA 0012 C-grid writes a
+    /// file with spline edges that reads back and validates for FoehnCraft
+    /// with its five patches; with one span cell the elliptic smoother
+    /// moves nothing and says so.
+    #[test]
+    fn airfoil_cgrid_validates_and_smooths() {
+        let file = template(&TemplateConfig::AirfoilCgrid {
+            naca: Some("0012".into()),
+            coordinates: None,
+            chord: 1.0,
+            span: 0.1,
+            farfield: 5.0,
+            wake_length: 5.0,
+            surface_cells: 40,
+            normal_cells: 20,
+            wake_cells: 20,
+            span_cells: 1,
+            wall_spacing: 2e-3,
+            leading_edge_spacing: None,
+            trailing_edge_spacing: None,
+        })
+        .unwrap();
+        let text = serde_json::to_string(&file).unwrap();
+        let back: TopologyFile = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, file);
+        let (grid, _) = super::grid(&file, &VolumeAlgorithm::Tfi).unwrap();
+        let (_, handoff, _) = validate(&file, &grid).unwrap();
+        let names: Vec<_> = handoff
+            .summary()
+            .patches
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "airfoil_wall",
+                "inlet",
+                "outlet",
+                "symmetry_low",
+                "symmetry_high"
+            ]
+        );
+        // one cell along the span: every node is on a boundary, so the
+        // elliptic smoother has nothing to move (symmetry sliding is open)
+        let (_, report) = super::grid(
+            &file,
+            &VolumeAlgorithm::Elliptic {
+                wall_orthogonality: true,
+                max_iterations: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(report["iterations"], 0);
+        assert_eq!(report["moved_block_nodes"], 0);
     }
 
     /// Invariant (BS-12): elliptic smoothing with wall orthogonality on a

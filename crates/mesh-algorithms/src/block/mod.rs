@@ -23,7 +23,8 @@ pub use grid::{BlockGrid, BlockQuality, BlockRange, EdgeReport, build};
 /// One finding of the topology check.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Issue {
-    /// `vertex`, `block`, `edge`, `count_chain`, `face` or `patch`.
+    /// `vertex`, `block`, `edge`, `count_chain`, `face`, `patch` or
+    /// `surface`.
     pub kind: &'static str,
     pub message: String,
 }
@@ -132,8 +133,7 @@ pub fn check(t: &BlockTopology) -> Result<Checked, Vec<Issue>> {
         if block.domain.is_empty() {
             issues.push(issue("block", format!("block {b} has no domain name")));
         }
-        let p = v.map(|i| t.vertices[i]);
-        if let Some(c) = (0..8).find(|&s| corner_det(&p, s) <= 0.0) {
+        if let Some(c) = (0..8).find(|&s| curved_corner_det(t, &v, s) <= 0.0) {
             issues.push(issue(
                 "block",
                 format!(
@@ -232,7 +232,7 @@ pub fn check(t: &BlockTopology) -> Result<Checked, Vec<Issue>> {
             ));
             continue;
         };
-        match distribution::Evaluator::new(t.vertices[a], t.vertices[b], spec.curve) {
+        match distribution::Evaluator::new(t.vertices[a], t.vertices[b], &spec.curve) {
             Ok(ev) => {
                 if let Err(m) = distribution::fractions(spec.distribution, n, ev.length()) {
                     issues.push(issue("edge", format!("edge {a}–{b}: {m}")));
@@ -324,6 +324,54 @@ pub fn check(t: &BlockTopology) -> Result<Checked, Vec<Issue>> {
         ));
     }
 
+    // Surfaces: valid, on boundary faces only, each face projected once,
+    // its corners on the surface.
+    let mut projected: HashMap<[usize; 4], usize> = HashMap::new();
+    for (sn, spec) in t.surfaces.iter().enumerate() {
+        if spec.name.is_empty() || t.surfaces[..sn].iter().any(|q| q.name == spec.name) {
+            issues.push(issue(
+                "surface",
+                format!("surface {sn} has an empty or repeated name"),
+            ));
+        }
+        if let Some(m) = spec.surface.problem() {
+            issues.push(issue("surface", format!("surface {}: {m}", spec.name)));
+            continue;
+        }
+        let tol = 1e-6 * spec.surface.scale();
+        for &face in &spec.faces {
+            let key = face_key(face);
+            if faces.get(&key).map(Vec::len) != Some(1) {
+                issues.push(issue(
+                    "surface",
+                    format!("surface {}: {face:?} is no boundary block face", spec.name),
+                ));
+                continue;
+            }
+            if let Some(q) = projected.insert(key, sn) {
+                issues.push(issue(
+                    "surface",
+                    format!(
+                        "face {face:?} is projected onto {} and {}",
+                        t.surfaces[q].name, spec.name
+                    ),
+                ));
+            }
+            for v in face {
+                let p = t.vertices[v];
+                if (spec.surface.project(p) - p).length() > tol {
+                    issues.push(issue(
+                        "surface",
+                        format!(
+                            "surface {}: vertex {v} of face {face:?} is not on the surface",
+                            spec.name
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
     if !issues.is_empty() {
         return Err(issues);
     }
@@ -351,12 +399,40 @@ pub fn check(t: &BlockTopology) -> Result<Checked, Vec<Issue>> {
     })
 }
 
-/// The determinant of the three straight edges at a corner slot of a hex
-/// given by its eight corner points, signed so that a right-handed hex is
-/// positive.
-pub(crate) fn corner_det(p: &[Vec3; 8], slot: usize) -> f64 {
-    let [e0, e1, e2] = corner_edges(p, slot);
-    e0.cross(e1).dot(e2)
+/// The determinant of the three edges leaving a corner slot of a block,
+/// each along its curve's tangent where the edge is curved (scaled to its
+/// chord), else along its chord; positive for a right-handed corner. An
+/// arc or spline may leave a corner at a right angle where the chords are
+/// collinear, as at an airfoil's leading edge.
+pub(crate) fn curved_corner_det(t: &BlockTopology, v: &[usize; 8], slot: usize) -> f64 {
+    let p = v.map(|i| t.vertices[i]);
+    let mut e = corner_edges(&p, slot);
+    let c = slot_corner(slot);
+    for (axis, dir) in e.iter_mut().enumerate() {
+        let mut o = c;
+        o[axis] = 1 - c[axis];
+        let (from, to) = (v[slot], v[corner_slot(o[0], o[1], o[2])]);
+        let Some(spec) = t
+            .edges
+            .iter()
+            .find(|s| edge_key(s.vertices[0], s.vertices[1]) == edge_key(from, to))
+        else {
+            continue;
+        };
+        if spec.curve == Curve::Line {
+            continue;
+        }
+        let [a, b] = spec.vertices;
+        let Ok(ev) = distribution::Evaluator::new(t.vertices[a], t.vertices[b], &spec.curve) else {
+            continue;
+        };
+        let tangent = ev.end_tangent(a == from);
+        if tangent.is_finite() {
+            let sign = if c[axis] == 0 { 1.0 } else { -1.0 };
+            *dir = tangent * (sign * (t.vertices[to] - t.vertices[from]).length());
+        }
+    }
+    e[0].cross(e[1]).dot(e[2])
 }
 
 pub(crate) fn corner_edges(p: &[Vec3; 8], slot: usize) -> [Vec3; 3] {
