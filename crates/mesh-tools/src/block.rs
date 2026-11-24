@@ -43,7 +43,17 @@ pub(crate) fn topology(ctx: &Context, path: &str) -> Result<TopologyFile, Diagno
 
 pub(crate) fn template(input: Value, ctx: &Context) -> Run {
     let i: TemplateInput = decode(input)?;
-    let file = block::template(&i.config)?;
+    let text = match &i.config {
+        TemplateConfig::AirfoilCgrid {
+            coordinates: Some(path),
+            ..
+        } => Some(
+            String::from_utf8(ctx.read(path)?)
+                .map_err(|e| Diagnostic::new("invalid_arguments", e).with_path(path))?,
+        ),
+        _ => None,
+    };
+    let file = block::template_with(&i.config, text.as_deref())?;
     let check = block::check(&file)?;
     let mut bytes =
         serde_json::to_vec_pretty(&file).map_err(|e| Diagnostic::new("serialization_failed", e))?;

@@ -13,12 +13,17 @@
 use crate::geometry::Vec3;
 
 /// The shape of a block edge between its two vertices.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Curve {
     Line,
     /// The circular arc from the first vertex through `through` to the second.
     Arc {
         through: Vec3,
+    },
+    /// The natural cubic spline (chord-length parameter) from the first
+    /// vertex through the points `through`, in order, to the second.
+    Spline {
+        through: Vec<Vec3>,
     },
 }
 
@@ -49,7 +54,7 @@ pub enum Distribution {
 }
 
 /// An edge given explicitly; every other block edge is a uniform line.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct EdgeSpec {
     pub vertices: [usize; 2],
     pub curve: Curve,
@@ -71,12 +76,129 @@ pub struct PatchSpec {
     pub faces: Vec<[usize; 4]>,
 }
 
+/// An analytic surface that boundary block faces are projected onto.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Surface {
+    /// The cylinder of `radius` about the line through `point` along `axis`.
+    Cylinder {
+        point: Vec3,
+        axis: Vec3,
+        radius: f64,
+    },
+    /// The torus about the axis through `centre` along `axis`: the circle
+    /// of radius `major` in the plane normal to `axis`, swept by a circle of
+    /// radius `minor`.
+    Torus {
+        centre: Vec3,
+        axis: Vec3,
+        major: f64,
+        minor: f64,
+    },
+}
+
+fn unit(v: Vec3) -> Option<Vec3> {
+    let l = v.length();
+    (l > 0.0 && l.is_finite()).then(|| v / l)
+}
+
+impl Surface {
+    /// Why the surface is unusable, if it is.
+    pub fn problem(&self) -> Option<&'static str> {
+        let ok = |v: f64| v.is_finite() && v > 0.0;
+        match *self {
+            Self::Cylinder {
+                point,
+                axis,
+                radius,
+            } => {
+                if !point.is_finite() || unit(axis).is_none() || !ok(radius) {
+                    return Some(
+                        "a cylinder needs a finite point, a non-zero axis and a positive radius",
+                    );
+                }
+            }
+            Self::Torus {
+                centre,
+                axis,
+                major,
+                minor,
+            } => {
+                if !centre.is_finite() || unit(axis).is_none() || !ok(major) || !ok(minor) {
+                    return Some(
+                        "a torus needs a finite centre, a non-zero axis and positive radii",
+                    );
+                }
+                if minor >= major {
+                    return Some("a torus needs its minor radius below its major radius");
+                }
+            }
+        }
+        None
+    }
+
+    /// The length scale of the surface (its smallest radius).
+    pub fn scale(&self) -> f64 {
+        match *self {
+            Self::Cylinder { radius, .. } => radius,
+            Self::Torus { minor, .. } => minor,
+        }
+    }
+
+    /// The closest point of the surface; a point on the axis (cylinder) or
+    /// on the core circle (torus) has no unique one and is returned as is.
+    pub fn project(&self, p: Vec3) -> Vec3 {
+        match *self {
+            Self::Cylinder {
+                point,
+                axis,
+                radius,
+            } => {
+                let Some(a) = unit(axis) else { return p };
+                let d = p - point;
+                let foot = point + a * d.dot(a);
+                match unit(p - foot) {
+                    Some(r) => foot + r * radius,
+                    None => p,
+                }
+            }
+            Self::Torus {
+                centre,
+                axis,
+                major,
+                minor,
+            } => {
+                let Some(a) = unit(axis) else { return p };
+                let d = p - centre;
+                let Some(radial) = unit(d - a * d.dot(a)) else {
+                    return p;
+                };
+                let ring = centre + radial * major;
+                match unit(p - ring) {
+                    Some(r) => ring + r * minor,
+                    None => p,
+                }
+            }
+        }
+    }
+}
+
+/// A named surface and the boundary block faces whose nodes are projected
+/// onto it (BS-07).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SurfaceSpec {
+    pub name: String,
+    pub surface: Surface,
+    /// Block faces by their four vertices (any order of the four).
+    pub faces: Vec<[usize; 4]>,
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct BlockTopology {
     pub vertices: Vec<Vec3>,
     pub edges: Vec<EdgeSpec>,
     pub blocks: Vec<BlockSpec>,
     pub patches: Vec<PatchSpec>,
+    pub surfaces: Vec<SurfaceSpec>,
 }
 
 /// The corner (i, j, k) ∈ {0, 1}³ of the local block frame as a vertex slot.
@@ -151,5 +273,26 @@ mod tests {
         let edges = block_edges();
         assert_eq!(edges.len(), 12);
         assert_eq!(edges.iter().filter(|e| e.0 == 1).count(), 4);
+    }
+
+    #[test]
+    fn projections_land_on_their_surface() {
+        let torus = Surface::Torus {
+            centre: Vec3::new(1.0, 2.0, 0.0),
+            axis: Vec3::new(0.0, 0.0, 2.0),
+            major: 3.0,
+            minor: 0.5,
+        };
+        let p = torus.project(Vec3::new(4.3, 2.1, 0.2));
+        let rho = ((p.x - 1.0).powi(2) + (p.y - 2.0).powi(2)).sqrt();
+        assert!((((rho - 3.0).powi(2) + p.z * p.z).sqrt() - 0.5).abs() < 1e-14);
+        let cyl = Surface::Cylinder {
+            point: Vec3::ZERO,
+            axis: Vec3::new(1.0, 0.0, 0.0),
+            radius: 2.0,
+        };
+        let q = cyl.project(Vec3::new(5.0, 0.3, -0.4));
+        assert!((q.x - 5.0).abs() < 1e-15 && ((q.y * q.y + q.z * q.z).sqrt() - 2.0).abs() < 1e-15);
+        assert!(torus.problem().is_none() && cyl.problem().is_none());
     }
 }

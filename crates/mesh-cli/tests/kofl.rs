@@ -518,3 +518,57 @@ fn block_tools_build_a_pipe_from_a_template() {
             .contains("count_chain")
     );
 }
+
+/// Invariant (BS-03, BS-07): the elbow and the airfoil C-grid run through
+/// the registry: the elbow file carries its projection surfaces, and an
+/// airfoil read from a Selig coordinate file in the working directory
+/// builds a mesh with the airfoil as wall.
+#[test]
+fn block_templates_build_an_elbow_and_an_airfoil_from_a_file() {
+    let dir = fresh("block-templates");
+    let write = |name: &str, v: Value| std::fs::write(dir.join(name), v.to_string()).unwrap();
+    write(
+        "e.json",
+        serde_json::json!({"config": {"template": "elbow", "radius": 0.05, "bend_radius": 0.15,
+            "angle": 90, "inlet_length": 0.1, "core_cells": 4, "radial_cells": 3,
+            "axial_cells": 12}, "output": "elbow.json"}),
+    );
+    let (ok, e) = kofl_in(&dir, &["call", "block.template", "--input", "e.json"]);
+    assert!(ok, "{e}");
+    assert_eq!(e["result"]["check"]["blocks"], 20);
+    let elbow: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("elbow.json")).unwrap()).unwrap();
+    assert_eq!(elbow["surfaces"][1]["shape"]["kind"], "torus");
+    // a NACA 0012 in Selig order, trailing edge over the upper side
+    let n = 60;
+    let y = |x: f64| {
+        0.6 * (0.2969 * x.sqrt() - 0.1260 * x - 0.3516 * x * x + 0.2843 * x.powi(3)
+            - 0.1036 * x.powi(4))
+    };
+    let mut dat = String::from("NACA 0012\n");
+    for i in (0..=n).rev() {
+        let x = 0.5 * (1.0 - (std::f64::consts::PI * i as f64 / n as f64).cos());
+        dat += &format!("{x:.8} {:.8}\n", y(x));
+    }
+    for i in 1..=n {
+        let x = 0.5 * (1.0 - (std::f64::consts::PI * i as f64 / n as f64).cos());
+        dat += &format!("{x:.8} {:.8}\n", -y(x));
+    }
+    std::fs::write(dir.join("n0012.dat"), dat).unwrap();
+    write(
+        "a.json",
+        serde_json::json!({"config": {"template": "airfoil_cgrid", "coordinates": "n0012.dat",
+            "span": 0.1, "farfield": 5, "wake_length": 5, "surface_cells": 24,
+            "normal_cells": 12, "wake_cells": 12, "wall_spacing": 0.002}, "output": "af.json"}),
+    );
+    let (ok, e) = kofl_in(&dir, &["call", "block.template", "--input", "a.json"]);
+    assert!(ok, "{e}");
+    assert_eq!(e["result"]["check"]["blocks"], 6);
+    write(
+        "g.json",
+        serde_json::json!({"topology": "af.json", "output": "af"}),
+    );
+    let (ok, e) = kofl_in(&dir, &["call", "block.grid", "--input", "g.json"]);
+    assert!(ok, "{e}");
+    assert_eq!(e["result"]["report"]["summary"]["inverted_faces"], 0);
+}

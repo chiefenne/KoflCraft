@@ -376,3 +376,23 @@ tests = [
 ]
 commands = []
 gaps = "Wall control acts on the interior of wall faces; nodes next to block edges that meet a wall follow the nearest controlled node (12 % first-spacing change there on the pipe). Point SOR: 8.8 s for 15,360 cells. Hyperbolic marching, the orthogonal wall block, post-smoothers and the ALG-16 benchmark against harmonic maps are not built"
+
+[[feature]]
+id = "block-mb1c-templates"
+title = "Block-structured variant MB1c: elbow and extruded airfoil C-grid templates, spline edges, face projection onto cylinders and tori"
+requirements = ["BS-02", "BS-03", "BS-07", "BS-19"]
+grade = "partial"
+how = "The elbow (pipe O-grid swept through bend segments of at most 30° with straight legs) projects its wall faces onto cylinders and the torus: wall nodes on the surface to 4e-16, volume converging at second order to the Pappus value (2.7 %, 0.67 %, 0.17 % short); the airfoil C-grid (six blocks, spline wall through 160 points per side) builds for NACA 0012 and 2412 with wall nodes within 6e-7 chords of the analytic section and volume converging at second order; Selig and Lednicer files that are moved, turned, scaled and blunt read to the same closed unit section; the handedness check follows curve tangents so a block may start at a leading edge; FoehnCraft read both back by hand (elbow 15,360 cells, NACA 2412 11,520 cells, no inverted faces)"
+tests = [
+  "crates/mesh-core/src/block.rs::projections_land_on_their_surface",
+  "crates/mesh-algorithms/src/block/distribution.rs::spline_through_a_half_circle",
+  "crates/mesh-algorithms/src/block/tests.rs::elbow_matches_its_torus",
+  "crates/mesh-algorithms/src/block/tests.rs::misplaced_surfaces_are_refused",
+  "crates/mesh-algorithms/src/block/tests.rs::airfoil_cgrid_wraps_its_section",
+  "crates/mesh-algorithms/src/block/tests.rs::coordinate_files_read_to_one_section",
+  "crates/mesh-engine/src/block.rs::elbow_validates_with_its_surfaces",
+  "crates/mesh-engine/src/block.rs::airfoil_cgrid_validates_and_smooths",
+  "crates/mesh-cli/tests/kofl.rs::block_templates_build_an_elbow_and_an_airfoil_from_a_file",
+]
+commands = []
+gaps = "The elliptic smoother keeps every boundary node fixed, symmetry planes included, so an extruded airfoil with one span cell stays the TFI grid (max non-orthogonality 60° near the leading edge on NACA 2412); on the elbow it raises the max non-orthogonality from 23.7° to 38.7° while lowering the wall angle. No O-grid around an airfoil, no T-junction or annulus, no swept airfoil; the FoehnCraft round trip for block meshes is not in the acceptance runner"

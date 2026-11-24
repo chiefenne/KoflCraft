@@ -470,7 +470,7 @@ pub static TOOLS: &[Tool] = &[
         id: "block.template",
         version: 1,
         action: Action::WriteFiles,
-        summary: "Write a block topology (`koflcraft.block-topology`, BS-02/BS-03) for a standard case: `channel` (one block, optional two-sided wall clustering) or `pipe_ogrid` (H-core and four O-grid blocks, optional wall spacing). The file is checked before it is written.",
+        summary: "Write a block topology (`koflcraft.block-topology`, BS-02/BS-03) for a standard case: `channel` (one block, optional two-sided wall clustering) `pipe_ogrid` (H-core and four O-grid blocks, optional wall spacing) `elbow` (the pipe O-grid swept through a bend with optional straight legs, walls projected onto cylinders and the torus) or `airfoil_cgrid` (an extruded C-grid of six blocks around a NACA 4-digit section or a Selig/Lednicer coordinate file, the wall a spline through the points). The file is checked before it is written.",
         legacy_name: None,
         outputs: &["output"],
         input_schema: || {

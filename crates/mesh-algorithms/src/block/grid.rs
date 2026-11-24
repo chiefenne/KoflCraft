@@ -11,6 +11,10 @@
 //! the two local frames, so shared faces match node for node without any
 //! tolerance welding (BS-05), and boundary nodes are never moved (BS-08).
 //!
+//! The interior nodes of a face listed under a surface are projected onto
+//! it (BS-07) before the block interiors are filled, so the interiors see
+//! the exact wall.
+//!
 //! Interior parameters follow the edge distributions: where opposite edges
 //! carry different laws, the parameter of a node blends the chord-length
 //! fractions of its edges, so grid lines join matching nodes.
@@ -110,10 +114,15 @@ impl Builder<'_> {
                 .iter()
                 .find(|e| edge_key(e.vertices[0], e.vertices[1]) == key);
             let (from, to, curve, law) = match spec {
-                Some(s) => (s.vertices[0], s.vertices[1], s.curve, s.distribution),
+                Some(s) => (
+                    s.vertices[0],
+                    s.vertices[1],
+                    s.curve.clone(),
+                    s.distribution,
+                ),
                 None => (key.0, key.1, DEFAULT_EDGE.0, DEFAULT_EDGE.1),
             };
-            let ev = Evaluator::new(self.t.vertices[from], self.t.vertices[to], curve)?;
+            let ev = Evaluator::new(self.t.vertices[from], self.t.vertices[to], &curve)?;
             let s = fractions(law, n, ev.length())?;
             let mut ids = Vec::with_capacity(n + 1);
             ids.push(from);
@@ -190,6 +199,12 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
     for (p, patch) in t.patches.iter().enumerate() {
         for &f in &patch.faces {
             patch_of.insert(face_key(f), p);
+        }
+    }
+    let mut surface_of: HashMap<[usize; 4], usize> = HashMap::new();
+    for (sn, spec) in t.surfaces.iter().enumerate() {
+        for &f in &spec.faces {
+            surface_of.insert(face_key(f), sn);
         }
     }
     for (b, block) in t.blocks.iter().enumerate() {
@@ -288,7 +303,10 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
                                     + p11 * (u * v)
                                     + p01 * ((1.0 - u) * v));
                         local[pos(i, j)] = g.points.len();
-                        g.points.push(p);
+                        g.points.push(match surface_of.get(&key) {
+                            Some(&sn) => t.surfaces[sn].surface.project(p),
+                            None => p,
+                        });
                     }
                 }
                 let mut ids = Vec::with_capacity((m1 + 1) * (m2 + 1));
