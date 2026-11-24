@@ -5,7 +5,7 @@
 The verification grade of every feature (AG-17), how it was checked and what is still missing. A partial result is never presented as success; every tool result also carries a `limitations` list.
 
 - **verified** (9): checked against an exact or independent reference by a named test
-- **partial** (11): works on the named fixtures, with known gaps
+- **partial** (12): works on the named fixtures, with known gaps
 - **unverified** (1): built, not yet checked
 - **open** (0): not built
 
@@ -32,6 +32,7 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 | Verification grades and limitations (AG-17) | verified | docs/status.md is regenerated from this file and compared; every listed test must exist; every result envelope carries `limitations` | — | AG-17 |
 | Crate layering check (SW-19) | verified | Every workspace dependency points to a lower layer or an allowed same-layer use; front ends name no crate below mesh-tools | — | SW-19 |
 | Block-structured variant MB1a: topology file, check, edge laws, TFI, point-matched hexahedra, channel and pipe O-grid templates, block.* tools | partial | Box channel reproduced exactly (volume, unit scaled Jacobians); pipe O-grid volume equals the prism of the inscribed wall polygon to 1e-12 and πR²L within the chord error, wall nodes on the cylinder to 1e-12; every face conforms; permuted and rotated block frames give the same grid; bad count chains, open faces and left-handed blocks refused; CLI chain template → grid writes FoehnCraft files and evidence with block ranges | TFI only (elliptic, hyperbolic, orthogonal wall block and smoothers come in MB1b); explicit block.* edit tools, elbow and airfoil templates, geometry association and polyMesh in the bundle are not built; FoehnCraft round trip (FC-06) run by hand, not yet in the acceptance runner | BS-01, BS-02, BS-03, BS-05, BS-06, BS-08, BS-13, BS-14 |
+| Block-structured variant MB1b: Thompson–Thames–Mastin elliptic smoothing across block faces with wall orthogonality and first-spacing control | partial | A stretched orthogonal channel is a fixed point (nodes move less than 1e-9); on the pipe O-grid the wall angle of the first grid line drops from 3.1° to below 0.5° with the first spacing kept to 1e-4, boundary nodes bit-identical, shared-face and inner-edge nodes moved, volume unchanged to 1e-12, faces conforming, Jacobians positive; wall orthogonality without a wall patch is refused (BS-12); FoehnCraft read the smoothed 15,360-cell pipe back by hand (max non-orthogonality 19.4° against 23.4° for TFI) | Wall control acts on the interior of wall faces; nodes next to block edges that meet a wall follow the nearest controlled node (12 % first-spacing change there on the pipe). Point SOR: 8.8 s for 15,360 cells. Hyperbolic marching, the orthogonal wall block, post-smoothers and the ALG-16 benchmark against harmonic maps are not built | BS-08, BS-09, BS-12, BS-13 |
 
 ## Checks per feature
 
@@ -220,4 +221,11 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 - `local_frames_do_not_change_the_grid` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
 - `inconsistent_counts_are_named` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
 - `pipe_validates_for_foehncraft` in [crates/mesh-engine/src/block.rs](../crates/mesh-engine/src/block.rs)
+- `block_tools_build_a_pipe_from_a_template` in [crates/mesh-cli/tests/kofl.rs](../crates/mesh-cli/tests/kofl.rs)
+
+### Block-structured variant MB1b: Thompson–Thames–Mastin elliptic smoothing across block faces with wall orthogonality and first-spacing control
+
+- `smoothing_keeps_a_stretched_channel` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `pipe_walls_become_orthogonal` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `elliptic_needs_walls_and_improves_them` in [crates/mesh-engine/src/block.rs](../crates/mesh-engine/src/block.rs)
 - `block_tools_build_a_pipe_from_a_template` in [crates/mesh-cli/tests/kofl.rs](../crates/mesh-cli/tests/kofl.rs)

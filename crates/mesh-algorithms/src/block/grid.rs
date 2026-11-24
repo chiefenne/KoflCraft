@@ -70,6 +70,9 @@ pub struct BlockGrid {
     pub boundary: Vec<([usize; 4], usize, usize)>,
     pub edges: Vec<EdgeReport>,
     pub checked: Checked,
+    /// The patch of each of a block's six faces (order of `BLOCK_FACES`),
+    /// `None` for a face shared with another block.
+    pub face_patches: Vec<[Option<usize>; 6]>,
 }
 
 /// Outward faces of a hexahedron in local node slots.
@@ -182,6 +185,7 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
     let mut hexes = Vec::with_capacity(checked.cells);
     let mut blocks = Vec::with_capacity(t.blocks.len());
     let mut boundary = Vec::new();
+    let mut face_patches = Vec::with_capacity(t.blocks.len());
     let mut patch_of: HashMap<[usize; 4], usize> = HashMap::new();
     for (p, patch) in t.patches.iter().enumerate() {
         for &f in &patch.faces {
@@ -325,10 +329,12 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
                 }
             }
         }
+        let mut patches_here = [None; 6];
         for (f, &(fixed, side, _, _)) in BLOCK_FACES.iter().enumerate() {
             let Some(&patch) = patch_of.get(&face_key(face_vertices(&block.vertices, f))) else {
                 continue;
             };
+            patches_here[f] = Some(patch);
             for k in 0..n[2] {
                 for j in 0..n[1] {
                     for i in 0..n[0] {
@@ -343,6 +349,7 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
                 }
             }
         }
+        face_patches.push(patches_here);
         blocks.push(BlockRange {
             block: b,
             domain: block.domain.clone(),
@@ -364,6 +371,7 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
         boundary,
         edges: g.reports,
         checked,
+        face_patches,
     })
 }
 
@@ -483,6 +491,21 @@ impl BlockGrid {
                 q
             })
             .collect()
+    }
+
+    /// The node ids of block `b` in its local grid, index
+    /// i + (ni + 1) (j + (nj + 1) k).
+    pub fn block_nodes(&self, b: usize) -> Vec<usize> {
+        let [ni, nj, nk] = self.blocks[b].cells;
+        let mut ids = Vec::with_capacity((ni + 1) * (nj + 1) * (nk + 1));
+        for k in 0..=nk {
+            for j in 0..=nj {
+                for i in 0..=ni {
+                    ids.push(self.block_corner(b, i, j, k));
+                }
+            }
+        }
+        ids
     }
 
     /// The node ids of the corner (i, j, k) of block `b` in its local grid.

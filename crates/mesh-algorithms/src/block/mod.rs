@@ -7,6 +7,7 @@
 
 pub mod distribution;
 pub mod grid;
+pub mod smooth;
 pub mod templates;
 
 use std::collections::{BTreeMap, HashMap};

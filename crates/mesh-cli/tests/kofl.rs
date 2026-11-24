@@ -495,6 +495,14 @@ fn block_tools_build_a_pipe_from_a_template() {
     for f in ["volume.vtu", "mesh.msh", "foehncraft.vtu", "report.json"] {
         assert!(dir.join("mesh").join(f).is_file(), "{f}");
     }
+    write(
+        "ge.json",
+        serde_json::json!({"topology": "pipe.json", "output": "smooth", "algorithm": {"kind": "elliptic"}}),
+    );
+    let (ok, e) = kofl_in(&dir, &["call", "block.grid", "--input", "ge.json"]);
+    assert!(ok, "{e}");
+    assert_eq!(e["result"]["report"]["algorithm"], "block_elliptic_v1");
+    assert_eq!(e["result"]["report"]["smoothing"]["converged"], true);
     let mut topo: Value =
         serde_json::from_slice(&std::fs::read(dir.join("pipe.json")).unwrap()).unwrap();
     topo["blocks"][2]["cells"][1] = 7.into();

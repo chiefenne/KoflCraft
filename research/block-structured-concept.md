@@ -212,4 +212,27 @@ Recorded as section 4c of [the requirements](../docs/requirements.md)
 
 MB1a results (`block.grid`, release build): pipe R = 0.05, L = 0.5, 8 core cells per quarter, 10 radial, 40 axial, wall spacing 5e-4: 15,360 hexahedra, minimum scaled Jacobian 0.707 (the core corners), volume 0.641 % below πR²L, which is the chord error of 32 wall nodes per circle; the sum of cell volumes equals the boundary-enclosed volume to rounding. Channel 1 × 0.1 × 0.05 with 50 × 20 × 12 cells and wall spacing 5e-4: 12,000 hexahedra, exact volume, scaled Jacobian 1.
 
-Open for MB1b, each to be put on a card: elliptic smoothing (Winslow / Thompson–Thames–Mastin with Steger–Sorenson control), the orthogonal wall block, the explicit `block.*` edit tools (BS-04), elbow and airfoil C-grid templates, polyMesh in the bundle, the FoehnCraft round trip in the acceptance runner, and the ALG-16 benchmark against harmonic maps.
+Open after MB1a, each to be put on a card: elliptic smoothing (Winslow / Thompson–Thames–Mastin with Steger–Sorenson control), the orthogonal wall block, the explicit `block.*` edit tools (BS-04), elbow and airfoil C-grid templates, polyMesh in the bundle, the FoehnCraft round trip in the acceptance runner, and the ALG-16 benchmark against harmonic maps.
+
+### MB1b: elliptic smoothing (2026-11-24)
+
+Cards: "Elliptic smoothing + wall orthogonality" as the next step, and "Smooth across interfaces too" for the faces between blocks.
+
+Built (`mesh-algorithms::block::smooth`, `block.grid` with `algorithm: {"kind": "elliptic"}`): every node off the boundary moves. Nodes inside a block or a shared face solve the Thompson–Thames–Mastin system in the index space of their home block; across a shared face the stencil reads the neighbour block's node one step off the same face node, so any pair of local frames joins into one structured neighbourhood. Nodes on inner block edges (the O-grid core corners, valence 3) move to the average of their neighbours in the plane normal to the edge. Distribution controls are frozen from the TFI grid, so a stretched orthogonal grid is a fixed point. At walls the system evaluated with the target slope (inward normal times the TFI first spacing; Steger and Sorenson 1979, 3DGRAPE 1989) gives the tangential controls. The off-wall control is the TFI distribution control plus an integral feedback on log(h / h_target).
+
+Two findings, measured:
+- **The Sorenson system alone does not pin the first spacing.** Solving all three controls from the wall equation with a one-sided cubic for r_ζζ converged with the first spacing 20 % (face interior) to 40 % (block edges) too large. Every spacing has a matching off-wall control that is self-consistent. Fix: the off-wall control comes from spacing feedback, and only the tangential ones from the system. Result: spacing kept to 1e-6 on the face interior.
+- **Control relaxation 0.2 oscillates on coarse grids** (3 radial cells: last change 0.95 of the shortest edge after 3,000 sweeps); 0.05 converges in 618. The default is now 0.05.
+
+Pipe R = 0.05, L = 0.5, 8/10/40 cells, wall spacing 5e-4 (release build, 8.8 s):
+
+| | TFI | Elliptic |
+|---|---|---|
+| Wall angle of first grid line, max / mean | 3.12° / 2.26° | 0.37° / 0.18° |
+| First spacing change (wall face interior) | — | 5e-7 |
+| Minimum scaled Jacobian | 0.707 | 0.695 |
+| FoehnCraft non-orthogonality, max / mean | 23.4° / 2.12° | 19.4° / 1.34° |
+| FoehnCraft skewness, max / mean | 0.328 / 0.025 | 0.275 / 0.018 |
+| Volume, cells and faces | equal | equal |
+
+The minimum scaled Jacobian is set by the O-grid core corners on the inlet and outlet. Those are boundary nodes and do not move.

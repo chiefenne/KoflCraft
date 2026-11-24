@@ -5,6 +5,7 @@
 
 use std::ffi::OsStr;
 
+use mesh_algorithms::block::smooth::{SmoothOptions, smooth};
 use mesh_algorithms::block::{self as algo, BlockGrid, Issue, templates};
 use mesh_core::block::{
     BlockSpec, BlockTopology, Curve, Distribution, EdgeEnd, EdgeSpec, PatchSpec,
@@ -19,6 +20,31 @@ use crate::{EngineError, ErrorCode, MeshDirectory};
 pub const TOPOLOGY_FORMAT: &str = "koflcraft.block-topology";
 pub const TOPOLOGY_FORMAT_VERSION: &str = "1.0";
 pub const ALGORITHM: &str = "block_tfi_v1";
+pub const ELLIPTIC_ALGORITHM: &str = "block_elliptic_v1";
+
+/// The volume algorithm of `block.grid` (BS-09), a choice separate from
+/// the topology.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum VolumeAlgorithm {
+    /// Transfinite interpolation only.
+    #[default]
+    Tfi,
+    /// TFI, then Thompson–Thames–Mastin elliptic smoothing of every node
+    /// off the boundary, across block faces.
+    Elliptic {
+        /// Orthogonality and first-spacing control at the faces of the
+        /// patches with the role `wall` (default true).
+        #[serde(default = "yes")]
+        wall_orthogonality: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_iterations: Option<usize>,
+    },
+}
+
+fn yes() -> bool {
+    true
+}
 /// Cells and points of a sum of cell volumes and of the volume the boundary
 /// encloses may differ by this fraction at most (rounding only).
 pub const CONSERVATION_TOLERANCE: f64 = 1e-10;
@@ -371,12 +397,15 @@ fn validation(message: impl std::fmt::Display) -> EngineError {
 /// `foehncraft.vtu`, `report.json` and `mesh-evidence.json`.
 pub fn generate(
     file: &TopologyFile,
+    algorithm: &VolumeAlgorithm,
     dir: &MeshDirectory,
     name: &OsStr,
 ) -> Result<Value, EngineError> {
-    let t = file.topology()?;
-    let grid = algo::build(&t).map_err(issues_error)?;
-    let (report, handoff, structure) = validate(file, &grid)?;
+    let (grid, smoothing) = grid(file, algorithm)?;
+    let (mut report, handoff, structure) = validate(file, &grid)?;
+    report["volume_algorithm"] = json!(algorithm);
+    report["algorithm"] = json!(algorithm_name(algorithm));
+    report["smoothing"] = smoothing;
     let json_report = serde_json::to_vec_pretty(&report)
         .map_err(|e| EngineError::new(ErrorCode::SerializationFailed, e))?;
     let fail = crate::handoff::stream_error;
@@ -395,7 +424,7 @@ pub fn generate(
         .stream(crate::handoff::FOEHNCRAFT_VTU, |w| {
             crate::handoff::HandoffFormat::Vtu.write(
                 &handoff,
-                &[("koflcraft_algorithm", ALGORITHM.to_string())],
+                &[("koflcraft_algorithm", algorithm_name(algorithm).to_string())],
                 w,
             )
         })
@@ -403,13 +432,92 @@ pub fn generate(
     bundle
         .stream("report.json", |w| w.write_all(&json_report))
         .map_err(fail)?;
-    let evidence =
-        crate::handoff::evidence_with(&handoff, ALGORITHM, bundle.files(), Some(structure))?;
+    let evidence = crate::handoff::evidence_with(
+        &handoff,
+        algorithm_name(algorithm),
+        bundle.files(),
+        Some(structure),
+    )?;
     bundle
         .stream(crate::handoff::MESH_EVIDENCE, |w| w.write_all(&evidence))
         .map_err(fail)?;
     bundle.finish();
     Ok(report)
+}
+
+fn algorithm_name(algorithm: &VolumeAlgorithm) -> &'static str {
+    match algorithm {
+        VolumeAlgorithm::Tfi => ALGORITHM,
+        VolumeAlgorithm::Elliptic { .. } => ELLIPTIC_ALGORITHM,
+    }
+}
+
+/// The patches with the role `wall` (given, or from the name).
+fn wall_patches(file: &TopologyFile) -> Vec<usize> {
+    file.patches
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.role.unwrap_or_else(|| PatchRole::from_name(&p.name)) == PatchRole::Wall)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// The grid of a topology with the chosen volume algorithm, and what the
+/// smoother did (for TFI: the wall angles of the TFI grid).
+pub fn grid(
+    file: &TopologyFile,
+    algorithm: &VolumeAlgorithm,
+) -> Result<(BlockGrid, Value), EngineError> {
+    let t = file.topology()?;
+    let mut grid = algo::build(&t).map_err(issues_error)?;
+    let walls = wall_patches(file);
+    let mut options = SmoothOptions {
+        wall_patches: walls.clone(),
+        ..SmoothOptions::default()
+    };
+    match *algorithm {
+        VolumeAlgorithm::Tfi => options.max_iterations = 0,
+        VolumeAlgorithm::Elliptic {
+            wall_orthogonality,
+            max_iterations,
+        } => {
+            if wall_orthogonality && walls.is_empty() {
+                // BS-12: a request the algorithm cannot honour is refused
+                return Err(EngineError::new(
+                    ErrorCode::InvalidArguments,
+                    "wall_orthogonality needs a patch with the role wall; set wall_orthogonality to false or give a patch that role",
+                ));
+            }
+            if !wall_orthogonality {
+                options.wall_patches.clear();
+            }
+            if let Some(n) = max_iterations {
+                options.max_iterations = n;
+            }
+        }
+    }
+    let s = smooth(&mut grid, &options)
+        .map_err(|e| EngineError::new(ErrorCode::GenerationFailed, e))?;
+    if options.max_iterations > 0 && !s.converged {
+        return Err(EngineError::new(
+            ErrorCode::GenerationFailed,
+            format!(
+                "elliptic smoothing did not converge in {} iterations (last change {:e} of the shortest edge); raise max_iterations or use kind tfi",
+                s.iterations, s.last_change
+            ),
+        ));
+    }
+    let report = json!({
+        "iterations": s.iterations, "converged": s.converged, "last_change": s.last_change,
+        "moved_block_nodes": if options.max_iterations > 0 { s.block_nodes } else { 0 },
+        "moved_face_nodes": if options.max_iterations > 0 { s.face_nodes } else { 0 },
+        "moved_edge_nodes": if options.max_iterations > 0 { s.edge_nodes } else { 0 },
+        "wall_faces": s.wall_faces,
+        "wall_angle_deg": {"max_tfi": s.wall_angle_max_before, "max": s.wall_angle_max_after,
+                           "mean_tfi": s.wall_angle_mean_before, "mean": s.wall_angle_mean_after},
+        "first_spacing_change": s.first_spacing_change,
+    });
+    Ok((grid, report))
 }
 
 /// The checks of BS-13 and the report; the hand-off mesh is the conforming
@@ -424,7 +532,7 @@ fn validate(
         .find(|q| q.min_jacobian.is_nan() || q.min_jacobian <= 0.0)
     {
         return Err(validation(format!(
-            "block {} has a hexahedron with the corner Jacobian {:e}; TFI folds this block (elliptic smoothing comes in MB1b)",
+            "block {} has a hexahedron with the corner Jacobian {:e}; the volume algorithm folds this block",
             q.block, q.min_jacobian
         )));
     }
@@ -555,7 +663,7 @@ mod tests {
             wall_spacing: Some(0.01),
         })
         .unwrap();
-        let grid = algo::build(&file.topology().unwrap()).unwrap();
+        let (grid, _) = super::grid(&file, &VolumeAlgorithm::Tfi).unwrap();
         let (report, handoff, structure) = validate(&file, &grid).unwrap();
         let s = handoff.summary();
         assert_eq!(s.cells, 5 * (36 + 4 * 24));
@@ -568,5 +676,44 @@ mod tests {
         // 24 chords on the circle: the inscribed polygon is 1.14 % short
         let d = report["reference"]["relative_deviation"].as_f64().unwrap();
         assert!(d < 0.0 && d > -0.0115, "{d}");
+    }
+
+    /// Invariant (BS-12): elliptic smoothing with wall orthogonality on a
+    /// topology without a wall patch is refused, not run without it; with
+    /// walls it validates and reports smaller wall angles than TFI.
+    #[test]
+    fn elliptic_needs_walls_and_improves_them() {
+        let mut file = template(&TemplateConfig::PipeOgrid {
+            radius: 0.5,
+            length: 1.0,
+            core_fraction: None,
+            core_cells: 6,
+            radial_cells: 6,
+            axial_cells: 3,
+            wall_spacing: Some(0.01),
+        })
+        .unwrap();
+        let elliptic = VolumeAlgorithm::Elliptic {
+            wall_orthogonality: true,
+            max_iterations: None,
+        };
+        let (grid_e, s) = super::grid(&file, &elliptic).unwrap();
+        let (_, t) = super::grid(&file, &VolumeAlgorithm::Tfi).unwrap();
+        validate(&file, &grid_e).unwrap();
+        let angle = |v: &Value, k: &str| v["wall_angle_deg"][k].as_f64().unwrap();
+        assert!(angle(&s, "max") < 0.5 * angle(&t, "max"), "{s} {t}");
+        assert_eq!(t["iterations"], 0);
+        file.patches[2].role = Some(PatchRole::Unspecified);
+        file.patches[2].name = "rim".into();
+        let e = super::grid(&file, &elliptic).unwrap_err();
+        assert_eq!(e.code, ErrorCode::InvalidArguments);
+        super::grid(
+            &file,
+            &VolumeAlgorithm::Elliptic {
+                wall_orthogonality: false,
+                max_iterations: None,
+            },
+        )
+        .unwrap();
     }
 }
