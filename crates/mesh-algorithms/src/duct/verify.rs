@@ -14,6 +14,152 @@ pub struct Measurements {
     pub tetrahedra_below_mean_ratio_0_1: usize,
     pub normal_thickness_ranges: Vec<[f64; 2]>,
     pub minimum_kernel_clearance: f64,
+    /// The solver rules, counted beside the strict checks.
+    pub solver_rules: SolverRules,
+}
+
+/// Cells counted against the validity rules of production finite-volume
+/// codes (OpenFOAM's mesh description and checkMesh, the STAR-CCM+ and
+/// Fluent cell checks; research/robust-polyhedral-meshing): a cell is
+/// usable when its shell is closed, its volume is positive, every face
+/// pyramid on the cell centre is positive and every face points away from
+/// the cell (owner-to-neighbour vector, or centre-to-face vector at the
+/// boundary, at less than 90° to the face normal). Faces need not be flat:
+/// a face's area vector, centre and pyramids come from the triangle fan on
+/// its vertex mean, as in those codes. Report only; the strict checks
+/// below still decide.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SolverRules {
+    pub cells: usize,
+    /// Cells failing at least one rule.
+    pub failing_cells: usize,
+    /// Shell not closed: an edge not used by exactly two faces of the cell,
+    /// or the face area vectors not summing to zero (1e-6 of their sum).
+    pub open_cells: usize,
+    pub nonpositive_volume: usize,
+    /// Cells with a face pyramid of nonpositive volume.
+    pub negative_pyramids: usize,
+    /// Cells with a face at 90° or more (non-orthogonality).
+    pub faces_turned_away: usize,
+    /// Largest non-orthogonality over all faces, degrees.
+    pub maximum_non_orthogonality: f64,
+}
+
+/// Area vector and centre of a face as finite-volume codes take them:
+/// triangles fanned from the vertex mean, centres weighted by area.
+fn fv_face(p: &[Vec3], ring: &[usize]) -> (Vec3, Vec3) {
+    let mean = ring.iter().fold(Vec3::ZERO, |s, &v| s + p[v]) / ring.len() as f64;
+    if ring.len() == 3 {
+        let [a, b, c] = [p[ring[0]], p[ring[1]], p[ring[2]]];
+        return ((b - a).cross(c - a) * 0.5, mean);
+    }
+    let mut area = Vec3::ZERO;
+    let mut moment = Vec3::ZERO;
+    let mut weight = 0.0;
+    for (i, &v) in ring.iter().enumerate() {
+        let (a, b) = (p[v], p[ring[(i + 1) % ring.len()]]);
+        let n = (a - mean).cross(b - mean) * 0.5;
+        area = area + n;
+        let w = n.length();
+        moment = moment + (a + b + mean) * (w / 3.0);
+        weight += w;
+    }
+    let centre = if weight > 0.0 { moment / weight } else { mean };
+    (area, centre)
+}
+
+/// Counts the cells of a mesh against [`SolverRules`].
+pub fn solver_rules(p: &[Vec3], cells: &[Cell]) -> SolverRules {
+    let mut out = SolverRules {
+        cells: cells.len(),
+        ..SolverRules::default()
+    };
+    let mut centres = Vec::with_capacity(cells.len());
+    let mut bad = vec![false; cells.len()];
+    // face key -> (cell, area vector, face centre) of the first cell seen
+    let mut faces: HashMap<Vec<usize>, (usize, Vec3, Vec3)> = HashMap::new();
+    let mut shared: Vec<(usize, usize, Vec3)> = Vec::new();
+    let mut open_faces: Vec<(usize, Vec3, Vec3)> = Vec::new();
+    for (id, cell) in cells.iter().enumerate() {
+        let rings = cell.element.faces();
+        let geometry: Vec<(Vec3, Vec3)> = rings.iter().map(|r| fv_face(p, r)).collect();
+        // closed shell: every edge twice, area vectors summing to zero
+        let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
+        for r in &rings {
+            for (i, &a) in r.iter().enumerate() {
+                let b = r[(i + 1) % r.len()];
+                *edges.entry((a.min(b), a.max(b))).or_default() += 1;
+            }
+        }
+        let sum = geometry.iter().fold(Vec3::ZERO, |s, g| s + g.0);
+        let total: f64 = geometry.iter().map(|g| g.0.length()).sum();
+        let open = edges.values().any(|&n| n != 2)
+            || sum.length().partial_cmp(&(1e-6 * total)) == Some(std::cmp::Ordering::Greater)
+            || !total.is_finite();
+        // volume and centre from pyramids on the mean of the face centres
+        let estimate =
+            geometry.iter().fold(Vec3::ZERO, |s, g| s + g.1) / geometry.len().max(1) as f64;
+        let mut volume = 0.0;
+        let mut moment = Vec3::ZERO;
+        for (area, centre) in &geometry {
+            let v = area.dot(*centre - estimate) / 3.0;
+            volume += v;
+            moment = moment + (*centre * 0.75 + estimate * 0.25) * v;
+        }
+        let centre = if volume.abs() > 0.0 && volume.is_finite() {
+            moment / volume
+        } else {
+            estimate
+        };
+        let pyramids_ok = geometry.iter().all(|(area, c)| area.dot(*c - centre) > 0.0);
+        out.open_cells += usize::from(open);
+        let nonpositive = volume.is_nan() || volume <= 0.0;
+        out.nonpositive_volume += usize::from(nonpositive);
+        out.negative_pyramids += usize::from(!pyramids_ok);
+        bad[id] = open || nonpositive || !pyramids_ok;
+        centres.push(centre);
+        for (r, (area, c)) in rings.iter().zip(geometry) {
+            match faces.remove(&key(r)) {
+                Some((other, other_area, _)) => shared.push((other, id, other_area)),
+                None => {
+                    faces.insert(key(r), (id, area, c));
+                }
+            }
+        }
+    }
+    for (_, (id, area, c)) in faces {
+        open_faces.push((id, area, c));
+    }
+    let mut turned = vec![false; cells.len()];
+    let mut worst = 0.0_f64;
+    let mut check = |cells_of_face: &[usize], d: Vec3, area: Vec3| {
+        let cos = d.dot(area) / (d.length() * area.length());
+        let degrees = if cos.is_finite() {
+            cos.clamp(-1.0, 1.0).acos().to_degrees()
+        } else {
+            180.0
+        };
+        worst = worst.max(degrees);
+        if cos.is_nan() || cos <= 0.0 {
+            for &c in cells_of_face {
+                turned[c] = true;
+            }
+        }
+    };
+    for (owner, neighbour, area) in shared {
+        check(
+            &[owner, neighbour],
+            centres[neighbour] - centres[owner],
+            area,
+        );
+    }
+    for (owner, area, c) in open_faces {
+        check(&[owner], c - centres[owner], area);
+    }
+    out.maximum_non_orthogonality = worst;
+    out.faces_turned_away = turned.iter().filter(|&&t| t).count();
+    out.failing_cells = bad.iter().zip(&turned).filter(|(b, t)| **b || **t).count();
+    out
 }
 
 fn det(a: Vec3, b: Vec3, c: Vec3) -> f64 {
@@ -226,6 +372,19 @@ pub(super) fn check_with_interface_count(
     layers: usize,
     expected_interfaces: usize,
 ) -> Result<Measurements, String> {
+    let solver_rules = solver_rules(p, cells);
+    if crate::trace_enabled() {
+        eprintln!(
+            "kofl trace: solver rules: {} of {} cells fail (open {}, volume {}, pyramids {}, turned away {}), max non-orthogonality {:.2}°",
+            solver_rules.failing_cells,
+            solver_rules.cells,
+            solver_rules.open_cells,
+            solver_rules.nonpositive_volume,
+            solver_rules.negative_pyramids,
+            solver_rules.faces_turned_away,
+            solver_rules.maximum_non_orthogonality
+        );
+    }
     let mut exterior = HashMap::new();
     let mut areas = [0.; 3];
     let mut port_layer_areas = [vec![0.; layers + 1], vec![0.; layers + 1]];
@@ -391,12 +550,62 @@ pub(super) fn check_with_interface_count(
         port_layer_areas,
         normal_thickness_ranges,
         minimum_kernel_clearance,
+        solver_rules,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cell(element: Element) -> Cell {
+        Cell {
+            element,
+            layer: 0,
+            region: 0,
+        }
+    }
+
+    #[test]
+    fn warped_faces_pass_the_solver_rules() {
+        // a wedge whose top corner is lifted: its three side quads are not
+        // flat, which the solver rules accept
+        let p = [
+            [0., 0., 0.],
+            [1., 0., 0.],
+            [0., 1., 0.],
+            [0., 0., 1.],
+            [1., 0., 1.3],
+            [0., 1., 1.],
+        ]
+        .map(|[x, y, z]| Vec3::new(x, y, z));
+        let r = solver_rules(&p, &[cell(Element::Wedge([0, 1, 2, 3, 4, 5]))]);
+        assert_eq!(r.failing_cells, 0, "{r:?}");
+        assert!(r.maximum_non_orthogonality < 90.0);
+    }
+
+    #[test]
+    fn two_tetrahedra_pass_and_an_inverted_one_fails() {
+        let p = [
+            [0., 0., 0.],
+            [1., 0., 0.],
+            [0., 1., 0.],
+            [0., 0., 1.],
+            [0.6, 0.6, 0.6],
+        ]
+        .map(|[x, y, z]| Vec3::new(x, y, z));
+        let good = [
+            cell(Element::Tet([0, 1, 2, 3])),
+            cell(Element::Tet([1, 2, 3, 4])),
+        ];
+        // the second tetrahedron must be oriented positively
+        let r = solver_rules(&p, &good);
+        assert_eq!((r.cells, r.failing_cells), (2, 0), "{r:?}");
+        let inverted = [cell(Element::Tet([0, 2, 1, 3]))];
+        let r = solver_rules(&p, &inverted);
+        assert_eq!(r.failing_cells, 1);
+        assert_eq!(r.nonpositive_volume, 1);
+    }
 
     #[test]
     fn wedge_with_positive_end_jacobians_can_invert_halfway() {
