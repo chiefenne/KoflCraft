@@ -685,10 +685,15 @@ fn algorithm_name(algorithm: &VolumeAlgorithm) -> &'static str {
 
 /// The patches with the role `wall` (given, or from the name).
 fn wall_patches(file: &TopologyFile) -> Vec<usize> {
+    role_patches(file, PatchRole::Wall)
+}
+
+/// The patches with a role (given, or from the name).
+fn role_patches(file: &TopologyFile, role: PatchRole) -> Vec<usize> {
     file.patches
         .iter()
         .enumerate()
-        .filter(|(_, p)| p.role.unwrap_or_else(|| PatchRole::from_name(&p.name)) == PatchRole::Wall)
+        .filter(|(_, p)| p.role.unwrap_or_else(|| PatchRole::from_name(&p.name)) == role)
         .map(|(i, _)| i)
         .collect()
 }
@@ -704,6 +709,7 @@ pub fn grid(
     let walls = wall_patches(file);
     let mut options = SmoothOptions {
         wall_patches: walls.clone(),
+        sliding_patches: role_patches(file, PatchRole::Symmetry),
         ..SmoothOptions::default()
     };
     match *algorithm {
@@ -743,6 +749,9 @@ pub fn grid(
         "moved_block_nodes": if options.max_iterations > 0 { s.block_nodes } else { 0 },
         "moved_face_nodes": if options.max_iterations > 0 { s.face_nodes } else { 0 },
         "moved_edge_nodes": if options.max_iterations > 0 { s.edge_nodes } else { 0 },
+        "moved_vertex_nodes": if options.max_iterations > 0 { s.vertex_nodes } else { 0 },
+        "sliding_patches": s.sliding_patches,
+        "moved_sliding_nodes": if options.max_iterations > 0 { s.sliding_nodes } else { 0 },
         "wall_faces": s.wall_faces,
         "wall_angle_deg": {"max_tfi": s.wall_angle_max_before, "max": s.wall_angle_max_after,
                            "mean_tfi": s.wall_angle_mean_before, "mean": s.wall_angle_mean_after},
@@ -984,9 +993,10 @@ mod tests {
                 "symmetry_high"
             ]
         );
-        // one cell along the span: every node is on a boundary, so the
-        // elliptic smoother has nothing to move (symmetry sliding is open)
-        let (_, report) = super::grid(
+        // one cell along the span: every node is on a boundary; the nodes
+        // on the two symmetry planes slide, so the smoother still works and
+        // pulls the grid lines toward the wall normal
+        let (smooth, report) = super::grid(
             &file,
             &VolumeAlgorithm::Elliptic {
                 wall_orthogonality: true,
@@ -994,8 +1004,18 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(report["iterations"], 0);
-        assert_eq!(report["moved_block_nodes"], 0);
+        assert_eq!(report["converged"], true);
+        assert_eq!(report["sliding_patches"], 2);
+        assert!(report["moved_sliding_nodes"].as_u64().unwrap() > 0);
+        let angle = &report["wall_angle_deg"];
+        assert!(angle["max"].as_f64().unwrap() < 0.5 * angle["max_tfi"].as_f64().unwrap());
+        assert!(angle["mean"].as_f64().unwrap() < 0.5 * angle["mean_tfi"].as_f64().unwrap());
+        // the sliding nodes stay on their planes z = 0 and z = span
+        for p in &smooth.points {
+            let on_low = p.z.abs() < 1e-9;
+            let on_high = (p.z - 0.1).abs() < 1e-9;
+            assert!(on_low || on_high, "node left its symmetry plane: {p:?}");
+        }
     }
 
     /// Invariant (BS-12): elliptic smoothing with wall orthogonality on a
