@@ -1,0 +1,1 @@
+- Voronoi core hardening paused: the research note records the six cells of a jacket-like part that still fail the final checks, their cause (exact names, rounded coordinates, true edges shorter than the rounding) and the open options. No code change. [Note](../research/voronoi-symbolic.md)
