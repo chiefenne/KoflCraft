@@ -297,9 +297,11 @@ fn check_fixture(
     })
 }
 
-/// FC-06: the box fixtures as `foehncraft.vtu`, `polyMesh` and MSH 4.1, and
-/// the channel and duct bundles as `foehncraft.vtu` and MSH 4.1, each read
-/// by FoehnCraft and compared with KoflCraft's summary.
+/// FC-06: the box fixtures as `foehncraft.vtu`, `foehncraft.vtkhdf`,
+/// `polyMesh` and MSH 4.1, and the channel and duct bundles as their
+/// default `foehncraft.vtkhdf` and MSH 4.1 (the channel also with
+/// `--handoff vtu`), each read by FoehnCraft and compared with KoflCraft's
+/// summary.
 fn round_trip(cli: &Path, foehn: &Path, root: &Path, workspace: &Path) -> RunResult<Vec<Value>> {
     let mut checks = Vec::new();
     let mut run = |dir: &Path, file: &str, evidence: &Path, kind: foehn::Kind| -> RunResult<()> {
@@ -332,10 +334,21 @@ fn round_trip(cli: &Path, foehn: &Path, root: &Path, workspace: &Path) -> RunRes
         run_cli(
             cli,
             &dir,
+            &[
+                "export",
+                "cli.mesh.json",
+                "foehncraft-vtkhdf",
+                "cli.foehn.vtkhdf",
+            ],
+        )?;
+        run_cli(
+            cli,
+            &dir,
             &["export", "cli.mesh.json", "openfoam", "cli.foam"],
         )?;
         let evidence = dir.join("cli.foam/mesh-evidence.json");
         run(&dir, "cli.foehn.vtu", &evidence, foehn::Kind::Faces)?;
+        run(&dir, "cli.foehn.vtkhdf", &evidence, foehn::Kind::Faces)?;
         run(&dir, "cli.foam", &evidence, foehn::Kind::Faces)?;
         run(&dir, "cli.msh", &evidence, foehn::Kind::Subdivision)?;
     }
@@ -354,8 +367,25 @@ fn round_trip(cli: &Path, foehn: &Path, root: &Path, workspace: &Path) -> RunRes
     )?;
     run(
         &bundles,
-        "channel/foehncraft.vtu",
+        "channel/foehncraft.vtkhdf",
         &bundles.join("channel/mesh-evidence.json"),
+        foehn::Kind::Faces,
+    )?;
+    run_cli(
+        cli,
+        &bundles,
+        &[
+            "generate-channel",
+            &path("straight-channel.json"),
+            "channel-vtu",
+            "--handoff",
+            "vtu",
+        ],
+    )?;
+    run(
+        &bundles,
+        "channel-vtu/foehncraft.vtu",
+        &bundles.join("channel-vtu/mesh-evidence.json"),
         foehn::Kind::Faces,
     )?;
     run(
@@ -385,7 +415,7 @@ fn round_trip(cli: &Path, foehn: &Path, root: &Path, workspace: &Path) -> RunRes
         let evidence = bundles.join(&name).join("mesh-evidence.json");
         run(
             &bundles,
-            &format!("{name}/foehncraft.vtu"),
+            &format!("{name}/foehncraft.vtkhdf"),
             &evidence,
             foehn::Kind::Faces,
         )?;
@@ -443,6 +473,7 @@ fn round_trip(cli: &Path, foehn: &Path, root: &Path, workspace: &Path) -> RunRes
     for (format, file) in [
         ("openfoam", "foam"),
         ("foehncraft", "m.vtu"),
+        ("foehncraft-vtkhdf", "m.vtkhdf"),
         ("gmsh", "m.msh"),
     ] {
         run_cli(cli, &patched, &["export", "m.json", format, file])?;
@@ -461,6 +492,12 @@ fn round_trip(cli: &Path, foehn: &Path, root: &Path, workspace: &Path) -> RunRes
         &format!("patched box exports patches {names:?}"),
     )?;
     run(&bundles, "patched-box/m.vtu", &evidence, foehn::Kind::Faces)?;
+    run(
+        &bundles,
+        "patched-box/m.vtkhdf",
+        &evidence,
+        foehn::Kind::Faces,
+    )?;
     run(&bundles, "patched-box/foam", &evidence, foehn::Kind::Faces)?;
     run(
         &bundles,

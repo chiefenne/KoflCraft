@@ -72,8 +72,8 @@ pub struct GenerateStlInput {
     pub patches: Option<String>,
 }
 
-fn is_vtu(format: &HandoffFormat) -> bool {
-    *format == HandoffFormat::Vtu
+fn is_default(format: &HandoffFormat) -> bool {
+    *format == HandoffFormat::default()
 }
 
 #[derive(Deserialize, Serialize)]
@@ -81,8 +81,8 @@ fn is_vtu(format: &HandoffFormat) -> bool {
 pub struct SweepInput {
     pub config: SweepConfig,
     pub output: String,
-    /// The FoehnCraft file of the bundle: `vtu` (default) or `vtkhdf`.
-    #[serde(default, skip_serializing_if = "is_vtu")]
+    /// The FoehnCraft file of the bundle: `vtkhdf` (default) or `vtu`.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub handoff: HandoffFormat,
 }
 
@@ -91,8 +91,8 @@ pub struct SweepInput {
 pub struct ChannelInput {
     pub config: ChannelConfig,
     pub output: String,
-    /// The FoehnCraft file of the bundle: `vtu` (default) or `vtkhdf`.
-    #[serde(default, skip_serializing_if = "is_vtu")]
+    /// The FoehnCraft file of the bundle: `vtkhdf` (default) or `vtu`.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub handoff: HandoffFormat,
 }
 
@@ -104,8 +104,8 @@ pub struct DuctInput {
     pub partition: String,
     pub mode: Mode,
     pub output: String,
-    /// The FoehnCraft file of the bundle: `vtu` (default) or `vtkhdf`.
-    #[serde(default, skip_serializing_if = "is_vtu")]
+    /// The FoehnCraft file of the bundle: `vtkhdf` (default) or `vtu`.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub handoff: HandoffFormat,
 }
 

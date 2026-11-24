@@ -215,7 +215,7 @@ id = "foehncraft-handoff"
 title = "FoehnCraft hand-off: MSH 4.1, single-file VTU or blocked VTKHDF, names, evidence (FC-01, FC-02, FC-04 to FC-06)"
 requirements = ["FC-01", "FC-02", "FC-04", "FC-05", "FC-06"]
 grade = "partial"
-how = "CI reads 35 exports back with `foehn mesh` (elbow and Manifold ducts in all three modes among them): every one valid, counts, volume, closure and patch areas agree to 1e-12; every file is streamed to disk and hashed as written, the VTU byte for byte equal to the plain writer it replaced; the blocked VTKHDF file is read back in tests (every cell owned once, ghosts exactly the point neighbours, faces outward, HDF5 checksums) and opened by h5py and VTK 9.7 by hand"
+how = "The full CI run reads every hand-off back with `foehn mesh` (box fixtures as VTU, VTKHDF, polyMesh and MSH; the channel and the elbow and Manifold ducts in all three modes as their default VTKHDF and MSH; the channel also as VTU): every one valid, counts, volume, closure and patch areas agree to 1e-12; every file is streamed to disk and hashed as written, the VTU byte for byte equal to the plain writer it replaced; the blocked VTKHDF file is read back in tests (every cell owned once, ghosts exactly the point neighbours, faces outward, HDF5 checksums) and opened by h5py and VTK 9.7 by hand"
 tests = [
   "crates/mesh-io/src/handoff.rs::foehncraft_vtu_holds_cells_faces_and_names",
   "crates/mesh-io/src/handoff.rs::streamed_vtu_equals_the_plain_writer",
@@ -229,10 +229,10 @@ tests = [
   "crates/mesh-io/src/vtkhdf.rs::hilbert_index_walks_the_grid_one_step_at_a_time",
   "crates/mesh-io/src/hdf5.rs::lookup3_matches_the_published_values",
   "crates/mesh-io/src/hdf5.rs::datasets_must_get_exactly_their_bytes_in_order",
-  "crates/mesh-cli/tests/workflow.rs::vtkhdf_handoff_replaces_the_vtu_in_bundles_and_exports",
+  "crates/mesh-cli/tests/workflow.rs::vtkhdf_handoff_is_the_default_and_vtu_an_option",
 ]
 commands = ["cargo m1 --require-gmsh --require-foehn"]
-gaps = "FoehnCraft cannot read foehncraft.vtkhdf yet (its reader is in progress), so CI round-trips only the VTU; binary MSH open; the meshes themselves still take about 1.4 GB per million sweep cells while the files are written"
+gaps = "Binary MSH open; the block mesher still hands over foehncraft.vtu; the meshes themselves still take about 1.4 GB per million sweep cells while the files are written"
 
 [[feature]]
 id = "openfoam"

@@ -353,7 +353,7 @@ pub static TOOLS: &[Tool] = &[
         id: "mesh.generate_sweep",
         version: 1,
         action: Action::StartBuild,
-        summary: "Generate a graded polyhedral block with one inlet or a straight pipe with two ports into a new directory. `handoff` picks the FoehnCraft file: foehncraft.vtu (default) or the blocked binary foehncraft.vtkhdf.",
+        summary: "Generate a graded polyhedral block with one inlet or a straight pipe with two ports into a new directory. `handoff` picks the FoehnCraft file: the blocked binary foehncraft.vtkhdf (default) or foehncraft.vtu.",
         legacy_name: Some("generate_sweep"),
         outputs: &["output"],
         input_schema: || {
@@ -370,7 +370,7 @@ pub static TOOLS: &[Tool] = &[
         id: "mesh.generate_channel",
         version: 1,
         action: Action::StartBuild,
-        summary: "Generate and check a layered rectangular channel into a new directory (VTU, Gmsh, FoehnCraft files). `handoff` picks the FoehnCraft file: foehncraft.vtu (default) or the blocked binary foehncraft.vtkhdf.",
+        summary: "Generate and check a layered rectangular channel into a new directory (VTU, Gmsh, FoehnCraft files). `handoff` picks the FoehnCraft file: the blocked binary foehncraft.vtkhdf (default) or foehncraft.vtu.",
         legacy_name: Some("generate_channel"),
         outputs: &["output"],
         input_schema: || {
@@ -407,7 +407,7 @@ pub static TOOLS: &[Tool] = &[
         id: "mesh.generate_duct",
         version: 1,
         action: Action::StartBuild,
-        summary: "Generate and validate a partitioned STL bulk, wall-layer or polyhedral duct volume into a new directory. `handoff` picks the FoehnCraft file: foehncraft.vtu (default) or the blocked binary foehncraft.vtkhdf.",
+        summary: "Generate and validate a partitioned STL bulk, wall-layer or polyhedral duct volume into a new directory. `handoff` picks the FoehnCraft file: the blocked binary foehncraft.vtkhdf (default) or foehncraft.vtu.",
         legacy_name: Some("generate_duct"),
         outputs: &["output"],
         input_schema: || {

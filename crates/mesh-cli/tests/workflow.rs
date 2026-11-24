@@ -310,29 +310,24 @@ fn sha256(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// Invariant: `--handoff vtkhdf` puts the blocked binary
-/// `foehncraft.vtkhdf` in a bundle instead of `foehncraft.vtu`, listed in
-/// `mesh-evidence.json` with its SHA-256 and the same summary, and
+/// Invariant: a bundle hands over the blocked binary `foehncraft.vtkhdf`
+/// by default and `foehncraft.vtu` with `--handoff vtu`, never both, each
+/// listed in `mesh-evidence.json` with its SHA-256 and the same summary;
 /// `export … foehncraft-vtkhdf` writes it with the artifact's digests.
-/// Breaks if: the option is lost between the command line and the engine,
-/// the evidence misses the file, or the export drops its provenance. No
-/// other test: the mesh-io tests write the file without a tool.
+/// Breaks if: the default or the option is lost between the command line
+/// and the engine, the evidence misses the file, or the export drops its
+/// provenance. No other test: the mesh-io tests write the file without a
+/// tool.
 #[test]
-fn vtkhdf_handoff_replaces_the_vtu_in_bundles_and_exports() {
+fn vtkhdf_handoff_is_the_default_and_vtu_an_option() {
     let work = WorkDirectory::new();
     fs::write(
         work.path().join("duct.json"),
         include_bytes!("../../../test-fixtures/straight-channel.json"),
     )
     .unwrap();
-    work.run(&["generate-channel", "duct.json", "ascii"]);
-    work.run(&[
-        "generate-channel",
-        "duct.json",
-        "binary",
-        "--handoff",
-        "vtkhdf",
-    ]);
+    work.run(&["generate-channel", "duct.json", "ascii", "--handoff", "vtu"]);
+    work.run(&["generate-channel", "duct.json", "binary"]);
     let evidence = |bundle: &str| -> Value {
         let path = work.path().join(bundle).join("mesh-evidence.json");
         serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
@@ -340,6 +335,15 @@ fn vtkhdf_handoff_replaces_the_vtu_in_bundles_and_exports() {
     let (ascii, binary) = (evidence("ascii"), evidence("binary"));
     assert_eq!(ascii["summary"], binary["summary"]);
     assert!(!work.path().join("binary/foehncraft.vtu").exists());
+    assert!(!work.path().join("ascii/foehncraft.vtkhdf").exists());
+    let vtu = fs::read(work.path().join("ascii/foehncraft.vtu")).unwrap();
+    assert!(
+        ascii["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f[0] == "foehncraft.vtu" && f[1] == sha256(&vtu).as_str())
+    );
     let bytes = fs::read(work.path().join("binary/foehncraft.vtkhdf")).unwrap();
     assert_eq!(&bytes[..8], b"\x89HDF\r\n\x1a\n");
     let listed = binary["files"].as_array().unwrap();
