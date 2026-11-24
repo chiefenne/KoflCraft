@@ -12,7 +12,7 @@ How KoflCraft hands a volume mesh to the companion solver
 | `foehncraft.vtkhdf` | every bundle of `generate-channel`, `generate-sweep`, `generate-duct` (the default since PR #43, the maintainer's choice once FoehnCraft read it); `export ARTIFACT foehncraft-vtkhdf OUT.vtkhdf` | The primary hand-off: the same mesh, names and roles as a blocked binary VTKHDF file (see [Blocked VTKHDF](#blocked-vtkhdf)), which FoehnCraft and MurmelCraft read block by block and ParaView 5.13 or later opens as a partitioned data set. |
 | `*.msh` | every bundle (`mesh.msh`, `channel.msh`); `export ARTIFACT gmsh OUT.msh` | Gmsh MSH 4.1 ASCII (FC-01): a tetrahedral subdivision of the polyhedra (prisms and pyramids where the mesh has them), one physical surface group per patch and the volume group `fluid`. `gmsh-2.2` writes the older version. |
 | `export ARTIFACT openfoam DIR` | box and STL meshes | An OpenFOAM `polyMesh` directory (`points`, `faces`, `owner`, `neighbour`, `boundary`, `cellZones`) of the same face-based mesh (FC-03, so far for box and STL meshes only), with `mesh-evidence.json`. FoehnCraft reads the directory as it stands. |
-| `mesh-evidence.json` | every bundle and OpenFOAM export | `koflcraft.mesh-evidence` 1.0: KoflCraft version, generator, the summary below, the patches with their roles and source names, the SHA-256 of every other file, and the limitations (FC-05). |
+| `mesh-evidence.json` | every bundle and OpenFOAM export | `koflcraft.mesh-evidence` 1.1: KoflCraft version, generator, the summary below, the patches with their roles and source names, `file_hash` (`blake3`) and the BLAKE3 hash of every other file, and the limitations (FC-05). Version 1.0 had no `file_hash` and SHA-256 hashes; readers check either (see [File hashes](#file-hashes)). |
 
 `foehncraft.vtu` of a box or STL export carries the artifact's
 `koflcraft_mesh_digest`, `koflcraft_topology_digest`,
@@ -25,15 +25,29 @@ their hash is in the bundle's `mesh-evidence.json`.
 ## Writing large meshes
 
 Every file of a bundle and of an export is streamed to disk as it is
-written: a second thread hashes each block of 1 MiB with SHA-256 and writes
+written: a second thread hashes each block of 1 MiB with BLAKE3 and writes
 it while the next block is formatted, and `mesh-evidence.json` (and the
-`sha256` in the `mesh.export` result) takes the digests from that stream,
+`blake3` in the `mesh.export` result) takes the digests from that stream,
 so no file is ever held in memory. A failed file removes the whole bundle
 or export. The files are byte for byte the ones the in-memory writers made
 before (checked on the fixtures and on a 1.28 million cell sweep). On a
 2.5 million cell sweep block (3.4 GB of files) the peak memory fell from
 6.5 GB to 3.5 GB and the run from 35 to 29 s; what remains is the meshes
 themselves (see [pitfalls](pitfalls.md#whole-files-in-memory)).
+
+## File hashes
+
+Every file digest KoflCraft writes is BLAKE3 (lower-case hex, 64
+characters), the maintainer's choice of 2026-11-24: SHA-256 of a 5 GB mesh
+took 17 s on a CPU without SHA instructions, BLAKE3 takes a fraction of
+that and can hash on many threads. `mesh-evidence.json` names the hash in
+`file_hash`; the `files` of a tool result name it as the key of each entry
+(`{"path": …, "blake3": …}`). Evidence of format 1.0 (no `file_hash`) holds
+SHA-256 hashes: MurmelCraft still checks those with SHA-256, so bundles
+written before stay checkable. The small digests of provenance (the STL
+`source_sha256` of patch maps and plans, `config_sha256`, the artifact's
+`koflcraft_*_digest` strings, journal result digests) stay SHA-256: they
+hash little data, and saved patch maps and plans keep matching.
 
 ## Blocked VTKHDF
 

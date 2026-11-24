@@ -25,6 +25,7 @@ mesh-mcp = { path = "crates/mesh-mcp" }
 cap-std = "=4.0.3"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
+blake3 = "=1.8.7"
 sha2 = "=0.11.1"
 toml = "=1.2.1"
 

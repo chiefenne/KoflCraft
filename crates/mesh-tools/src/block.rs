@@ -13,7 +13,6 @@ use mesh_engine::block_edit::{self, Edit};
 use mesh_engine::patches::PatchRole;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::Digest;
 
 use crate::Context;
 use crate::diag::Diagnostic;
@@ -104,7 +103,7 @@ fn write_topology(ctx: &Context, output: &str, file: &TopologyFile) -> Result<Va
         "format": BLOCK_RESULT_FORMAT,
         "format_version": crate::FORMAT_VERSION,
         "output": output,
-        "files": [{ "path": output, "sha256": crate::journal::hex(&sha2::Sha256::digest(&bytes)) }],
+        "files": [{ "path": output, "blake3": mesh_engine::file_digest(&bytes) }],
         "check": check,
     }))
 }

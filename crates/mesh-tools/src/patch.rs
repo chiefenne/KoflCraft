@@ -6,7 +6,6 @@
 use mesh_engine::patches::{self, Contain, PatchMap, PatchRole, PatchSurface, Selection, Target};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::Digest;
 
 use crate::Context;
 use crate::diag::Diagnostic;
@@ -42,7 +41,7 @@ fn write(
         "format": PATCH_RESULT_FORMAT,
         "format_version": crate::FORMAT_VERSION,
         "output": output,
-        "files": [{ "path": output, "sha256": crate::journal::hex(&sha2::Sha256::digest(&bytes)) }],
+        "files": [{ "path": output, "blake3": mesh_engine::file_digest(&bytes) }],
         "change": change,
         "summary": summary,
     }))

@@ -309,7 +309,7 @@ pub(crate) fn output_schema(name: &str) -> Value {
         }
         "export_mesh" => object_schema(json!({
             "schema_version": version, "output": string, "format": string,
-            "files": { "type": "array", "items": object_schema(json!({ "path": string, "sha256": digest })) }
+            "files": { "type": "array", "items": object_schema(json!({ "path": string, "blake3": digest })) }
         })),
         _ => json!({ "type": "object" }),
     }
@@ -396,7 +396,7 @@ pub(crate) fn patch_result() -> Value {
     object_schema(json!({
         "format": {"const": "koflcraft.patch-result"}, "format_version": string,
         "output": string,
-        "files": { "type": "array", "items": object_schema(json!({ "path": string, "sha256": digest })) },
+        "files": { "type": "array", "items": object_schema(json!({ "path": string, "blake3": digest })) },
         "change": object_schema(json!({
             "facets_changed": {"type": "integer", "minimum": 0}, "created": names(), "removed": names()
         })),
@@ -435,7 +435,7 @@ pub(crate) fn duct_setup_result() -> Value {
     object_schema(json!({
         "format": {"const": "koflcraft.duct-setup"}, "format_version": string,
         "output": string,
-        "files": { "type": "array", "items": object_schema(json!({ "path": string, "sha256": {"type": "string"} })) },
+        "files": { "type": "array", "items": object_schema(json!({ "path": string, "blake3": {"type": "string"} })) },
         "port_radius": number, "size_factor": number,
         "partition": {"type": "object"}, "note": string
     }))

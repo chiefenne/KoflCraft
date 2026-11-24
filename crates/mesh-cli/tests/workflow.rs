@@ -302,17 +302,14 @@ fn channel_exports_both_full_ports_and_rejects_colliding_layers() {
     assert!(!work.path().join("collision").exists());
 }
 
-fn sha256(bytes: &[u8]) -> String {
-    use sha2::Digest;
-    sha2::Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+fn blake3(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
 }
 
 /// Invariant: a bundle hands over the blocked binary `foehncraft.vtkhdf`
 /// by default and `foehncraft.vtu` with `--handoff vtu`, never both, each
-/// listed in `mesh-evidence.json` with its SHA-256 and the same summary;
+/// listed in `mesh-evidence.json` (format 1.1, `file_hash` blake3) with
+/// its BLAKE3 hash and the same summary;
 /// `export … foehncraft-vtkhdf` writes it with the artifact's digests.
 /// Breaks if: the default or the option is lost between the command line
 /// and the engine, the evidence misses the file, or the export drops its
@@ -333,6 +330,10 @@ fn vtkhdf_handoff_is_the_default_and_vtu_an_option() {
         serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
     };
     let (ascii, binary) = (evidence("ascii"), evidence("binary"));
+    for e in [&ascii, &binary] {
+        assert_eq!(e["format_version"], "1.1");
+        assert_eq!(e["file_hash"], "blake3");
+    }
     assert_eq!(ascii["summary"], binary["summary"]);
     assert!(!work.path().join("binary/foehncraft.vtu").exists());
     assert!(!work.path().join("ascii/foehncraft.vtkhdf").exists());
@@ -342,7 +343,7 @@ fn vtkhdf_handoff_is_the_default_and_vtu_an_option() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|f| f[0] == "foehncraft.vtu" && f[1] == sha256(&vtu).as_str())
+            .any(|f| f[0] == "foehncraft.vtu" && f[1] == blake3(&vtu).as_str())
     );
     let bytes = fs::read(work.path().join("binary/foehncraft.vtkhdf")).unwrap();
     assert_eq!(&bytes[..8], b"\x89HDF\r\n\x1a\n");
@@ -350,14 +351,14 @@ fn vtkhdf_handoff_is_the_default_and_vtu_an_option() {
     assert!(
         listed
             .iter()
-            .any(|f| f[0] == "foehncraft.vtkhdf" && f[1] == sha256(&bytes).as_str()),
+            .any(|f| f[0] == "foehncraft.vtkhdf" && f[1] == blake3(&bytes).as_str()),
         "{listed:?}"
     );
 
     let build = work.run(&["generate", "input.json", "m.json"])["build"].clone();
     let export = work.run(&["export", "m.json", "foehncraft-vtkhdf", "m.vtkhdf"]);
     let bytes = fs::read(work.path().join("m.vtkhdf")).unwrap();
-    assert_eq!(export["files"][0]["sha256"], sha256(&bytes).as_str());
+    assert_eq!(export["files"][0]["blake3"], blake3(&bytes).as_str());
     let digest = build["mesh_digest"].as_str().unwrap().as_bytes();
     assert!(bytes.windows(digest.len()).any(|w| w == digest));
 }
