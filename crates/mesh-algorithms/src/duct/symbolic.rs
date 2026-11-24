@@ -9,20 +9,21 @@
 //! Liu (2010, Lp centroidal Voronoi tessellation) and Yan, Wang, Lévy & Liu
 //! (2013): tetrahedron faces and bisectors, written with the global ids of
 //! scaffold vertices and sites. Its coordinates and its side of any further
-//! bisector are functions of that name alone, evaluated in one fixed order,
-//! so every tetrahedron and every site that meets the vertex computes the
-//! same bits and takes the same decision.
+//! bisector are functions of that name alone, so every tetrahedron and
+//! every site that meets the vertex takes the same decision.
 //!
-//! Scaffold vertices are the one case with a third answer, "on the
-//! bisector": conforming wall seeds put bisectors through wall edges on
-//! purpose, and a scaffold vertex within the tolerance of a bisector stays
-//! a vertex of both cells. The answer depends only on the vertex and the
-//! two sites, so it is shared as well. A vertex named on a scaffold edge or
-//! face whose vertices are all on the bisector inherits that answer, and so
-//! does a vertex whose name holds the other site. All other vertices are in
-//! or out.
+//! The side of a vertex is the exact sign of a quotient of two determinants
+//! of squared distances from the scaffold vertices of the name to the sites
+//! (`predicates::offset_side`, after the side predicates of Lévy's PCK,
+//! 2016). It has a third answer, "on the bisector". Conforming wall seeds
+//! put bisectors through wall edges on purpose: seeds on the ball of one
+//! wall vertex are equidistant from it, and their distance from that vertex
+//! is taken to one stand-in seed, so the tie is an exact zero for every
+//! site that asks.
 use super::convex::{Convex, Cut, Src};
+use crate::predicates::{Entry, offset_side};
 use mesh_core::geometry::Vec3;
+use std::cmp::Ordering;
 
 /// Name of a piece vertex. Arrays are sorted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -43,8 +44,13 @@ pub(super) struct Frame<'a> {
     pub nodes: [usize; 4],
     pub corners: [Vec3; 4],
     pub sites: &'a [Vec3],
-    /// Distance within which a scaffold vertex counts as on a bisector.
+    /// Distance scale for the guard on computed positions.
     pub tol: f64,
+    /// The site whose distance from a scaffold vertex stands for that of
+    /// the given site: all wall seeds on the ball of the vertex are
+    /// equidistant from it by construction and share one stand-in; any
+    /// other site stands for itself.
+    pub stand_in: &'a (dyn Fn(usize, u32) -> u32 + Sync),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -120,64 +126,80 @@ impl Frame<'_> {
         Some(p)
     }
 
-    /// Side of vertex `key` at `p` of the bisector between site `s`, whose
-    /// piece it belongs to, and site `o`. `In` is s's side.
-    fn side(&self, key: Key, p: Vec3, s: u32, o: u32) -> Class {
-        // Distance of scaffold vertex `n` from the bisector of k and o.
-        let corner_on = |n: usize, k: u32| -> bool {
-            let Some(v) = self.corner(n) else {
-                return false;
-            };
-            let (a, b) = (k.min(o), k.max(o));
-            let w = self.site(b) - self.site(a);
-            let d = self.offset(v, a, b) / w.length();
-            d.abs() <= self.tol || d.is_nan()
-        };
-        let own = match key {
+    /// Side of vertex `key` of the bisector between site `s`, whose piece
+    /// it belongs to, and site `o`. `In` is s's side. The answer is the
+    /// exact sign of |q − o|² − |q − s|² at the point q that the name
+    /// defines (`predicates::bisector_side`), so it is the same from every
+    /// tetrahedron and from every site of the name.
+    fn side(&self, key: Key, s: u32, o: u32) -> Class {
+        let mut corners = [Vec3::ZERO; 4];
+        let mut nodes = [usize::MAX; 4];
+        let mut others = [0u32; 3];
+        let (count, sites): (usize, &[u32]) = match &key {
             Key::V(n) => {
-                if corner_on(n, s) {
-                    return Class::On;
-                }
-                let (a, b) = (s.min(o), s.max(o));
-                let d = self.offset(p, a, b);
-                return if (d < 0.0) == (s == a) {
-                    Class::In
-                } else {
-                    Class::Out
-                };
+                nodes[0] = *n;
+                (1, &[])
             }
-            // The vertex is equidistant from its sites, s among them; the
-            // least of them stands for all, whichever piece asks.
-            // A vertex on a scaffold edge or face that lies in the
-            // bisector of o and one of its sites is on it.
             Key::E(n, k) => {
-                if k.contains(&o) || k.iter().any(|&k| n.iter().all(|&n| corner_on(n, k))) {
-                    return Class::On;
-                }
-                k[0]
+                nodes[..2].copy_from_slice(n);
+                (2, k)
             }
             Key::F(n, k) => {
-                if k.contains(&o) || k.iter().any(|&k| n.iter().all(|&n| corner_on(n, k))) {
-                    return Class::On;
-                }
-                k[0]
+                nodes[..3].copy_from_slice(n);
+                (3, k)
             }
             Key::X(k) => {
-                if k.contains(&o) {
-                    return Class::On;
-                }
-                k[0]
+                nodes = self.nodes;
+                nodes.sort_unstable();
+                (4, k)
             }
         };
-        let (a, b) = (own.min(o), own.max(o));
-        let d = self.offset(p, a, b);
-        // a tie goes to the lower site, for both
-        let inside = if d == 0.0 {
-            own == a
+        if sites.contains(&o) {
+            return Class::On;
+        }
+        // the vertex is equidistant from its sites; s is one of them
+        let base = if sites.is_empty() || sites.contains(&s) {
+            s
         } else {
-            (d < 0.0) == (own == a)
+            sites[0]
         };
-        if inside { Class::In } else { Class::Out }
+        let mut m = 0;
+        for &k in sites {
+            if k != base && m < 3 {
+                others[m] = k;
+                m += 1;
+            }
+        }
+        if m + 1 != count {
+            return Class::On;
+        }
+        for j in 0..count {
+            let Some(c) = self.corner(nodes[j]) else {
+                return Class::On;
+            };
+            corners[j] = c;
+        }
+        // Each squared distance is taken to the site that stands for the
+        // given one at that scaffold vertex, so all offsets come from one
+        // table and every site of the vertex gets the same answer.
+        let offset = |j: usize, site: Option<usize>| -> Entry {
+            let k = (self.stand_in)(nodes[j], site.map_or(o, |i| others[i]));
+            let b = (self.stand_in)(nodes[j], base);
+            if k == b {
+                Entry::Zero
+            } else {
+                Entry::Offset {
+                    v: corners[j],
+                    s: self.site(b),
+                    k: self.site(k),
+                }
+            }
+        };
+        match offset_side(count, &offset) {
+            Some(Ordering::Greater) => Class::In,
+            Some(Ordering::Less) => Class::Out,
+            Some(Ordering::Equal) | None => Class::On,
+        }
     }
 
     fn name(&self, planes: [Src; 3], s: u32) -> Option<Key> {
@@ -221,13 +243,24 @@ pub(super) struct SymConvex {
     pub pts: Vec<Vec3>,
     /// Outward counter-clockwise rings of local vertex indices.
     pub faces: Vec<(Src, Vec<usize>)>,
+    /// An upper bound on the distance of each vertex from the piece's site.
+    /// The coordinates of a vertex where three planes come close to sharing
+    /// a line are not accurate; the security radius must not trust them.
+    pub reach: Vec<f64>,
 }
 
 impl SymConvex {
-    pub fn tet(frame: &Frame) -> Self {
+    /// The whole tetrahedron, as the first piece of site `s`.
+    pub fn tet(frame: &Frame, s: u32) -> Self {
         let c = Convex::tet(frame.corners);
+        let site = frame.site(s);
         Self {
             keys: frame.nodes.iter().map(|&n| Key::V(n)).collect(),
+            reach: c
+                .pts
+                .iter()
+                .map(|&p| (p - site).length() * (1.0 + 1e-12))
+                .collect(),
             pts: c.pts,
             faces: c.faces,
         }
@@ -249,7 +282,7 @@ impl SymConvex {
             .keys
             .iter()
             .zip(&self.pts)
-            .map(|(&k, &p)| frame.side(k, p, s, o))
+            .map(|(&k, _)| frame.side(k, s, o))
             .collect();
         if !class.contains(&Class::Out) {
             return Ok(Cut::Inside);
@@ -260,12 +293,15 @@ impl SymConvex {
         let mut keys = Vec::with_capacity(self.keys.len() + 4);
         let mut pts = Vec::with_capacity(self.pts.len() + 4);
         let mut on = Vec::with_capacity(self.pts.len() + 4);
+        let mut reach = Vec::with_capacity(self.pts.len() + 4);
         let mut map = vec![usize::MAX; self.pts.len()];
+        let own = frame.site(s);
         for (i, &c) in class.iter().enumerate() {
             if c != Class::Out {
                 map[i] = pts.len();
                 keys.push(self.keys[i]);
                 pts.push(self.pts[i]);
+                reach.push(self.reach[i]);
                 on.push(c == Class::On);
             }
         }
@@ -327,9 +363,25 @@ impl SymConvex {
                         Some(p) if (p - crossing).length() <= frame.tol * 1e4 => p,
                         _ => crossing,
                     };
+                    // The true vertex is on the edge, so no farther from
+                    // the site than the farther end. Its coordinates are
+                    // good to the rounding of t along the edge, plus what
+                    // the ends themselves are uncertain by.
+                    let ends = self.reach[lo].max(self.reach[hi]);
+                    let doubt = |v: usize| (self.reach[v] - (self.pts[v] - own).length()).max(0.0);
+                    let size = [self.pts[lo], self.pts[hi], frame.site(sa), frame.site(sb)]
+                        .iter()
+                        .map(|q| q.max_abs_component())
+                        .fold(0.0, f64::max);
+                    let slip = 128.0 * f64::EPSILON * size * size / (d1 - d2).abs();
+                    let near = (p - own).length()
+                        + (p - crossing).length()
+                        + slip * (self.pts[hi] - self.pts[lo]).length()
+                        + doubt(lo).max(doubt(hi));
                     let id = pts.len();
                     keys.push(key);
                     pts.push(p);
+                    reach.push(if near.is_nan() { ends } else { ends.min(near) });
                     on.push(true);
                     crossings.push((edge, id));
                     id
@@ -387,11 +439,13 @@ impl SymConvex {
         let mut used = vec![usize::MAX; pts.len()];
         let mut kept_keys = Vec::with_capacity(pts.len());
         let mut kept = Vec::with_capacity(pts.len());
+        let mut kept_reach = Vec::with_capacity(pts.len());
         for (_, ring) in &mut faces {
             for v in ring.iter_mut() {
                 if used[*v] == usize::MAX {
                     used[*v] = kept.len();
                     kept.push(pts[*v]);
+                    kept_reach.push(reach[*v]);
                     kept_keys.push(keys[*v]);
                 }
                 *v = used[*v];
@@ -399,6 +453,7 @@ impl SymConvex {
         }
         self.keys = kept_keys;
         self.pts = kept;
+        self.reach = kept_reach;
         self.faces = faces;
         Ok(Cut::Clipped)
     }
@@ -430,8 +485,9 @@ mod tests {
             corners: nodes.map(|n| p[n]),
             sites,
             tol: 1e-12,
+            stand_in: &|_, k| k,
         };
-        let mut c = SymConvex::tet(&frame);
+        let mut c = SymConvex::tet(&frame, s);
         for o in 0..sites.len() as u32 {
             if o != s && matches!(c.clip(&frame, s, o).unwrap(), Cut::Empty) {
                 return None;

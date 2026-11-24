@@ -5,7 +5,7 @@
 The verification grade of every feature (AG-17), how it was checked and what is still missing. A partial result is never presented as success; every tool result also carries a `limitations` list.
 
 - **verified** (9): checked against an exact or independent reference by a named test
-- **partial** (11): works on the named fixtures, with known gaps
+- **partial** (14): works on the named fixtures, with known gaps
 - **unverified** (1): built, not yet checked
 - **open** (0): not built
 
@@ -22,7 +22,7 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 | Straight channel with port-terminated layers (M3, BL-10) | partial | Native prisms and the Gmsh core subdivision share the tagged boundary; both full ports exported; colliding layers rejected (research/open-port-layers.md) | Planar walls only | BL-10 |
 | Nonconvex duct, bulk, layered and polyhedral (M4/M5 prototype) | partial | Elbow volume and patch areas to 1e-9; every layer reaches both ports; no face with S·d ≤ 0 in any mode of the elbow or Manifold; the hand-off's fanned volume equals the mesher's exact volume | The elbow needs a Gmsh scaffold and a Python preparation script (OPEN-07); with conforming wall seeds the wall columns reach 56.6° (elbow) and 74.5° (Manifold) non-orthogonality and volume ratio 77 and 1,882; sharp convex corners and flat walls have no seeds, and a wall triangle pair the seeds flip is cut in two; the repair of torn contacts at reentrant edges has no test; core sphericity on Manifold fell to 0.74 at the median; Manifold builds in about 130 s; flow accuracy untested | M4, M5 |
 | Rust scaffold for nonconvex ducts: wall remeshed to a chord tolerance, Delaunay tetrahedralization (OPEN-07) | partial | A remeshed sphere stays within the chord tolerance both ways with edges at the chord length; a box keeps its twelve feature edges, eight corners, kept facets and exact volume; exact orientation and in-sphere signs on coplanar and cospherical input; a Delaunay grid has empty spheres and fills its box; scaffolds of a sphere and a nonconvex box pair every interior face, use every wall triangle once and fill the enclosed volume to 1e-12; the Manifold wall built from the STL is within 0.05 of it both ways and its polyhedral mesh is valid in the hand-off | Ports are kept as they are (the elbow, with two-triangle ports, keeps its Gmsh scaffold); scaffold mean ratio floor 0.05 against Gmsh's 0.26, no vertex smoothing; features by dihedral angle only; a finer wall makes the Manifold mesh 2.4 times larger and its build about 3 minutes | M4, GEO-04, ALG-11 |
-| FoehnCraft hand-off: MSH 4.1, single-file VTU or blocked VTKHDF, names, evidence (FC-01, FC-02, FC-04 to FC-06) | partial | CI reads 35 exports back with `foehn mesh` (elbow and Manifold ducts in all three modes among them): every one valid, counts, volume, closure and patch areas agree to 1e-12; every file is streamed to disk and hashed as written, the VTU byte for byte equal to the plain writer it replaced; the blocked VTKHDF file is read back in tests (every cell owned once, ghosts exactly the point neighbours, faces outward, HDF5 checksums) and opened by h5py and VTK 9.7 by hand | FoehnCraft cannot read foehncraft.vtkhdf yet (its reader is in progress), so CI round-trips only the VTU; binary MSH open; the meshes themselves still take about 1.4 GB per million sweep cells while the files are written | FC-01, FC-02, FC-04, FC-05, FC-06 |
+| FoehnCraft hand-off: MSH 4.1, single-file VTU or blocked VTKHDF, names, evidence (FC-01, FC-02, FC-04 to FC-06) | partial | The full CI run reads every hand-off back with `foehn mesh` (box fixtures as VTU, VTKHDF, polyMesh and MSH; the channel and the elbow and Manifold ducts in all three modes as their default VTKHDF and MSH; the channel also as VTU): every one valid, counts, volume, closure and patch areas agree to 1e-12; every file is streamed to disk and hashed as written, the VTU byte for byte equal to the plain writer it replaced; the blocked VTKHDF file is read back in tests (every cell owned once, ghosts exactly the point neighbours, faces outward, HDF5 checksums) and opened by h5py and VTK 9.7 by hand | Binary MSH open; the block mesher still hands over foehncraft.vtu; the meshes themselves still take about 1.4 GB per million sweep cells while the files are written | FC-01, FC-02, FC-04, FC-05, FC-06 |
 | OpenFOAM polyMesh export (FC-03) | unverified | Written for every mesh type from the hand-off mesh, with patch types and cellZones; boundary ranges tile the faces | No independent reader in tests or CI; the box round trip is an ignored test | FC-03 |
 | Tool registry, result envelope and diagnostic codes (AG-12, AG-18, FC-07) | verified | Ids unique and dotted, schemas closed, docs/tools.md regenerated and compared, `kofl commands` and `kofl call` agree, codes unique and every engine code registered | — | AG-12, AG-18, FC-07 |
 | Journal and replay (AG-13) | verified | A recorded session replays in a fresh directory with equal status, exit code and result digests; a changed call is reported as TOOL005; MCP calls are journaled | — | AG-13 |
@@ -32,6 +32,9 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 | Verification grades and limitations (AG-17) | verified | docs/status.md is regenerated from this file and compared; every listed test must exist; every result envelope carries `limitations` | — | AG-17 |
 | Crate layering check (SW-19) | verified | Every workspace dependency points to a lower layer or an allowed same-layer use; front ends name no crate below mesh-tools | — | SW-19 |
 | Block-structured variant MB1a: topology file, check, edge laws, TFI, point-matched hexahedra, channel and pipe O-grid templates, block.* tools | partial | Box channel reproduced exactly (volume, unit scaled Jacobians); pipe O-grid volume equals the prism of the inscribed wall polygon to 1e-12 and πR²L within the chord error, wall nodes on the cylinder to 1e-12; every face conforms; permuted and rotated block frames give the same grid; bad count chains, open faces and left-handed blocks refused; CLI chain template → grid writes FoehnCraft files and evidence with block ranges | TFI only (elliptic, hyperbolic, orthogonal wall block and smoothers come in MB1b); explicit block.* edit tools, elbow and airfoil templates, geometry association and polyMesh in the bundle are not built; FoehnCraft round trip (FC-06) run by hand, not yet in the acceptance runner | BS-01, BS-02, BS-03, BS-05, BS-06, BS-08, BS-13, BS-14 |
+| Block-structured variant MB1b: Thompson–Thames–Mastin elliptic smoothing across block faces with wall orthogonality and first-spacing control | partial | A stretched orthogonal channel is a fixed point (nodes move less than 1e-9); on the pipe O-grid the wall angle of the first grid line drops from 3.1° to below 0.5° with the first spacing kept to 1e-4, boundary nodes bit-identical, shared-face and inner-edge nodes moved, volume unchanged to 1e-12, faces conforming, Jacobians positive; wall orthogonality without a wall patch is refused (BS-12); FoehnCraft read the smoothed 15,360-cell pipe back by hand (max non-orthogonality 19.4° against 23.4° for TFI) | Wall control acts on the interior of wall faces; nodes next to block edges that meet a wall follow the nearest controlled node (12 % first-spacing change there on the pipe). Point SOR: 8.8 s for 15,360 cells. Hyperbolic marching, the orthogonal wall block, post-smoothers and the ALG-16 benchmark against harmonic maps are not built | BS-08, BS-09, BS-12, BS-13 |
+| Block-structured variant MB1c: elbow and extruded airfoil C-grid templates, spline edges, face projection onto cylinders and tori | partial | The elbow (pipe O-grid swept through bend segments of at most 30° with straight legs) projects its wall faces onto cylinders and the torus: wall nodes on the surface to 4e-16, volume converging at second order to the Pappus value (2.7 %, 0.67 %, 0.17 % short); the airfoil C-grid (six blocks, spline wall through 160 points per side) builds for NACA 0012 and 2412 with wall nodes within 6e-7 chords of the analytic section and volume converging at second order; Selig and Lednicer files that are moved, turned, scaled and blunt read to the same closed unit section; the handedness check follows curve tangents so a block may start at a leading edge; FoehnCraft read both back by hand (elbow 15,360 cells, NACA 2412 11,520 cells, no inverted faces) | Smoothing of these templates is covered by block-mb1d-smoother. No O-grid around an airfoil, no T-junction or annulus, no swept airfoil; the FoehnCraft round trip for block meshes is not in the acceptance runner | BS-02, BS-03, BS-07, BS-19 |
+| Block-structured variant MB1d: elliptic smoother with frozen TFI residual, symmetry sliding and line Gauss–Seidel | partial | The residual of the Thompson–Thames–Mastin system at the TFI grid is frozen, so TFI is a fixed point and only the Steger–Sorenson wall controls move nodes; interior block vertices and inner block edges move; nodes on planar symmetry patches slide in the plane with mirror ghost points; line Gauss–Seidel with the axis turning every sweep. FoehnCraft max non-orthogonality: pipe 23.3° (TFI 23.4°), elbow 23.45° (TFI 23.7°, MB1b smoother 34.5° to 38.7°); wall angle max pipe 3.12° → 0.44°, elbow 3.17° → 0.63°; extruded NACA 2412 C-grid with one span cell now smoothed: wall angle max 60.4° → 34.5°, non-orthogonality 60.4° → 55.9°, skewness 0.267 → 0.155 | Interior skew from TFI away from walls stays (pipe 23.3° where the MB1b smoother reached 19.3°; airfoil worst cell 55.9° below the leading edge); the airfoil C-grid needs about 2,500 sweeps (35 s for 11,520 cells); Thomas–Middlecoff controls were measured and not kept; non-planar symmetry patches stay fixed; the FoehnCraft round trip for block meshes is not in the acceptance runner | BS-08, BS-09, BS-12 |
 
 ## Checks per feature
 
@@ -124,6 +127,9 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 - `bent_face_is_still_rejected` in [crates/mesh-algorithms/src/duct/verify.rs](../crates/mesh-algorithms/src/duct/verify.rs)
 - `only_flat_boundary_polygons_merge` in [crates/mesh-io/src/duct.rs](../crates/mesh-io/src/duct.rs)
 - `halving_a_cube_keeps_half_the_volume_and_tags_the_cut` in [crates/mesh-algorithms/src/duct/convex.rs](../crates/mesh-algorithms/src/duct/convex.rs)
+- `side_of_a_voronoi_vertex_is_exact` in [crates/mesh-algorithms/src/predicates.rs](../crates/mesh-algorithms/src/predicates.rs)
+- `both_cells_of_a_face_agree` in [crates/mesh-algorithms/src/predicates.rs](../crates/mesh-algorithms/src/predicates.rs)
+- `declared_tie_is_on_the_bisector` in [crates/mesh-algorithms/src/predicates.rs](../crates/mesh-algorithms/src/predicates.rs)
 - `neighbouring_tetrahedra_share_names_and_coordinates` in [crates/mesh-algorithms/src/duct/symbolic.rs](../crates/mesh-algorithms/src/duct/symbolic.rs)
 - `two_sites_name_their_common_face_alike` in [crates/mesh-algorithms/src/duct/symbolic.rs](../crates/mesh-algorithms/src/duct/symbolic.rs)
 - `a_scaffold_vertex_on_the_bisector_belongs_to_both_pieces` in [crates/mesh-algorithms/src/duct/symbolic.rs](../crates/mesh-algorithms/src/duct/symbolic.rs)
@@ -157,7 +163,7 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 - `hilbert_index_walks_the_grid_one_step_at_a_time` in [crates/mesh-io/src/vtkhdf.rs](../crates/mesh-io/src/vtkhdf.rs)
 - `lookup3_matches_the_published_values` in [crates/mesh-io/src/hdf5.rs](../crates/mesh-io/src/hdf5.rs)
 - `datasets_must_get_exactly_their_bytes_in_order` in [crates/mesh-io/src/hdf5.rs](../crates/mesh-io/src/hdf5.rs)
-- `vtkhdf_handoff_replaces_the_vtu_in_bundles_and_exports` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
+- `vtkhdf_handoff_is_the_default_and_vtu_an_option` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
 - `cargo m1 --require-gmsh --require-foehn` (CI)
 
 ### OpenFOAM polyMesh export (FC-03)
@@ -218,3 +224,30 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 - `inconsistent_counts_are_named` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
 - `pipe_validates_for_foehncraft` in [crates/mesh-engine/src/block.rs](../crates/mesh-engine/src/block.rs)
 - `block_tools_build_a_pipe_from_a_template` in [crates/mesh-cli/tests/kofl.rs](../crates/mesh-cli/tests/kofl.rs)
+
+### Block-structured variant MB1b: Thompson–Thames–Mastin elliptic smoothing across block faces with wall orthogonality and first-spacing control
+
+- `smoothing_keeps_a_stretched_channel` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `pipe_walls_become_orthogonal` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `elliptic_needs_walls_and_improves_them` in [crates/mesh-engine/src/block.rs](../crates/mesh-engine/src/block.rs)
+- `block_tools_build_a_pipe_from_a_template` in [crates/mesh-cli/tests/kofl.rs](../crates/mesh-cli/tests/kofl.rs)
+
+### Block-structured variant MB1c: elbow and extruded airfoil C-grid templates, spline edges, face projection onto cylinders and tori
+
+- `projections_land_on_their_surface` in [crates/mesh-core/src/block.rs](../crates/mesh-core/src/block.rs)
+- `spline_through_a_half_circle` in [crates/mesh-algorithms/src/block/distribution.rs](../crates/mesh-algorithms/src/block/distribution.rs)
+- `elbow_matches_its_torus` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `misplaced_surfaces_are_refused` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `airfoil_cgrid_wraps_its_section` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `coordinate_files_read_to_one_section` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `elbow_validates_with_its_surfaces` in [crates/mesh-engine/src/block.rs](../crates/mesh-engine/src/block.rs)
+- `airfoil_cgrid_validates_and_smooths` in [crates/mesh-engine/src/block.rs](../crates/mesh-engine/src/block.rs)
+- `block_templates_build_an_elbow_and_an_airfoil_from_a_file` in [crates/mesh-cli/tests/kofl.rs](../crates/mesh-cli/tests/kofl.rs)
+
+### Block-structured variant MB1d: elliptic smoother with frozen TFI residual, symmetry sliding and line Gauss–Seidel
+
+- `smoothing_keeps_a_stretched_channel` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `pipe_walls_become_orthogonal` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `elbow_smoothing_is_not_worse_than_tfi` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `sliding_nodes_stay_on_their_plane` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `airfoil_cgrid_validates_and_smooths` in [crates/mesh-engine/src/block.rs](../crates/mesh-engine/src/block.rs)

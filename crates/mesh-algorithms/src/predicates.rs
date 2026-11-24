@@ -187,6 +187,190 @@ pub fn insphere(a: Vec3, b: Vec3, c: Vec3, d: Vec3, e: Vec3) -> Ordering {
     sign(&neg(&det))
 }
 
+/// One entry of an offset determinant.
+#[derive(Clone, Copy, Debug)]
+pub enum Entry {
+    /// The number one (the row of barycentric weights).
+    One,
+    /// Zero by construction: the two sites are equidistant from the point.
+    Zero,
+    /// |v − k|² − |v − s|², positive when `v` is closer to `s`.
+    Offset { v: Vec3, s: Vec3, k: Vec3 },
+}
+
+impl Entry {
+    /// Rounded value and a bound on its rounding error.
+    fn approximate(self) -> (f64, f64) {
+        match self {
+            Entry::One => (1.0, 0.0),
+            Entry::Zero => (0.0, 0.0),
+            Entry::Offset { v, s, k } => {
+                let mut value = 0.0;
+                let mut size = 0.0;
+                for (v, s, k) in [(v.x, s.x, k.x), (v.y, s.y, k.y), (v.z, s.z, k.z)] {
+                    value += (s - k) * (2.0 * v - s - k);
+                    size += (s.abs() + k.abs()) * (2.0 * v.abs() + s.abs() + k.abs());
+                }
+                (value, 16.0 * f64::EPSILON * size)
+            }
+        }
+    }
+
+    fn exact(self) -> Expansion {
+        match self {
+            Entry::One => vec![1.0],
+            Entry::Zero => vec![0.0],
+            Entry::Offset { v, s, k } => {
+                let mut sum = vec![0.0];
+                for (v, s, k) in [(v.x, s.x, k.x), (v.y, s.y, k.y), (v.z, s.z, k.z)] {
+                    // (s − k)(2v − s − k); doubling is exact
+                    let t = grow(&diff(2.0 * v, s), -k);
+                    sum = add(&sum, &mul(&diff(s, k), &t));
+                }
+                sum
+            }
+        }
+    }
+}
+
+fn minor_indices(n: usize, skip: usize) -> impl Iterator<Item = usize> {
+    (0..n).filter(move |&j| j != skip)
+}
+
+/// Determinant (or permanent) of the rows `rows` and columns `cols` of `m`
+/// by expansion along the first of the rows.
+fn float_det(m: &[[f64; 4]; 4], rows: &[usize], cols: &[usize], permanent: bool) -> f64 {
+    let Some((&r, rest)) = rows.split_first() else {
+        return 1.0;
+    };
+    let mut sum = 0.0;
+    for (j, &c) in cols.iter().enumerate() {
+        let sub: Vec<usize> = minor_indices(cols.len(), j).map(|i| cols[i]).collect();
+        let term = m[r][c] * float_det(m, rest, &sub, permanent);
+        sum += if permanent || j % 2 == 0 { term } else { -term };
+    }
+    sum
+}
+
+fn exact_det(m: &[Vec<Expansion>], rows: &[usize], cols: &[usize]) -> Expansion {
+    let Some((&r, rest)) = rows.split_first() else {
+        return vec![1.0];
+    };
+    let mut sum = vec![0.0];
+    for (j, &c) in cols.iter().enumerate() {
+        if sign(&m[r][c]) == Ordering::Equal {
+            continue;
+        }
+        let sub: Vec<usize> = minor_indices(cols.len(), j).map(|i| cols[i]).collect();
+        let term = mul(&m[r][c], &exact_det(m, rest, &sub));
+        sum = add(&sum, &if j % 2 == 0 { term } else { neg(&term) });
+    }
+    sum
+}
+
+/// The exact sign of the determinant of the leading n × n block (n ≤ 4).
+pub fn offset_det_sign(n: usize, m: &[[Entry; 4]; 4]) -> Ordering {
+    let index: Vec<usize> = (0..n).collect();
+    let mut value = [[0.0; 4]; 4];
+    let mut upper = [[0.0; 4]; 4];
+    let mut lower = [[0.0; 4]; 4];
+    for i in 0..n {
+        for j in 0..n {
+            let (v, e) = m[i][j].approximate();
+            value[i][j] = v;
+            lower[i][j] = v.abs();
+            upper[i][j] = v.abs() + e;
+        }
+    }
+    let det = float_det(&value, &index, &index, false);
+    let high = float_det(&upper, &index, &index, true);
+    let low = float_det(&lower, &index, &index, true);
+    // entry errors spread through every product, plus the rounding of the
+    // products and sums themselves
+    let bound = (high - low) + 64.0 * f64::EPSILON * high;
+    if det.abs() > bound {
+        return det.total_cmp(&0.0);
+    }
+    let exact: Vec<Vec<Expansion>> = (0..n)
+        .map(|i| (0..n).map(|j| m[i][j].exact()).collect())
+        .collect();
+    sign(&exact_det(&exact, &index, &index))
+}
+
+/// Side of a point that is fixed by bisectors on a simplex, relative to one
+/// more bisector, after Lévy's side predicates (PCK, 2016) for restricted
+/// Voronoi diagrams.
+///
+/// The point q lies on the simplex with the corners `corners` (one to four
+/// of them: a point, an edge, a triangle or a tetrahedron) and on the
+/// bisectors of the site `s` with each site of `on` (one fewer than the
+/// corners). The result is the sign of |q − o|² − |q − s|²: `Greater` when q
+/// is closer to `s`, `Equal` when it is on the bisector of `s` and `o`.
+/// `None` when the bisectors do not fix a point of the simplex's plane.
+///
+/// `tied(corner, site)` says that the site is equidistant from that corner
+/// with `s` by construction; that offset is then zero and not computed.
+///
+/// With barycentric weights λ of q, Σ λ = 1 and Σ λ f_k = 0 for each k of
+/// `on`, where f_k is the offset of bisector k at a corner. Cramer's rule
+/// gives Σ λ f_o as the quotient of two determinants of these offsets.
+pub fn bisector_side(
+    corners: &[Vec3],
+    s: Vec3,
+    on: &[Vec3],
+    o: Vec3,
+    tied: &dyn Fn(usize, Option<usize>) -> bool,
+) -> Option<Ordering> {
+    if on.len() + 1 != corners.len() {
+        return None;
+    }
+    offset_side(corners.len(), &|j, site| {
+        if tied(j, site) {
+            Entry::Zero
+        } else {
+            let k = site.map_or(o, |i| on[i]);
+            Entry::Offset {
+                v: corners[j],
+                s,
+                k,
+            }
+        }
+    })
+}
+
+/// As [`bisector_side`], from the offsets themselves: `offset(j, None)` is
+/// the offset of the tested bisector at corner j of `n` corners, and
+/// `offset(j, Some(i))` that of the i-th of the n − 1 bisectors the point is
+/// on. The caller may take each offset from its own table of squared
+/// distances, as long as every offset is the difference of two entries of
+/// one table; the answer is then the same whichever site of the point the
+/// offsets are taken from.
+pub fn offset_side(n: usize, offset: &dyn Fn(usize, Option<usize>) -> Entry) -> Option<Ordering> {
+    if n == 0 || n > 4 {
+        return None;
+    }
+    let mut top = [[Entry::Zero; 4]; 4];
+    let mut bottom = [[Entry::Zero; 4]; 4];
+    for j in 0..n {
+        top[0][j] = offset(j, None);
+        bottom[0][j] = Entry::One;
+        for i in 0..n - 1 {
+            top[i + 1][j] = offset(j, Some(i));
+            bottom[i + 1][j] = top[i + 1][j];
+        }
+    }
+    let below = offset_det_sign(n, &bottom);
+    if below == Ordering::Equal {
+        return None;
+    }
+    let above = offset_det_sign(n, &top);
+    Some(if below == Ordering::Less {
+        above.reverse()
+    } else {
+        above
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,5 +416,105 @@ mod tests {
         assert_eq!(insphere(a, b, c, d, v(3., 0., 0.)), Ordering::Less);
         assert_eq!(insphere(a, b, c, d, v(0., -1., 0.)), Ordering::Equal);
         assert_eq!(insphere(a, b, c, d, v(0., 0., -1.)), Ordering::Equal);
+    }
+
+    /// Invariant: the side of a Voronoi vertex is exact. Four sites on an
+    /// integer sphere fix its centre inside a tetrahedron; a fifth site on
+    /// the same sphere is exactly on, and one a rounding step inside or
+    /// outside is strictly on its side. A filter that trusts a rounded
+    /// value, or a wrong sign for a negative denominator, fails here; so
+    /// does an answer that depends on the order of the corners.
+    #[test]
+    fn side_of_a_voronoi_vertex_is_exact() {
+        let corners = [
+            v(-7., -5., -6.),
+            v(9., -4., -5.),
+            v(-3., 8., -4.),
+            v(1., 2., 11.),
+        ];
+        let s = v(3., 0., 0.);
+        let on = [v(0., 3., 0.), v(0., 0., 3.), v(-3., 0., 0.)];
+        let free = |_: usize, _: Option<usize>| false;
+        let side = |c: &[Vec3], o: Vec3| bisector_side(c, s, &on, o, &free);
+        assert_eq!(side(&corners, v(2., 2., 1.)), Some(Ordering::Equal));
+        assert_eq!(
+            side(&corners, v(2., 2., 1.0 + f64::EPSILON)),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(
+            side(&corners, v(2., 2., 1.0 - f64::EPSILON)),
+            Some(Ordering::Less)
+        );
+        let turned = [corners[1], corners[0], corners[2], corners[3]];
+        assert_eq!(
+            side(&turned, v(2., 2., 1.0 - f64::EPSILON)),
+            Some(Ordering::Less)
+        );
+        // three bisectors through one line fix no point
+        let line = [v(0., 3., 0.), v(0., -3., 0.), v(-3., 0., 0.)];
+        assert_eq!(
+            bisector_side(&corners, s, &line, v(9., 9., 9.), &free),
+            None
+        );
+    }
+
+    /// Invariant: the two cells of a bisector face take the same decision.
+    /// A vertex on an edge and on the bisector of s and t is closer to a
+    /// third site k than to s exactly when it is closer to k than to t.
+    /// With rounded coordinates the two views disagree near a tie (the
+    /// defect of the tolerance tests); the sites here are a rounding step
+    /// from a tie on purpose.
+    #[test]
+    fn both_cells_of_a_face_agree() {
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let free = |_: usize, _: Option<usize>| false;
+        let mut strict = 0;
+        for _ in 0..2000 {
+            let a = v(next(), next(), next());
+            let b = v(next() + 1.0, next(), next());
+            let s = v(next(), next() + 0.5, next());
+            let t = v(next() + 1.0, next() + 0.5, next());
+            // a site at almost the same distance from the vertex as s and t
+            let q = {
+                let f = |p: Vec3| (p - t).dot(p - t) - (p - s).dot(p - s);
+                let (fa, fb) = (f(a), f(b));
+                a + (b - a) * (fa / (fa - fb))
+            };
+            let r = (q - s).length();
+            let d = v(next() - 0.5, next() - 0.5, next() - 0.5);
+            let k = q + d * (r / d.length() * (1.0 + (next() - 0.5) * 4.0 * f64::EPSILON));
+            let from_s = bisector_side(&[a, b], s, &[t], k, &free);
+            let from_t = bisector_side(&[a, b], t, &[s], k, &free);
+            assert!(from_s.is_some());
+            assert_eq!(from_s, from_t);
+            strict += usize::from(from_s != Some(Ordering::Equal));
+        }
+        assert!(strict > 1900);
+    }
+
+    /// Invariant: a tie by construction is an exact zero. Two sites meant to
+    /// be equidistant from a corner are a rounding step apart in stored
+    /// coordinates; with the tie declared, the corner is on their bisector.
+    #[test]
+    fn declared_tie_is_on_the_bisector() {
+        let corner = v(0.1, 0.2, 0.3);
+        let s = corner + v(0.6, 0.0, 0.8) * 0.7;
+        let o = corner + v(0.0, 0.6, 0.8) * 0.7;
+        let free = |_: usize, _: Option<usize>| false;
+        let tie = |_: usize, _: Option<usize>| true;
+        assert_ne!(
+            bisector_side(&[corner], s, &[], o, &free),
+            Some(Ordering::Equal)
+        );
+        assert_eq!(
+            bisector_side(&[corner], s, &[], o, &tie),
+            Some(Ordering::Equal)
+        );
     }
 }

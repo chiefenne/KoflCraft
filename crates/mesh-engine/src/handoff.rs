@@ -21,14 +21,14 @@ pub const FOEHNCRAFT_VTU: &str = "foehncraft.vtu";
 /// The name of the blocked VTKHDF hand-off in a bundle.
 pub const FOEHNCRAFT_VTKHDF: &str = "foehncraft.vtkhdf";
 
-/// The file a bundle hands to FoehnCraft: the ASCII VTU of FC-02, or the
-/// blocked VTKHDF file that FoehnCraft and MurmelCraft read block by block
-/// (`docs/foehncraft.md`, "Blocked VTKHDF").
+/// The file a bundle hands to FoehnCraft: the blocked VTKHDF file that
+/// FoehnCraft and MurmelCraft read block by block (`docs/foehncraft.md`,
+/// "Blocked VTKHDF"; the default), or the ASCII VTU of FC-02.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HandoffFormat {
-    #[default]
     Vtu,
+    #[default]
     Vtkhdf,
 }
 

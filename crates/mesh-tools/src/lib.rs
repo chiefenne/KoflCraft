@@ -353,7 +353,7 @@ pub static TOOLS: &[Tool] = &[
         id: "mesh.generate_sweep",
         version: 1,
         action: Action::StartBuild,
-        summary: "Generate a graded polyhedral block with one inlet or a straight pipe with two ports into a new directory. `handoff` picks the FoehnCraft file: foehncraft.vtu (default) or the blocked binary foehncraft.vtkhdf.",
+        summary: "Generate a graded polyhedral block with one inlet or a straight pipe with two ports into a new directory. `handoff` picks the FoehnCraft file: the blocked binary foehncraft.vtkhdf (default) or foehncraft.vtu.",
         legacy_name: Some("generate_sweep"),
         outputs: &["output"],
         input_schema: || {
@@ -370,7 +370,7 @@ pub static TOOLS: &[Tool] = &[
         id: "mesh.generate_channel",
         version: 1,
         action: Action::StartBuild,
-        summary: "Generate and check a layered rectangular channel into a new directory (VTU, Gmsh, FoehnCraft files). `handoff` picks the FoehnCraft file: foehncraft.vtu (default) or the blocked binary foehncraft.vtkhdf.",
+        summary: "Generate and check a layered rectangular channel into a new directory (VTU, Gmsh, FoehnCraft files). `handoff` picks the FoehnCraft file: the blocked binary foehncraft.vtkhdf (default) or foehncraft.vtu.",
         legacy_name: Some("generate_channel"),
         outputs: &["output"],
         input_schema: || {
@@ -407,7 +407,7 @@ pub static TOOLS: &[Tool] = &[
         id: "mesh.generate_duct",
         version: 1,
         action: Action::StartBuild,
-        summary: "Generate and validate a partitioned STL bulk, wall-layer or polyhedral duct volume into a new directory. `handoff` picks the FoehnCraft file: foehncraft.vtu (default) or the blocked binary foehncraft.vtkhdf.",
+        summary: "Generate and validate a partitioned STL bulk, wall-layer or polyhedral duct volume into a new directory. `handoff` picks the FoehnCraft file: the blocked binary foehncraft.vtkhdf (default) or foehncraft.vtu.",
         legacy_name: Some("generate_duct"),
         outputs: &["output"],
         input_schema: || {
@@ -470,7 +470,7 @@ pub static TOOLS: &[Tool] = &[
         id: "block.template",
         version: 1,
         action: Action::WriteFiles,
-        summary: "Write a block topology (`koflcraft.block-topology`, BS-02/BS-03) for a standard case: `channel` (one block, optional two-sided wall clustering) or `pipe_ogrid` (H-core and four O-grid blocks, optional wall spacing). The file is checked before it is written.",
+        summary: "Write a block topology (`koflcraft.block-topology`, BS-02/BS-03) for a standard case: `channel` (one block, optional two-sided wall clustering) `pipe_ogrid` (H-core and four O-grid blocks, optional wall spacing) `elbow` (the pipe O-grid swept through a bend with optional straight legs, walls projected onto cylinders and the torus) or `airfoil_cgrid` (an extruded C-grid of six blocks around a NACA 4-digit section or a Selig/Lednicer coordinate file, the wall a spline through the points). The file is checked before it is written.",
         legacy_name: None,
         outputs: &["output"],
         input_schema: || {
@@ -497,13 +497,14 @@ pub static TOOLS: &[Tool] = &[
         id: "block.grid",
         version: 1,
         action: Action::StartBuild,
-        summary: "Build a block-structured hexahedral mesh from a topology by transfinite interpolation (BS-09, TFI only so far), validate it (positive corner Jacobians, conservation, conforming closed cells, BS-13) and write `volume.vtu`, `mesh.msh` (MSH 4.1), `foehncraft.vtu`, `report.json` and `mesh-evidence.json` (with each block's cell range) into a new directory (BS-14).",
+        summary: "Build a block-structured hexahedral mesh from a topology (BS-09): `algorithm` `{\"kind\": \"tfi\"}` (default, transfinite interpolation) or `{\"kind\": \"elliptic\"}` (TFI, then Thompson–Thames–Mastin smoothing of every node off the boundary, across block faces, with orthogonality and first-spacing control at wall patches unless `wall_orthogonality` is false). Validate it (positive corner Jacobians, conservation, conforming closed cells, BS-13) and write `volume.vtu`, `mesh.msh` (MSH 4.1), `foehncraft.vtu`, `report.json` and `mesh-evidence.json` (with each block's cell range) into a new directory (BS-14).",
         legacy_name: None,
         outputs: &["output"],
         input_schema: || {
             schemas::input(
-                json!({"topology": schemas::path(), "output": schemas::path()}),
-                &[],
+                json!({"topology": schemas::path(), "output": schemas::path(),
+                       "algorithm": schemas::block_algorithm()}),
+                &["algorithm"],
             )
         },
         output_schema: || json!({"type": "object", "description": "`koflcraft.block-result` with the `koflcraft.block-report`"}),

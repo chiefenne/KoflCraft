@@ -494,5 +494,48 @@ pub(crate) fn block_template() -> Value {
                "wall_spacing": positive}),
         &["core_fraction", "wall_spacing"],
     );
-    json!({"oneOf": [channel, pipe]})
+    let elbow = input(
+        json!({"template": {"const": "elbow"}, "radius": positive, "bend_radius": positive,
+               "angle": {"type": "number", "exclusiveMinimum": 0, "maximum": 180},
+               "inlet_length": {"type": "number", "minimum": 0},
+               "outlet_length": {"type": "number", "minimum": 0},
+               "core_fraction": {"type": "number", "exclusiveMinimum": 0.1, "exclusiveMaximum": 0.9},
+               "core_cells": count, "radial_cells": count, "axial_cells": count,
+               "wall_spacing": positive}),
+        &[
+            "inlet_length",
+            "outlet_length",
+            "core_fraction",
+            "wall_spacing",
+        ],
+    );
+    let airfoil = input(
+        json!({"template": {"const": "airfoil_cgrid"},
+               "naca": {"type": "string", "pattern": "^[0-9]{4}$"},
+               "coordinates": {"type": "string"},
+               "chord": positive, "span": positive, "farfield": positive, "wake_length": positive,
+               "surface_cells": {"type": "integer", "minimum": 2}, "normal_cells": count,
+               "wake_cells": count, "span_cells": count, "wall_spacing": positive,
+               "leading_edge_spacing": positive, "trailing_edge_spacing": positive}),
+        &[
+            "naca",
+            "coordinates",
+            "chord",
+            "span_cells",
+            "leading_edge_spacing",
+            "trailing_edge_spacing",
+        ],
+    );
+    json!({"oneOf": [channel, pipe, elbow, airfoil]})
+}
+
+/// The volume algorithm of `block.grid` (BS-09).
+pub(crate) fn block_algorithm() -> Value {
+    let tfi = input(json!({"kind": {"const": "tfi"}}), &[]);
+    let elliptic = input(
+        json!({"kind": {"const": "elliptic"}, "wall_orthogonality": {"type": "boolean"},
+               "max_iterations": {"type": "integer", "minimum": 1}}),
+        &["wall_orthogonality", "max_iterations"],
+    );
+    json!({"oneOf": [tfi, elliptic]})
 }

@@ -174,6 +174,12 @@ struct Sites<'a> {
     points: &'a [Vec3],
     tree: KdTree,
     near: Vec<Vec<(f64, usize)>>,
+    /// For a wall seed, the scaffold vertices whose balls it lies on: two
+    /// seeds on the ball of one vertex are equidistant from it by
+    /// construction. Empty when no ties are declared.
+    balls: &'a [Option<[usize; 3]>],
+    /// The lowest seed on the ball of each scaffold vertex.
+    ball_site: HashMap<usize, u32>,
 }
 
 impl<'a> Sites<'a> {
@@ -181,7 +187,13 @@ impl<'a> Sites<'a> {
         let tree = KdTree::new(points);
         let k = INITIAL_NEIGHBOURS.min(points.len().saturating_sub(1));
         let near = (0..points.len()).map(|i| tree.nearest(i, k)).collect();
-        Self { points, tree, near }
+        Self {
+            points,
+            tree,
+            near,
+            balls: &[],
+            ball_site: HashMap::new(),
+        }
     }
 
     /// The part of tetrahedron `t` in the Voronoi cell of site `s`.
@@ -245,15 +257,23 @@ impl<'a> Sites<'a> {
             corners: dom.tets[t],
             sites: self.points,
             tol: dom.tol,
+            stand_in: &|node, k| {
+                let on_ball = self
+                    .balls
+                    .get(k as usize)
+                    .copied()
+                    .flatten()
+                    .is_some_and(|c| c.contains(&node));
+                if on_ball {
+                    self.ball_site.get(&node).copied().unwrap_or(k)
+                } else {
+                    k
+                }
+            },
         };
-        let mut c = SymConvex::tet(&frame);
+        let mut c = SymConvex::tet(&frame, s as u32);
         let site = self.points[s];
-        let radius = |c: &SymConvex| {
-            c.pts
-                .iter()
-                .map(|&p| (p - site).length())
-                .fold(0.0, f64::max)
-        };
+        let radius = |c: &SymConvex| c.reach.iter().copied().fold(0.0, f64::max);
         let mut r = radius(&c);
         let others = self.points.len() - 1;
         let mut owned: Option<Vec<(f64, usize)>> = None;
@@ -753,6 +773,8 @@ fn build(
     // seed's cell cuts the wall in exactly its triangle. A wall vertex with
     // a ball has no site of its own, and no free site may enter a ball.
     let mut seed_sites: Vec<(Vec3, f64)> = Vec::new();
+    // Seeds never move, so their coordinates identify them in every round.
+    let mut seed_balls: HashMap<[u64; 3], [usize; 3]> = HashMap::new();
     let mut balls: Vec<(Vec3, f64)> = Vec::new();
     let mut seeded_vertex = vec![false; surface.vertices().len()];
     if layers > 0 && options.wall_join == WallJoin::Columns {
@@ -807,6 +829,15 @@ fn build(
             if found.radius[i] > 0.0 {
                 seeded_vertex[v] = true;
                 balls.push((inner[i], found.radius[i]));
+            }
+        }
+        // scaffold vertex at each wall vertex of the innermost surface
+        let node_at: HashMap<usize, usize> =
+            mapped.iter().enumerate().map(|(n, &p)| (p, n)).collect();
+        for (seed, corners) in found.seeds.iter().zip(&found.corners) {
+            let nodes = corners.map(|c| node_at.get(&stack[layers][wall_vertices[c]]).copied());
+            if let [Some(a), Some(b), Some(c)] = nodes {
+                seed_balls.insert([seed.0.x, seed.0.y, seed.0.z].map(f64::to_bits), [a, b, c]);
             }
         }
         seed_sites = found.seeds;
@@ -978,7 +1009,17 @@ fn build(
     // one pass over the whole diagram (single linkage), so a face is the
     // same ring for the two pieces on its sides: it collapses for both or
     // for neither.
-    let s = Sites::new(&sites);
+    let site_balls: Vec<Option<[usize; 3]>> = sites
+        .iter()
+        .map(|p| seed_balls.get(&[p.x, p.y, p.z].map(f64::to_bits)).copied())
+        .collect();
+    let mut s = Sites::new(&sites);
+    s.balls = &site_balls;
+    for (k, nodes) in site_balls.iter().enumerate() {
+        for &node in nodes.iter().flatten() {
+            s.ball_site.entry(node).or_insert(k as u32);
+        }
+    }
     let weld_tol = scale * 1e-10;
     let mut named: HashMap<Key, usize> = HashMap::new();
     let mut raw_points: Vec<Vec3> = Vec::new();

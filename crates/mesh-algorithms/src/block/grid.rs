@@ -11,6 +11,10 @@
 //! the two local frames, so shared faces match node for node without any
 //! tolerance welding (BS-05), and boundary nodes are never moved (BS-08).
 //!
+//! The interior nodes of a face listed under a surface are projected onto
+//! it (BS-07) before the block interiors are filled, so the interiors see
+//! the exact wall.
+//!
 //! Interior parameters follow the edge distributions: where opposite edges
 //! carry different laws, the parameter of a node blends the chord-length
 //! fractions of its edges, so grid lines join matching nodes.
@@ -70,6 +74,9 @@ pub struct BlockGrid {
     pub boundary: Vec<([usize; 4], usize, usize)>,
     pub edges: Vec<EdgeReport>,
     pub checked: Checked,
+    /// The patch of each of a block's six faces (order of `BLOCK_FACES`),
+    /// `None` for a face shared with another block.
+    pub face_patches: Vec<[Option<usize>; 6]>,
 }
 
 /// Outward faces of a hexahedron in local node slots.
@@ -107,10 +114,15 @@ impl Builder<'_> {
                 .iter()
                 .find(|e| edge_key(e.vertices[0], e.vertices[1]) == key);
             let (from, to, curve, law) = match spec {
-                Some(s) => (s.vertices[0], s.vertices[1], s.curve, s.distribution),
+                Some(s) => (
+                    s.vertices[0],
+                    s.vertices[1],
+                    s.curve.clone(),
+                    s.distribution,
+                ),
                 None => (key.0, key.1, DEFAULT_EDGE.0, DEFAULT_EDGE.1),
             };
-            let ev = Evaluator::new(self.t.vertices[from], self.t.vertices[to], curve)?;
+            let ev = Evaluator::new(self.t.vertices[from], self.t.vertices[to], &curve)?;
             let s = fractions(law, n, ev.length())?;
             let mut ids = Vec::with_capacity(n + 1);
             ids.push(from);
@@ -182,10 +194,17 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
     let mut hexes = Vec::with_capacity(checked.cells);
     let mut blocks = Vec::with_capacity(t.blocks.len());
     let mut boundary = Vec::new();
+    let mut face_patches = Vec::with_capacity(t.blocks.len());
     let mut patch_of: HashMap<[usize; 4], usize> = HashMap::new();
     for (p, patch) in t.patches.iter().enumerate() {
         for &f in &patch.faces {
             patch_of.insert(face_key(f), p);
+        }
+    }
+    let mut surface_of: HashMap<[usize; 4], usize> = HashMap::new();
+    for (sn, spec) in t.surfaces.iter().enumerate() {
+        for &f in &spec.faces {
+            surface_of.insert(face_key(f), sn);
         }
     }
     for (b, block) in t.blocks.iter().enumerate() {
@@ -284,7 +303,10 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
                                     + p11 * (u * v)
                                     + p01 * ((1.0 - u) * v));
                         local[pos(i, j)] = g.points.len();
-                        g.points.push(p);
+                        g.points.push(match surface_of.get(&key) {
+                            Some(&sn) => t.surfaces[sn].surface.project(p),
+                            None => p,
+                        });
                     }
                 }
                 let mut ids = Vec::with_capacity((m1 + 1) * (m2 + 1));
@@ -325,10 +347,12 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
                 }
             }
         }
+        let mut patches_here = [None; 6];
         for (f, &(fixed, side, _, _)) in BLOCK_FACES.iter().enumerate() {
             let Some(&patch) = patch_of.get(&face_key(face_vertices(&block.vertices, f))) else {
                 continue;
             };
+            patches_here[f] = Some(patch);
             for k in 0..n[2] {
                 for j in 0..n[1] {
                     for i in 0..n[0] {
@@ -343,6 +367,7 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
                 }
             }
         }
+        face_patches.push(patches_here);
         blocks.push(BlockRange {
             block: b,
             domain: block.domain.clone(),
@@ -364,6 +389,7 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
         boundary,
         edges: g.reports,
         checked,
+        face_patches,
     })
 }
 
@@ -483,6 +509,21 @@ impl BlockGrid {
                 q
             })
             .collect()
+    }
+
+    /// The node ids of block `b` in its local grid, index
+    /// i + (ni + 1) (j + (nj + 1) k).
+    pub fn block_nodes(&self, b: usize) -> Vec<usize> {
+        let [ni, nj, nk] = self.blocks[b].cells;
+        let mut ids = Vec::with_capacity((ni + 1) * (nj + 1) * (nk + 1));
+        for k in 0..=nk {
+            for j in 0..=nj {
+                for i in 0..=ni {
+                    ids.push(self.block_corner(b, i, j, k));
+                }
+            }
+        }
+        ids
     }
 
     /// The node ids of the corner (i, j, k) of block `b` in its local grid.

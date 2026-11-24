@@ -79,6 +79,7 @@ cargo m1 --require-gmsh
 | STL input | [docs/m2-stl.md](docs/m2-stl.md) |
 | Block and pipe meshes with wall layers | [docs/analytic-development.md](docs/analytic-development.md) |
 | Nonconvex ducts with exposed prism layers | [docs/nonconvex-duct.md](docs/nonconvex-duct.md) |
+| Colour maps shared with FoehnCraft and MurmelCraft | [docs/colour-maps.md](docs/colour-maps.md) |
 | Rules for agents and contributors | [AGENTS.md](AGENTS.md), [docs/pitfalls.md](docs/pitfalls.md) |
 
 ## How it is built

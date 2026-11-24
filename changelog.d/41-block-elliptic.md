@@ -1,0 +1,1 @@
+- Block mesher MB1b: `block.grid` takes `algorithm: {"kind": "elliptic"}` for Thompson–Thames–Mastin smoothing of every node off the boundary, across block faces, with wall orthogonality and first-spacing control at wall patches (BS-09); wall orthogonality without a wall patch is refused (BS-12). The report gives the wall angles before and after.

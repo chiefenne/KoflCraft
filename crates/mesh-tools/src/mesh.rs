@@ -72,8 +72,8 @@ pub struct GenerateStlInput {
     pub patches: Option<String>,
 }
 
-fn is_vtu(format: &HandoffFormat) -> bool {
-    *format == HandoffFormat::Vtu
+fn is_default(format: &HandoffFormat) -> bool {
+    *format == HandoffFormat::default()
 }
 
 #[derive(Deserialize, Serialize)]
@@ -81,8 +81,8 @@ fn is_vtu(format: &HandoffFormat) -> bool {
 pub struct SweepInput {
     pub config: SweepConfig,
     pub output: String,
-    /// The FoehnCraft file of the bundle: `vtu` (default) or `vtkhdf`.
-    #[serde(default, skip_serializing_if = "is_vtu")]
+    /// The FoehnCraft file of the bundle: `vtkhdf` (default) or `vtu`.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub handoff: HandoffFormat,
 }
 
@@ -91,8 +91,8 @@ pub struct SweepInput {
 pub struct ChannelInput {
     pub config: ChannelConfig,
     pub output: String,
-    /// The FoehnCraft file of the bundle: `vtu` (default) or `vtkhdf`.
-    #[serde(default, skip_serializing_if = "is_vtu")]
+    /// The FoehnCraft file of the bundle: `vtkhdf` (default) or `vtu`.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub handoff: HandoffFormat,
 }
 
@@ -104,8 +104,8 @@ pub struct DuctInput {
     pub partition: String,
     pub mode: Mode,
     pub output: String,
-    /// The FoehnCraft file of the bundle: `vtu` (default) or `vtkhdf`.
-    #[serde(default, skip_serializing_if = "is_vtu")]
+    /// The FoehnCraft file of the bundle: `vtkhdf` (default) or `vtu`.
+    #[serde(default, skip_serializing_if = "is_default")]
     pub handoff: HandoffFormat,
 }
 
@@ -374,7 +374,20 @@ pub(crate) fn limitations(id: &str, output: &Value) -> Vec<String> {
         }
         "mesh.generate_channel" => l.push("planar walls only".into()),
         "block.grid" => {
-            l.push("transfinite interpolation only: no elliptic smoothing or wall orthogonality control yet (MB1b)".into());
+            if report["algorithm"] == "block_tfi_v1" {
+                l.push("transfinite interpolation only: no smoothing or wall orthogonality control (use algorithm kind elliptic)".into());
+            } else {
+                l.push("elliptic smoothing holds wall orthogonality and spacing on the interior of wall faces; along block edges that meet a wall it follows the nearest controlled node".into());
+                l.push("nodes on symmetry patches slide only when the patch is planar; nodes on every other boundary patch stay fixed".into());
+                l.push("the TFI grid is frozen as a fixed point: only the wall controls move nodes, so interior skew from TFI away from walls stays".into());
+                let s = &report["smoothing"];
+                if s["moved_block_nodes"] == 0
+                    && s["moved_face_nodes"] == 0
+                    && s["moved_vertex_nodes"] == 0
+                {
+                    l.push("no node could move: this grid is the TFI grid".into());
+                }
+            }
             l.push("no OpenFOAM polyMesh in the bundle; FoehnCraft VTU and MSH 4.1 only".into());
             if let Some(d) = report["reference"]["relative_deviation"].as_f64() {
                 l.push(format!(

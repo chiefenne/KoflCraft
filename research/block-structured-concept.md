@@ -212,4 +212,84 @@ Recorded as section 4c of [the requirements](../docs/requirements.md)
 
 MB1a results (`block.grid`, release build): pipe R = 0.05, L = 0.5, 8 core cells per quarter, 10 radial, 40 axial, wall spacing 5e-4: 15,360 hexahedra, minimum scaled Jacobian 0.707 (the core corners), volume 0.641 % below πR²L, which is the chord error of 32 wall nodes per circle; the sum of cell volumes equals the boundary-enclosed volume to rounding. Channel 1 × 0.1 × 0.05 with 50 × 20 × 12 cells and wall spacing 5e-4: 12,000 hexahedra, exact volume, scaled Jacobian 1.
 
-Open for MB1b, each to be put on a card: elliptic smoothing (Winslow / Thompson–Thames–Mastin with Steger–Sorenson control), the orthogonal wall block, the explicit `block.*` edit tools (BS-04), elbow and airfoil C-grid templates, polyMesh in the bundle, the FoehnCraft round trip in the acceptance runner, and the ALG-16 benchmark against harmonic maps.
+Open after MB1a, each to be put on a card: elliptic smoothing (Winslow / Thompson–Thames–Mastin with Steger–Sorenson control), the orthogonal wall block, the explicit `block.*` edit tools (BS-04), elbow and airfoil C-grid templates, polyMesh in the bundle, the FoehnCraft round trip in the acceptance runner, and the ALG-16 benchmark against harmonic maps.
+
+### MB1b: elliptic smoothing (2026-11-24)
+
+Cards: "Elliptic smoothing + wall orthogonality" as the next step, and "Smooth across interfaces too" for the faces between blocks.
+
+Built (`mesh-algorithms::block::smooth`, `block.grid` with `algorithm: {"kind": "elliptic"}`): every node off the boundary moves. Nodes inside a block or a shared face solve the Thompson–Thames–Mastin system in the index space of their home block; across a shared face the stencil reads the neighbour block's node one step off the same face node, so any pair of local frames joins into one structured neighbourhood. Nodes on inner block edges (the O-grid core corners, valence 3) move to the average of their neighbours in the plane normal to the edge. Distribution controls are frozen from the TFI grid, so a stretched orthogonal grid is a fixed point. At walls the system evaluated with the target slope (inward normal times the TFI first spacing; Steger and Sorenson 1979, 3DGRAPE 1989) gives the tangential controls. The off-wall control is the TFI distribution control plus an integral feedback on log(h / h_target).
+
+Two findings, measured:
+- **The Sorenson system alone does not pin the first spacing.** Solving all three controls from the wall equation with a one-sided cubic for r_ζζ converged with the first spacing 20 % (face interior) to 40 % (block edges) too large. Every spacing has a matching off-wall control that is self-consistent. Fix: the off-wall control comes from spacing feedback, and only the tangential ones from the system. Result: spacing kept to 1e-6 on the face interior.
+- **Control relaxation 0.2 oscillates on coarse grids** (3 radial cells: last change 0.95 of the shortest edge after 3,000 sweeps); 0.05 converges in 618. The default is now 0.05.
+
+Pipe R = 0.05, L = 0.5, 8/10/40 cells, wall spacing 5e-4 (release build, 8.8 s):
+
+| | TFI | Elliptic |
+|---|---|---|
+| Wall angle of first grid line, max / mean | 3.12° / 2.26° | 0.37° / 0.18° |
+| First spacing change (wall face interior) | — | 5e-7 |
+| Minimum scaled Jacobian | 0.707 | 0.695 |
+| FoehnCraft non-orthogonality, max / mean | 23.4° / 2.12° | 19.4° / 1.34° |
+| FoehnCraft skewness, max / mean | 0.328 / 0.025 | 0.275 / 0.018 |
+| Volume, cells and faces | equal | equal |
+
+The minimum scaled Jacobian is set by the O-grid core corners on the inlet and outlet. Those are boundary nodes and do not move.
+
+### MB1c: elbow and airfoil C-grid templates (2026-11-24)
+
+Cards: "Elbow + airfoil C-grid templates" as the next step, "Project faces onto analytic surfaces" for the elbow wall, and "NACA 4-digit + coordinate file" for the airfoil shape.
+
+Built:
+- **Elbow** (`templates::elbow`): the pipe O-grid swept through stations; the bend is split into segments of at most 30°, so every longitudinal block edge is an exact circle about the bend axis; optional straight legs. Axial cells are shared out by centreline length.
+- **Face projection** (BS-07, the blockMesh `projectFaces` idea): the topology gains `surfaces` (cylinder, torus) with the boundary faces projected onto them. Face interior nodes are projected after the face TFI and before the block TFI, so the block interiors see the exact wall. The check refuses a surface on a shared face, a face projected twice, and a face whose corners are off its surface.
+- **Spline edges**: a natural cubic spline in the chord-length parameter through given points, evaluated by arc length from a table of 64 samples per segment.
+- **Handedness along tangents**: the right-handed check uses each curved edge's tangent at the corner instead of its chord, so a block may start at an airfoil's leading edge, where the chords of the surface edge and the normal edge are collinear.
+- **Airfoil C-grid** (`templates::airfoil_cgrid`), extruded along +z: a front and a rear block on each side (split at the data point nearest x/c = 0.3, because the upper and lower surface between the same two vertices would be one edge) and a wake block above and below the wake cut; a half circle about the trailing edge and straight lines to the wake end. The surface edges cluster at the leading and trailing edges (two-sided tanh), the C's arcs carry the same relative distribution, the normal edges grow geometrically from the wall and the wake cut. Sections: NACA 4-digit with the closed trailing edge (160 cosine-spaced points per side, analytic area), or a Selig or Lednicer file, moved to the leading edge at the origin, turned and scaled to unit chord, with a blunt trailing edge closed by a linear thickness correction.
+
+Results:
+
+| Case | Cells | Wall | Volume against the reference |
+|---|---|---|---|
+| Elbow R = 0.5, bend 1.5, 90°, legs 1, TFI without projection | 1,920 / 15,360 / 122,880 | 5e-3 off the torus at every level | stalls with the wall error |
+| Same with projection | same | 4e-16 | 2.7 %, 0.67 %, 0.17 % short (second order) |
+| NACA 0012 C-grid, farfield and wake 5 chords | 864 / 3,456 / 13,824 | 2.6e-7 chords off the section | 0.33 %, 0.095 %, 0.024 % short |
+| NACA 2412, same | same | 5.3e-7 | same (the C's chords dominate) |
+
+FoehnCraft read-back by hand: elbow R = 0.05 (15,360 cells) valid, TFI non-orthogonality max / mean 23.7° / 2.17°; NACA 2412 with farfield 10 chords and wall spacing 5e-4 chords (11,520 cells) valid, non-orthogonality max / mean 60.4° / 3.0°, skewness max 0.27.
+
+Two findings:
+- **Elliptic smoothing makes the elbow's worst cell worse.** Wall angle max 3.17° → 1.84°, but the FoehnCraft max non-orthogonality rises from 23.7° to 38.7°. The worst cells are not located yet; candidates are the joins between the straight legs and the bend, where the frozen TFI controls jump.
+- **An extruded section with one span cell is not smoothed at all**: every node lies on a symmetry plane, and the smoother keeps all boundary nodes fixed. The airfoil's worst TFI cells (60° near the leading edge) stay. Sliding nodes on planar symmetry patches (mirror ghost points) would fix it.
+
+### MB1d: smoother base, symmetry sliding and the elbow (2026-11-24)
+
+Cards: "Smoother: symmetry sliding + elbow" as the next step, then "Thomas–Middlecoff controls" to try first for curved ducts. After the measurement below, a third card asks for the smoother base; this step was built on its recommended option (full residual freeze plus wall controls).
+
+Where the elbow's worst cells were: the O-grid core corners at the joins between bend segments. Interior block vertices were held fixed, and the Laplace part of the system straightens the swept lines, so the whole core drifted about 5 % of the radius toward the bend centre and sheared the cells next to the fixed vertices.
+
+Built:
+- **Interior block vertices move**, normal to the grid line through them, and nodes on inner block edges move in the plane normal to the edge, both with the TFI offset frozen.
+- **Full residual freeze.** The residual of every node at the TFI grid is stored and subtracted at every update. The TFI grid becomes a fixed point, and only the wall controls move nodes.
+- **Symmetry sliding.** A patch with role `symmetry` that is planar (to 1e-9 of the domain extent) lets its nodes slide in the plane. The stencil reaches across the plane to the mirror images of the interior nodes, the node is projected back onto the plane after each update, and the wall control continues to the rims of wall faces on such a plane. A symmetry patch that is not planar keeps its nodes fixed.
+- **Line Gauss–Seidel.** Each grid line inside a block is solved at once with the Thomas algorithm, and the line axis turns every sweep. Convergence: the largest move below 1e-4 of the shortest TFI edge at the node, and the first spacing off every wall within 1e-4 in log. The default iteration cap went from 3,000 to 10,000.
+
+FoehnCraft max non-orthogonality (release build; pipe R = 0.05 with 8/10/40 cells and wall spacing 5e-4, elbow R = 0.05 at the same resolution, 15,360 cells each):
+
+| Variant | Pipe | Elbow |
+|---|---|---|
+| TFI | 23.4° | 23.7° |
+| MB1b smoother | 19.3° | 34.5° to 38.7° |
+| Thomas–Middlecoff (residual kept at fixed nodes, Laplace-interpolated inside) | 23.1° | 27.3° to 33° |
+| Full residual freeze + walls (built) | 23.3° (mean 1.99°) | 23.45° (mean 2.07°) |
+
+| Case (built smoother) | Sweeps | Time | Wall angle max / mean, TFI → smoothed | FoehnCraft non-orthogonality max / mean | Skewness max |
+|---|---|---|---|---|---|
+| Pipe | 129 | 1.0 s | 3.12° / 2.26° → 0.44° / 0.29° | 23.3° / 1.99° | 0.328 |
+| Elbow | 196 | 1.8 s | 3.17° / 2.25° → 0.63° / 0.37° | 23.45° / 2.07° | 0.327 |
+| NACA 2412 C-grid, farfield 10, 80/48/40 cells, wall spacing 5e-4, one span cell | 2,478 | 35 s | 60.4° / 14.8° → 34.5° / 4.0° | 55.9° / 2.73° (TFI 60.4° / 2.99°) | 0.155 (TFI 0.267) |
+
+No inverted faces in any case. The elbow's minimum scaled Jacobian is 0.704 against 0.706 for TFI.
+
+What the freeze costs: interior skew that TFI puts away from the walls stays. On the pipe the MB1b smoother reached 19.3° because it was free to move the core; the frozen one keeps 23.3°. On the airfoil the worst cell sits in the lower front block below the leading edge, in the frozen TFI interior. The airfoil needs about 2,500 sweeps because the wall controls near the trailing edge and the wake cut settle slowly. Next candidates, each for a card: a 2D cap-smoothing pass for extruded sections, a line solver with relaxed freeze away from walls, and an O-grid around the airfoil.

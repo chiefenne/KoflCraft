@@ -67,6 +67,59 @@ The jacket then stops in the last check, on core cells. A census with the check 
 
 The maintainer then chose a planarity limit of 1e-7 of the face size (`PLANAR_SHARE` in [`duct/verify.rs`](../crates/mesh-algorithms/src/duct/verify.rs)); a face within it is fanned from its vertex mean, as FoehnCraft fans every face. That covers all 61 faces. What remains on the jacket, measured with the checks made non-fatal: 5 faces with one fan triangle seen from behind by 1e-11 to 1e-9 (each at an edge of 3e-8 to 2.6e-5 whose end points are a few 1e-9 off the plane), 3 pairs of cells with a missing triangle or quadrilateral between them (an open shell), and at least one cell whose volume differs from its pieces.
 
+## Step 2: exact sides
+
+After the follow-up above the standard jacket still stopped in the last check. The measured cause: for about 18 core faces the two cells held different rings for the same face, because the side of a vertex was still decided by tolerance from each cell's own view. Taking the rings of both cells is worse (edges used three times).
+
+**Method** (Lévy's side predicates of the PCK, 2016, written for clipping per tetrahedron; from the paper, no code read). A named vertex q lies on a scaffold simplex (a node, an edge, a face or the tetrahedron) with corners p_j and on the bisectors of its site s with one to three sites k_i. With the offset f_k(p) = |p − k|² − |p − s|², which is affine in p, the barycentric weights λ of q solve Σ λ = 1 and Σ λ f_{k_i}(p_j) = 0. The side of q of the bisector of s and o is the sign of Σ λ f_o(p_j), by Cramer's rule the quotient of two determinants (up to 4 × 4) of offsets at the corners. `offset_side` in [`predicates.rs`](../crates/mesh-algorithms/src/predicates.rs) evaluates both signs with a floating-point filter first and with Shewchuk's expansion arithmetic when the filter cannot decide. The answer is in, out or exactly on. It uses only the name, so every tetrahedron gives the same answer, and it is the same from every site of the name, because the linear systems differ by row operations only.
+
+**Wall seed ties.** Seeds on the ball of one wall vertex are equidistant from it by construction, but only to rounding in stored coordinates. Declaring single offsets zero is not enough: two tied seeds would still see different distances to a third site. Each squared distance from a scaffold vertex is therefore taken to a stand-in site: the lowest seed on the ball of that vertex for every seed on it, the site itself otherwise. All offsets then come from one table of squared distances, which is all the argument above needs. The seeds are recognised in every rebuild round by their coordinates, which never change.
+
+**Security radius.** The walk over the neighbouring sites stops when the next site is farther than twice the reach of the piece. The reach came from rounded vertex coordinates, and a vertex where three planes nearly share a line can be far from its computed place. Two pieces of a mirrored pair were then cut by different third sites ("bisector face has no partner"). Each vertex now carries an upper bound on its distance from the site: no more than the farther end of the edge it was cut on, and no more than its computed distance plus the rounding of the cut and the doubt of the two ends.
+
+**Results** (release build; jacket figures with the final checks made non-fatal to count every failure):
+
+| Standard jacket, `size_factor` 2 | Tolerance sides | Exact sides |
+|---|---|---|
+| Cell pairs with an open shell | 3 | 0 |
+| Core faces with a fan triangle seen from behind | 5 | 2 |
+| Cells with a volume mismatch | several, behind the open shells | 1 (5e-6) |
+| Inverted layer sub-wedges | 0 | 7 (three columns, at a wall polygon edge of 6e-6) |
+
+The elbow has 1,004 cells as before. Manifold is valid with the same counts as before (95,938 polyhedra, 71,752 core cells), so on a part without thin features the exact tests reproduce the rule-based result. The jacket does not finish yet.
+
+**Cost.** The long Manifold test (elbow and Manifold builds with their checks) takes 233 s against 158 s before; the jacket build 5.5 minutes against 2.5. Part of it is the exact arithmetic, part the more careful stop rule, which clips against more sites. The two have not been separated.
+
+## Where the work stopped (2026-11-24)
+
+The maintainer closed the hardening for now. State on the standard jacket at size factor 2 (about 337,000 cells, part about 200 mm long, cells 0.2 to 1 mm), counted with **every** final check made non-fatal (a debug patch outside the repository):
+
+| Finding | Cells | Size |
+|---|---|---|
+| Layer cells with inverted sub-wedges | 7 (3 wall columns) | at wall polygon edges of 6.3e-6 and 2.9e-8 |
+| Core cells with a fan triangle seen from behind | 23 | mostly signed area −1e-9 to −1e-16 at edges of 2e-8 to 1e-5; in 3 cells −1e-4 to −8e-4 at edges of 0.1 to 0.3 |
+| Core cells with a bilinear quadrilateral seen from behind | 7 | |
+| Core cells with a face of five corners off its plane | 4 | 8e-3 on a face of 0.29 (two cells), 6e-9 on 0.047 (two cells) |
+| Core cells off in volume | 27 | 1e-8 to 3e-2 relative; one cell has almost no volume |
+| Cell pair with three common faces that are not one polygon | 1 pair | |
+
+56 cells fail in all (7 layer cells, 49 core cells; a cell can be in several rows), 18 of them by far more than rounding. 46 of the 49 core cells are among the last 6,000 cells of the mesh; what these have in common is not traced. The mesh volume is 7e-7 short of the STL volume. The mesh is not exported. Elbow and Manifold are valid.
+
+Earlier counts in this note and in the pull requests (2 or 3 cells, then 6) were too low: each came from a census that still stopped at a check not yet made non-fatal, so the cells after it were never looked at.
+
+**Cause, traced for the wall columns.** The names of the vertices and the side tests are exact, the coordinates are not. `Frame::position` evaluates the name in floating point and, where that lands more than 1e4 tolerances from the crossing of the clipped edge, takes the crossing, which itself comes from rounded points. At a vertex that its bisectors fix badly the coordinates are off by up to about 1e-5. Two true vertices of a cell can be closer than that (four or five sites almost on one sphere), and the polygon then folds: the two wall polygons that share the 6.3e-6 edge each hold one vertex on the wrong side of it, and ear clipping has no positive triangle left for that corner.
+
+**Experiment, not merged.** Coordinates from exact weights: the barycentric weights of a named vertex are λ_j = C_j / Σ C with C_j the cofactors of the row of ones in the determinant of the side test; with expansions for the C_j, Σ C_j p_j and Σ C_j are exact and one division rounds. A floating point filter keeps the old formula where the weights are good to 1e-11. Result on the jacket, from a census that still stopped at the first bilinear quadrilateral seen from behind (cell 335615 of about 337,000), so it is incomplete: no inverted sub-wedge is left (3 columns before), and up to that cell 10 core faces have a fan triangle seen from behind (edges 2e-8 to 6e-6, signed area −8e-12 to −4e-9) and one cell is off in volume by −1.2e-8. The run without the experiment has 16 cells with such a face in the same range of cell numbers, so the experiment does not cure the core faces and may not worsen them either. Why they fail is not known; candidates are the global weld (1e-10 of the model size, about 2e-8 here, the length of most of these edges) and the fan from the vertex mean on faces with such an edge. Manifold and elbow were not run with it. The patch is kept outside the repository.
+
+**Open options.**
+
+0. First trace the 18 cells that are wrong by more than rounding (volume, off-plane faces, the face triple). They are a defect of their own and none of the options below addresses them.
+1. Exact coordinates as above, after finding the second cause in the core faces.
+2. Merge vertices of a cell closer than a limit. Removes the tiny edges themselves, but it is a tolerance decision that changes which cells touch, so it has to be taken once per vertex, not per cell.
+3. Open, not checked here: a jacket set up afresh (`detect_ports` and `setup_duct`, tolerance 0.026 instead of the 0.0442 of the runs above) was reported not to leave the wall remesh within 15 minutes.
+
+Also still open: the thin jacket runs out of memory in the core stage under 3.5 GB, and the jacket build takes 5.5 minutes with exact sides (2.5 before).
+
 ## What the literature offers beyond this step
 
 Read on 2026-11-24 from the papers (the arXiv texts were cut at about 40,000 characters, so later sections were read as summaries; none of the texts read names a code licence).
@@ -78,11 +131,11 @@ Read on 2026-11-24 from the papers (the arXiv texts were cut at about 40,000 cha
 
 ## Limits
 
-- The side decisions are consistent by rule, not exact. A real crossing closer than the clip tolerance to a scaffold node is called a tie.
+- Since step 2 the side decisions are exact. Vertex coordinates are still rounded, and the weld, the film merge and the planarity limit deal with what rounding leaves.
 - A position falls back to the edge crossing for nearly cocircular sites, so the weld still carries part of the consistency.
 - The jackets do not finish (see the follow-up above): a few fan triangles seen from behind and three missing faces between cells remain.
 - Manifold's counts changed slightly, as they do with any change of the site layout.
 
 ## Regression
 
-`neighbouring_tetrahedra_share_names_and_coordinates`, `two_sites_name_their_common_face_alike` and `a_scaffold_vertex_on_the_bisector_belongs_to_both_pieces` in `symbolic.rs`; `the_weld_is_the_same_for_every_order` and `a_pinched_ring_is_cut_not_dropped` in `voronoi_core.rs`; `ears_of_notched_and_straight_rings_are_positive` in `columns.rs`; `notched_boundary_face_has_its_true_area` in `verify.rs`. The jacket is confidential, so no test in the repository reproduces the original failure on a whole part; the unit tests hold the properties it violated.
+`neighbouring_tetrahedra_share_names_and_coordinates`, `two_sites_name_their_common_face_alike` and `a_scaffold_vertex_on_the_bisector_belongs_to_both_pieces` in `symbolic.rs`; `the_weld_is_the_same_for_every_order` and `a_pinched_ring_is_cut_not_dropped` in `voronoi_core.rs`; `side_of_a_voronoi_vertex_is_exact`, `both_cells_of_a_face_agree` and `declared_tie_is_on_the_bisector` in `predicates.rs`; `ears_of_notched_and_straight_rings_are_positive` in `columns.rs`; `notched_boundary_face_has_its_true_area` in `verify.rs`. The jacket is confidential, so no test in the repository reproduces the original failure on a whole part; the unit tests hold the properties it violated.
