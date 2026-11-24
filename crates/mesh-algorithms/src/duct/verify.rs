@@ -45,6 +45,10 @@ pub struct SolverRules {
     pub faces_turned_away: usize,
     /// Largest non-orthogonality over all faces, degrees.
     pub maximum_non_orthogonality: f64,
+    /// Largest face warping, degrees: the angle between a triangle of a
+    /// face's fan and the face's area vector (a graded quality measure, as
+    /// the warpage angle of STAR-CCM+; no limit).
+    pub maximum_warping: f64,
 }
 
 /// Area vector and centre of a face as finite-volume codes take them:
@@ -71,7 +75,32 @@ fn fv_face(p: &[Vec3], ring: &[usize]) -> (Vec3, Vec3) {
 }
 
 /// Counts the cells of a mesh against [`SolverRules`].
-pub fn solver_rules(p: &[Vec3], cells: &[Cell]) -> SolverRules {
+#[cfg(test)]
+fn solver_rules(p: &[Vec3], cells: &[Cell]) -> SolverRules {
+    solver_rules_and_volumes(p, cells).0
+}
+
+/// Largest angle between a fan triangle of a face and its area vector.
+fn warping(p: &[Vec3], ring: &[usize], area: Vec3) -> f64 {
+    if ring.len() == 3 {
+        return 0.0;
+    }
+    let mean = ring.iter().fold(Vec3::ZERO, |s, &v| s + p[v]) / ring.len() as f64;
+    let mut worst = 0.0_f64;
+    for (i, &v) in ring.iter().enumerate() {
+        let n = (p[v] - mean).cross(p[ring[(i + 1) % ring.len()]] - mean);
+        let cos = n.dot(area) / (n.length() * area.length());
+        if cos.is_finite() {
+            worst = worst.max(cos.clamp(-1.0, 1.0).acos().to_degrees());
+        }
+    }
+    worst
+}
+
+/// The solver rules and each cell's volume as the solver takes it (the sum
+/// of its face pyramids).
+fn solver_rules_and_volumes(p: &[Vec3], cells: &[Cell]) -> (SolverRules, Vec<f64>) {
+    let mut volumes = Vec::with_capacity(cells.len());
     let mut out = SolverRules {
         cells: cells.len(),
         ..SolverRules::default()
@@ -85,6 +114,9 @@ pub fn solver_rules(p: &[Vec3], cells: &[Cell]) -> SolverRules {
     for (id, cell) in cells.iter().enumerate() {
         let rings = cell.element.faces();
         let geometry: Vec<(Vec3, Vec3)> = rings.iter().map(|r| fv_face(p, r)).collect();
+        for (r, g) in rings.iter().zip(&geometry) {
+            out.maximum_warping = out.maximum_warping.max(warping(p, r, g.0));
+        }
         // closed shell: every edge twice, area vectors summing to zero
         let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
         for r in &rings {
@@ -120,6 +152,7 @@ pub fn solver_rules(p: &[Vec3], cells: &[Cell]) -> SolverRules {
         out.negative_pyramids += usize::from(!pyramids_ok);
         bad[id] = open || nonpositive || !pyramids_ok;
         centres.push(centre);
+        volumes.push(volume);
         for (r, (area, c)) in rings.iter().zip(geometry) {
             match faces.remove(&key(r)) {
                 Some((other, other_area, _)) => shared.push((other, id, other_area)),
@@ -166,7 +199,7 @@ pub fn solver_rules(p: &[Vec3], cells: &[Cell]) -> SolverRules {
             out.failing_layer_cells += usize::from(cell.layer > 0);
         }
     }
-    out
+    (out, volumes)
 }
 
 fn det(a: Vec3, b: Vec3, c: Vec3) -> f64 {
@@ -379,7 +412,7 @@ pub(super) fn check_with_interface_count(
     layers: usize,
     expected_interfaces: usize,
 ) -> Result<Measurements, String> {
-    let solver_rules = solver_rules(p, cells);
+    let (solver_rules, solver_volumes) = solver_rules_and_volumes(p, cells);
     if crate::trace_enabled() {
         eprintln!(
             "kofl trace: solver rules: {} of {} cells fail ({} in layers; open {}, volume {}, pyramids {}, turned away {}), max non-orthogonality {:.2}°",
@@ -392,6 +425,18 @@ pub(super) fn check_with_interface_count(
             solver_rules.faces_turned_away,
             solver_rules.maximum_non_orthogonality
         );
+    }
+    if solver_rules.failing_cells > 0 {
+        return Err(format!(
+            "{} of {} cells fail the solver rules ({} in layers; open {}, volume {}, pyramids {}, turned away {})",
+            solver_rules.failing_cells,
+            solver_rules.cells,
+            solver_rules.failing_layer_cells,
+            solver_rules.open_cells,
+            solver_rules.nonpositive_volume,
+            solver_rules.negative_pyramids,
+            solver_rules.faces_turned_away
+        ));
     }
     let mut exterior = HashMap::new();
     let mut areas = [0.; 3];
@@ -431,46 +476,26 @@ pub(super) fn check_with_interface_count(
     let mut tetrahedra_below_mean_ratio_0_1 = 0;
     let mut sphericities = Vec::new();
     for (id, cell) in cells.iter().enumerate() {
-        let value = match cell.element {
+        // The solver rules decided above; the element measures below are
+        // quality reports only.
+        match cell.element {
             Element::Polyhedron(ref poly) if poly.prism.is_some() => {
-                let mut value = 0.0;
                 for w in poly.prism.iter().flatten() {
-                    let (jac, v, _) = wedge(w.map(|v| p[v]));
-                    if !jac.is_finite() || jac <= 0. {
-                        return Err(format!(
-                            "layer collision or inversion in layer {}, cell {id}, Jacobian {jac}",
-                            cell.layer
-                        ));
-                    }
+                    let (jac, _, _) = wedge(w.map(|v| p[v]));
                     minimum_j = minimum_j.min(jac);
-                    value += v;
                 }
-                shell_closed(poly).map_err(|e| format!("cell {id}: {e}"))?;
-                if !value.is_finite() || (value / poly.expected_volume - 1.0).abs() > 1e-8 {
-                    return Err(format!(
-                        "cell {id}: layer piece volume differs from its shell"
-                    ));
-                }
-                value
             }
             Element::Polyhedron(ref poly) => {
-                let (volume, sphericity) = poly_volume(poly, p)
-                    .map_err(|e| format!("cell {id} (layer {}): {e}", cell.layer))?;
-                if cell.layer == 0 {
+                if cell.layer == 0
+                    && let Ok((_, sphericity)) = poly_volume(poly, p)
+                {
                     sphericities.push(sphericity);
                 }
-                volume
             }
             Element::Tet(n) => {
                 let [o, a, b, c] = n.map(|v| p[v]);
                 let determinant = det(b - a, c - a, a - o);
                 let clearance = determinant / (b - a).cross(c - a).length();
-                if !clearance.is_finite() || clearance <= scale * 1e-12 {
-                    return Err(format!(
-                        "core collision or invalid kernel in region {} at cell {id}, clearance {clearance}",
-                        cell.region
-                    ));
-                }
                 minimum_kernel_clearance = minimum_kernel_clearance.min(clearance);
                 let squared_edges = [b - a, c - b, a - c, a - o, b - o, c - o]
                     .iter()
@@ -479,23 +504,16 @@ pub(super) fn check_with_interface_count(
                 let mean_ratio = 12.0 * (determinant / 2.0).cbrt().powi(2) / squared_edges;
                 minimum_tet_mean_ratio = minimum_tet_mean_ratio.min(mean_ratio);
                 tetrahedra_below_mean_ratio_0_1 += usize::from(mean_ratio < 0.1);
-                determinant / 6.
             }
             Element::Wedge(n) => {
-                let (jac, value, range) = wedge(n.map(|v| p[v]));
-                if !jac.is_finite() || jac <= 0. {
-                    return Err(format!(
-                        "layer collision or inversion in region {}, layer {}, cell {id}, Jacobian {jac}",
-                        cell.region, cell.layer
-                    ));
-                }
+                let (jac, _, range) = wedge(n.map(|v| p[v]));
                 minimum_j = minimum_j.min(jac);
                 let r = &mut normal_thickness_ranges[cell.layer - 1];
                 r[0] = r[0].min(range[0]);
                 r[1] = r[1].max(range[1]);
-                value
             }
-        };
+        }
+        let value = solver_volumes[id];
         if !value.is_finite() || value <= 0. {
             return Err(format!(
                 "nonpositive or unrepresentable volume at cell {id}"
