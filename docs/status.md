@@ -5,7 +5,7 @@
 The verification grade of every feature (AG-17), how it was checked and what is still missing. A partial result is never presented as success; every tool result also carries a `limitations` list.
 
 - **verified** (9): checked against an exact or independent reference by a named test
-- **partial** (10): works on the named fixtures, with known gaps
+- **partial** (11): works on the named fixtures, with known gaps
 - **unverified** (1): built, not yet checked
 - **open** (0): not built
 
@@ -31,6 +31,7 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 | Summary first, paged detail over MCP (AG-16) | verified | Following `next_cursor` returns every cell and face exactly once at every page and kind boundary; foreign and malformed cursors are refused; the acceptance runner reassembles the MCP pages and compares them with the CLI's full report on all six fixtures | Only mesh.report has per-row detail today; the CLI keeps the full report (decided 2026-11-22) | AG-16 |
 | Verification grades and limitations (AG-17) | verified | docs/status.md is regenerated from this file and compared; every listed test must exist; every result envelope carries `limitations` | — | AG-17 |
 | Crate layering check (SW-19) | verified | Every workspace dependency points to a lower layer or an allowed same-layer use; front ends name no crate below mesh-tools | — | SW-19 |
+| Block-structured variant MB1a: topology file, check, edge laws, TFI, point-matched hexahedra, channel and pipe O-grid templates, block.* tools | partial | Box channel reproduced exactly (volume, unit scaled Jacobians); pipe O-grid volume equals the prism of the inscribed wall polygon to 1e-12 and πR²L within the chord error, wall nodes on the cylinder to 1e-12; every face conforms; permuted and rotated block frames give the same grid; bad count chains, open faces and left-handed blocks refused; CLI chain template → grid writes FoehnCraft files and evidence with block ranges | TFI only (elliptic, hyperbolic, orthogonal wall block and smoothers come in MB1b); explicit block.* edit tools, elbow and airfoil templates, geometry association and polyMesh in the bundle are not built; FoehnCraft round trip (FC-06) run by hand, not yet in the acceptance runner | BS-01, BS-02, BS-03, BS-05, BS-06, BS-08, BS-13, BS-14 |
 
 ## Checks per feature
 
@@ -203,3 +204,12 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 - `the_workspace_is_layered` in [crates/xtask/src/main.rs](../crates/xtask/src/main.rs)
 - `reads_only_the_dependencies_table` in [crates/xtask/src/main.rs](../crates/xtask/src/main.rs)
 - `cargo xtask layering` (CI)
+
+### Block-structured variant MB1a: topology file, check, edge laws, TFI, point-matched hexahedra, channel and pipe O-grid templates, block.* tools
+
+- `channel_is_exact` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `pipe_ogrid_matches_its_cylinder` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `local_frames_do_not_change_the_grid` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `inconsistent_counts_are_named` in [crates/mesh-algorithms/src/block/tests.rs](../crates/mesh-algorithms/src/block/tests.rs)
+- `pipe_validates_for_foehncraft` in [crates/mesh-engine/src/block.rs](../crates/mesh-engine/src/block.rs)
+- `block_tools_build_a_pipe_from_a_template` in [crates/mesh-cli/tests/kofl.rs](../crates/mesh-cli/tests/kofl.rs)

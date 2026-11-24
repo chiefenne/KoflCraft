@@ -1,3 +1,4 @@
+pub mod block;
 pub mod channel;
 pub mod clipping;
 pub mod delaunay;

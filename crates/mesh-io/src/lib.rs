@@ -1,5 +1,6 @@
 //! Serializers for VTK XML polyhedra and Gmsh meshes.
 
+pub mod block;
 pub mod channel;
 mod directory;
 mod gmsh;

@@ -1,0 +1,388 @@
+//! The block-structured mesher variant (OBJ-21, section 4c): checks a block
+//! topology (BS-02, BS-05), distributes nodes on its edges (BS-06), fills
+//! faces and blocks by transfinite interpolation (BS-09, TFI only in MB1a)
+//! and assembles point-matched hexahedra whose shared faces are built once.
+//!
+//! Design notes and sources: `research/block-structured-concept.md`.
+
+pub mod distribution;
+pub mod grid;
+pub mod templates;
+
+use std::collections::{BTreeMap, HashMap};
+
+use mesh_core::block::{
+    BLOCK_FACES, BlockTopology, Curve, Distribution, block_edges, corner_slot, face_corner_slot,
+    face_key,
+};
+use mesh_core::geometry::Vec3;
+
+pub use grid::{BlockGrid, BlockQuality, BlockRange, EdgeReport, build};
+
+/// One finding of the topology check.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Issue {
+    /// `vertex`, `block`, `edge`, `count_chain`, `face` or `patch`.
+    pub kind: &'static str,
+    pub message: String,
+}
+
+fn issue(kind: &'static str, message: impl Into<String>) -> Issue {
+    Issue {
+        kind,
+        message: message.into(),
+    }
+}
+
+/// A chain of opposite edges that must carry the same cell count (BS-05).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Chain {
+    pub cells: usize,
+    pub edges: usize,
+    pub blocks: Vec<usize>,
+}
+
+/// What the check derived from a consistent topology.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Checked {
+    pub cells: usize,
+    pub points: usize,
+    pub block_faces_shared: usize,
+    pub boundary_faces: BTreeMap<String, usize>,
+    pub chains: Vec<Chain>,
+}
+
+pub(crate) fn edge_key(a: usize, b: usize) -> (usize, usize) {
+    (a.min(b), a.max(b))
+}
+
+/// The vertex slots at the start and end of each block edge.
+pub(crate) fn edge_slots() -> [(usize, usize, usize); 12] {
+    block_edges().map(|(axis, c)| {
+        let mut e = c;
+        e[axis] = 1;
+        (
+            axis,
+            corner_slot(c[0], c[1], c[2]),
+            corner_slot(e[0], e[1], e[2]),
+        )
+    })
+}
+
+/// The four vertices of block face `f` in local order (00, 10, 11, 01).
+pub(crate) fn face_vertices(verts: &[usize; 8], f: usize) -> [usize; 4] {
+    let face = BLOCK_FACES[f];
+    [(0, 0), (1, 0), (1, 1), (0, 1)].map(|(a, b)| verts[face_corner_slot(face, a, b)])
+}
+
+struct UnionFind(Vec<usize>);
+
+impl UnionFind {
+    fn find(&mut self, mut x: usize) -> usize {
+        while self.0[x] != x {
+            self.0[x] = self.0[self.0[x]];
+            x = self.0[x];
+        }
+        x
+    }
+    fn union(&mut self, a: usize, b: usize) {
+        let (a, b) = (self.find(a), self.find(b));
+        self.0[a] = b;
+    }
+}
+
+/// Check a topology before any grid is built: indices, right-handed
+/// blocks, edge curves and laws, consistent counts along every chain of
+/// opposite edges, faces shared by at most two blocks, every boundary face
+/// in exactly one patch.
+pub fn check(t: &BlockTopology) -> Result<Checked, Vec<Issue>> {
+    let mut issues = Vec::new();
+    let nv = t.vertices.len();
+    for (v, p) in t.vertices.iter().enumerate() {
+        if !p.is_finite() {
+            issues.push(issue("vertex", format!("vertex {v} is not finite")));
+        }
+    }
+    if t.blocks.is_empty() {
+        issues.push(issue("block", "the topology has no blocks"));
+    }
+    let mut cells: usize = 0;
+    let mut valid_blocks = Vec::new();
+    for (b, block) in t.blocks.iter().enumerate() {
+        let v = block.vertices;
+        if v.iter().any(|&i| i >= nv) {
+            issues.push(issue(
+                "block",
+                format!("block {b} names a vertex that does not exist"),
+            ));
+            continue;
+        }
+        if (0..8).any(|i| v[..i].contains(&v[i])) {
+            issues.push(issue(
+                "block",
+                format!("block {b} repeats a vertex (collapsed blocks come later)"),
+            ));
+            continue;
+        }
+        if block.cells.contains(&0) {
+            issues.push(issue("block", format!("block {b} has a zero cell count")));
+            continue;
+        }
+        if block.domain.is_empty() {
+            issues.push(issue("block", format!("block {b} has no domain name")));
+        }
+        let p = v.map(|i| t.vertices[i]);
+        if let Some(c) = (0..8).find(|&s| corner_det(&p, s) <= 0.0) {
+            issues.push(issue(
+                "block",
+                format!(
+                    "block {b} is not a right-handed hexahedron at its corner {c} (vertex {}); list the vertices counter-clockwise about the k axis",
+                    v[c]
+                ),
+            ));
+            continue;
+        }
+        match block
+            .cells
+            .iter()
+            .try_fold(1usize, |a, &n| a.checked_mul(n))
+        {
+            Some(n) => cells = cells.saturating_add(n),
+            None => issues.push(issue("block", format!("block {b} cell count overflows"))),
+        }
+        valid_blocks.push(b);
+    }
+
+    // Edges of the blocks, with their counts and chains.
+    let mut edges: HashMap<(usize, usize), (usize, usize, usize)> = HashMap::new(); // key → (count, block, edge id)
+    let mut edge_ids: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut uf = UnionFind(Vec::new());
+    let mut chain_blocks: Vec<Vec<usize>> = Vec::new();
+    for &b in &valid_blocks {
+        let block = &t.blocks[b];
+        let mut first_of_axis = [usize::MAX; 3];
+        for (axis, s, e) in edge_slots() {
+            let key = edge_key(block.vertices[s], block.vertices[e]);
+            let n = block.cells[axis];
+            let id = *edge_ids.entry(key).or_insert_with(|| {
+                uf.0.push(uf.0.len());
+                chain_blocks.push(Vec::new());
+                uf.0.len() - 1
+            });
+            chain_blocks[id].push(b);
+            if first_of_axis[axis] == usize::MAX {
+                first_of_axis[axis] = id;
+            } else {
+                uf.union(id, first_of_axis[axis]);
+            }
+            match edges.get(&key) {
+                Some(&(m, other, _)) if m != n => issues.push(issue(
+                    "count_chain",
+                    format!(
+                        "edge {}–{} has {m} cells in block {other} and {n} in block {b}; every chain of opposite edges needs one count",
+                        key.0, key.1
+                    ),
+                )),
+                Some(_) => {}
+                None => {
+                    edges.insert(key, (n, b, id));
+                }
+            }
+        }
+    }
+    let mut chains: BTreeMap<usize, Chain> = BTreeMap::new();
+    for (&_key, &(n, _, id)) in &edges {
+        let root = uf.find(id);
+        let c = chains.entry(root).or_insert(Chain {
+            cells: n,
+            edges: 0,
+            blocks: Vec::new(),
+        });
+        c.edges += 1;
+        c.blocks.extend(&chain_blocks[id]);
+    }
+    let mut chains: Vec<Chain> = chains
+        .into_values()
+        .map(|mut c| {
+            c.blocks.sort_unstable();
+            c.blocks.dedup();
+            c
+        })
+        .collect();
+    chains.sort_by(|a, b| a.blocks.cmp(&b.blocks).then(a.cells.cmp(&b.cells)));
+
+    // Explicit edges.
+    let mut seen = HashMap::new();
+    for (e, spec) in t.edges.iter().enumerate() {
+        let [a, b] = spec.vertices;
+        if a >= nv || b >= nv || a == b {
+            issues.push(issue("edge", format!("edge spec {e} has invalid vertices")));
+            continue;
+        }
+        let key = edge_key(a, b);
+        if seen.insert(key, e).is_some() {
+            issues.push(issue("edge", format!("edge {a}–{b} is given twice")));
+            continue;
+        }
+        let Some(&(n, _, _)) = edges.get(&key) else {
+            issues.push(issue(
+                "edge",
+                format!("edge {a}–{b} is no edge of any block"),
+            ));
+            continue;
+        };
+        match distribution::Evaluator::new(t.vertices[a], t.vertices[b], spec.curve) {
+            Ok(ev) => {
+                if let Err(m) = distribution::fractions(spec.distribution, n, ev.length()) {
+                    issues.push(issue("edge", format!("edge {a}–{b}: {m}")));
+                }
+            }
+            Err(m) => issues.push(issue("edge", format!("edge {a}–{b}: {m}"))),
+        }
+    }
+
+    // Faces and patches.
+    let mut faces: HashMap<[usize; 4], Vec<usize>> = HashMap::new();
+    for &b in &valid_blocks {
+        for f in 0..6 {
+            faces
+                .entry(face_key(face_vertices(&t.blocks[b].vertices, f)))
+                .or_default()
+                .push(b);
+        }
+    }
+    let mut shared = 0;
+    for (key, blocks) in &faces {
+        if blocks.len() > 2 {
+            issues.push(issue(
+                "face",
+                format!("face {key:?} is shared by more than two blocks: {blocks:?}"),
+            ));
+        } else if blocks.len() == 2 {
+            shared += 1;
+        }
+    }
+    let mut patch_of: HashMap<[usize; 4], usize> = HashMap::new();
+    let mut boundary_faces = BTreeMap::new();
+    for (p, patch) in t.patches.iter().enumerate() {
+        if patch.name.is_empty() || t.patches[..p].iter().any(|q| q.name == patch.name) {
+            issues.push(issue(
+                "patch",
+                format!("patch {p} has an empty or repeated name"),
+            ));
+        }
+        if patch.faces.is_empty() {
+            issues.push(issue("patch", format!("patch {} has no faces", patch.name)));
+        }
+        let mut count = 0;
+        for &face in &patch.faces {
+            let key = face_key(face);
+            match faces.get(&key).map(Vec::len) {
+                Some(1) => {}
+                Some(_) => {
+                    issues.push(issue(
+                        "patch",
+                        format!(
+                            "patch {}: face {face:?} lies between two blocks",
+                            patch.name
+                        ),
+                    ));
+                    continue;
+                }
+                None => {
+                    issues.push(issue(
+                        "patch",
+                        format!("patch {}: {face:?} is no block face", patch.name),
+                    ));
+                    continue;
+                }
+            }
+            if let Some(q) = patch_of.insert(key, p) {
+                issues.push(issue(
+                    "patch",
+                    format!(
+                        "face {face:?} is in patch {} and patch {}",
+                        t.patches[q].name, patch.name
+                    ),
+                ));
+            }
+            count += 1;
+        }
+        boundary_faces.insert(patch.name.clone(), count);
+    }
+    let mut open: Vec<_> = faces
+        .iter()
+        .filter(|(k, b)| b.len() == 1 && !patch_of.contains_key(*k))
+        .map(|(k, b)| (b[0], *k))
+        .collect();
+    open.sort_unstable();
+    for (b, key) in open {
+        issues.push(issue(
+            "patch",
+            format!("boundary face {key:?} of block {b} is in no patch"),
+        ));
+    }
+
+    if !issues.is_empty() {
+        return Err(issues);
+    }
+    // points: vertices + edge interiors + face interiors + block interiors
+    let mut points = nv;
+    for &(n, _, _) in edges.values() {
+        points += n - 1;
+    }
+    let mut counted = std::collections::HashSet::new();
+    for &b in &valid_blocks {
+        let n = t.blocks[b].cells;
+        for (f, &(_, _, a, c)) in BLOCK_FACES.iter().enumerate() {
+            if counted.insert(face_key(face_vertices(&t.blocks[b].vertices, f))) {
+                points += (n[a] - 1) * (n[c] - 1);
+            }
+        }
+        points += (n[0] - 1) * (n[1] - 1) * (n[2] - 1);
+    }
+    Ok(Checked {
+        cells,
+        points,
+        block_faces_shared: shared,
+        boundary_faces,
+        chains,
+    })
+}
+
+/// The determinant of the three straight edges at a corner slot of a hex
+/// given by its eight corner points, signed so that a right-handed hex is
+/// positive.
+pub(crate) fn corner_det(p: &[Vec3; 8], slot: usize) -> f64 {
+    let [e0, e1, e2] = corner_edges(p, slot);
+    e0.cross(e1).dot(e2)
+}
+
+pub(crate) fn corner_edges(p: &[Vec3; 8], slot: usize) -> [Vec3; 3] {
+    let c = slot_corner(slot);
+    let mut out = [Vec3::ZERO; 3];
+    for axis in 0..3 {
+        let mut o = c;
+        o[axis] = 1 - c[axis];
+        let sign = if c[axis] == 0 { 1.0 } else { -1.0 };
+        out[axis] = (p[corner_slot(o[0], o[1], o[2])] - p[slot]) * sign;
+    }
+    out
+}
+
+pub(crate) fn slot_corner(slot: usize) -> [usize; 3] {
+    let k = slot / 4;
+    let (i, j) = match slot % 4 {
+        0 => (0, 0),
+        1 => (1, 0),
+        2 => (1, 1),
+        _ => (0, 1),
+    };
+    [i, j, k]
+}
+
+/// The default of an edge that is not given explicitly.
+pub(crate) const DEFAULT_EDGE: (Curve, Distribution) = (Curve::Line, Distribution::Uniform);
+
+#[cfg(test)]
+mod tests;

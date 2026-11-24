@@ -8,6 +8,7 @@
 //! `diag.codes`, `format`/`format_version` on every machine format,
 //! diagnostic codes as `AREA000`.
 
+mod block;
 pub mod context;
 pub mod diag;
 mod estimate;
@@ -461,6 +462,49 @@ pub static TOOLS: &[Tool] = &[
         },
         output_schema: out!("export_mesh"),
         run: mesh::export,
+    },
+    Tool {
+        id: "block.template",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Write a block topology (`koflcraft.block-topology`, BS-02/BS-03) for a standard case: `channel` (one block, optional two-sided wall clustering) or `pipe_ogrid` (H-core and four O-grid blocks, optional wall spacing). The file is checked before it is written.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: || {
+            schemas::input(
+                json!({"config": schemas::block_template(), "output": schemas::path()}),
+                &[],
+            )
+        },
+        output_schema: || json!({"type": "object", "description": "`koflcraft.block-result` with the written file and its check"}),
+        run: block::template,
+    },
+    Tool {
+        id: "block.check",
+        version: 1,
+        action: Action::Read,
+        summary: "Check a block topology before any grid is built (BS-05): indices, right-handed blocks, edge curves and laws, one cell count per chain of opposite edges, faces shared by at most two blocks, every boundary face in exactly one patch. Reports cells, points and the chains, or every issue with the blocks, edge or face it concerns.",
+        legacy_name: None,
+        outputs: &[],
+        input_schema: || schemas::input(json!({"topology": schemas::path()}), &[]),
+        output_schema: || json!({"type": "object", "description": "`koflcraft.block-result` with `check`"}),
+        run: block::check,
+    },
+    Tool {
+        id: "block.grid",
+        version: 1,
+        action: Action::StartBuild,
+        summary: "Build a block-structured hexahedral mesh from a topology by transfinite interpolation (BS-09, TFI only so far), validate it (positive corner Jacobians, conservation, conforming closed cells, BS-13) and write `volume.vtu`, `mesh.msh` (MSH 4.1), `foehncraft.vtu`, `report.json` and `mesh-evidence.json` (with each block's cell range) into a new directory (BS-14).",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: || {
+            schemas::input(
+                json!({"topology": schemas::path(), "output": schemas::path()}),
+                &[],
+            )
+        },
+        output_schema: || json!({"type": "object", "description": "`koflcraft.block-result` with the `koflcraft.block-report`"}),
+        run: block::grid,
     },
     Tool {
         id: "mesh.estimate",
