@@ -453,3 +453,60 @@ fn patch_tools_define_a_boundary_that_meshes_and_replays() {
         let _ = std::fs::remove_dir_all(d);
     }
 }
+
+/// Invariant (BS-02..BS-05, BS-14): the block tools chain through files
+/// from the command line: a template is written and checked, the grid is
+/// built into a new directory with the FoehnCraft files and evidence that
+/// names every block's cell range, and a broken chain is refused with
+/// BLOCK001 before any grid is built. No other test runs the block tools
+/// through the registry.
+#[test]
+fn block_tools_build_a_pipe_from_a_template() {
+    let dir = fresh("block");
+    let write = |name: &str, v: Value| std::fs::write(dir.join(name), v.to_string()).unwrap();
+    write(
+        "t.json",
+        serde_json::json!({"config": {"template": "pipe_ogrid", "radius": 0.05, "length": 0.2,
+            "core_cells": 4, "radial_cells": 3, "axial_cells": 6, "wall_spacing": 0.002},
+            "output": "pipe.json"}),
+    );
+    let (ok, e) = kofl_in(&dir, &["call", "block.template", "--input", "t.json"]);
+    assert!(ok, "{e}");
+    assert_eq!(e["result"]["check"]["cells"], 6 * (16 + 4 * 12));
+    write(
+        "g.json",
+        serde_json::json!({"topology": "pipe.json", "output": "mesh"}),
+    );
+    let (ok, e) = kofl_in(&dir, &["call", "block.grid", "--input", "g.json"]);
+    assert!(ok, "{e}");
+    let r = &e["result"]["report"];
+    assert_eq!(r["summary"]["inverted_faces"], 0);
+    assert!(r["relative_conservation_error"].as_f64().unwrap() < 1e-10);
+    let evidence: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("mesh/mesh-evidence.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        evidence["block_structure"]["blocks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        5
+    );
+    for f in ["volume.vtu", "mesh.msh", "foehncraft.vtu", "report.json"] {
+        assert!(dir.join("mesh").join(f).is_file(), "{f}");
+    }
+    let mut topo: Value =
+        serde_json::from_slice(&std::fs::read(dir.join("pipe.json")).unwrap()).unwrap();
+    topo["blocks"][2]["cells"][1] = 7.into();
+    write("bad.json", topo);
+    write("c.json", serde_json::json!({"topology": "bad.json"}));
+    let (ok, e) = kofl_in(&dir, &["call", "block.check", "--input", "c.json"]);
+    assert!(!ok);
+    assert_eq!(e["diagnostics"][0]["code"], "BLOCK001");
+    assert!(
+        e["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("count_chain")
+    );
+}

@@ -71,6 +71,10 @@ pub struct MeshEvidence {
     /// Every other file of the bundle with its SHA-256.
     pub files: Vec<(String, String)>,
     pub limitations: Vec<String>,
+    /// Blocks of a block-structured mesh: the cell range and i, j, k
+    /// counts of each (BS-14), so a structured writer can follow.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_structure: Option<serde_json::Value>,
 }
 
 pub(crate) fn export_error(error: impl std::fmt::Display) -> EngineError {
@@ -92,6 +96,16 @@ pub(crate) fn evidence(
     mesh: &HandoffMesh,
     generator: &str,
     files: &[(String, String)],
+) -> Result<Vec<u8>, EngineError> {
+    evidence_with(mesh, generator, files, None)
+}
+
+/// [`evidence`] with the block structure of a block-structured mesh.
+pub(crate) fn evidence_with(
+    mesh: &HandoffMesh,
+    generator: &str,
+    files: &[(String, String)],
+    block_structure: Option<serde_json::Value>,
 ) -> Result<Vec<u8>, EngineError> {
     let mut limitations = Vec::new();
     let empty = mesh.empty_patches();
@@ -129,6 +143,7 @@ pub(crate) fn evidence(
         patches: mesh.patches.clone(),
         files: files.to_vec(),
         limitations,
+        block_structure,
     };
     serde_json::to_vec_pretty(&evidence)
         .map_err(|e| EngineError::new(ErrorCode::SerializationFailed, e))

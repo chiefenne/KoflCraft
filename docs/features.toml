@@ -341,3 +341,20 @@ tests = [
 ]
 commands = ["cargo xtask layering"]
 gaps = ""
+
+[[feature]]
+id = "block-mb1a"
+title = "Block-structured variant MB1a: topology file, check, edge laws, TFI, point-matched hexahedra, channel and pipe O-grid templates, block.* tools"
+requirements = ["BS-01", "BS-02", "BS-03", "BS-05", "BS-06", "BS-08", "BS-13", "BS-14"]
+grade = "partial"
+how = "Box channel reproduced exactly (volume, unit scaled Jacobians); pipe O-grid volume equals the prism of the inscribed wall polygon to 1e-12 and πR²L within the chord error, wall nodes on the cylinder to 1e-12; every face conforms; permuted and rotated block frames give the same grid; bad count chains, open faces and left-handed blocks refused; CLI chain template → grid writes FoehnCraft files and evidence with block ranges"
+tests = [
+  "crates/mesh-algorithms/src/block/tests.rs::channel_is_exact",
+  "crates/mesh-algorithms/src/block/tests.rs::pipe_ogrid_matches_its_cylinder",
+  "crates/mesh-algorithms/src/block/tests.rs::local_frames_do_not_change_the_grid",
+  "crates/mesh-algorithms/src/block/tests.rs::inconsistent_counts_are_named",
+  "crates/mesh-engine/src/block.rs::pipe_validates_for_foehncraft",
+  "crates/mesh-cli/tests/kofl.rs::block_tools_build_a_pipe_from_a_template",
+]
+commands = []
+gaps = "TFI only (elliptic, hyperbolic, orthogonal wall block and smoothers come in MB1b); explicit block.* edit tools, elbow and airfoil templates, geometry association and polyMesh in the bundle are not built; FoehnCraft round trip (FC-06) run by hand, not yet in the acceptance runner"

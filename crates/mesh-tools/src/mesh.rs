@@ -373,6 +373,17 @@ pub(crate) fn limitations(id: &str, output: &Value) -> Vec<String> {
             }
         }
         "mesh.generate_channel" => l.push("planar walls only".into()),
+        "block.grid" => {
+            l.push("transfinite interpolation only: no elliptic smoothing or wall orthogonality control yet (MB1b)".into());
+            l.push("no OpenFOAM polyMesh in the bundle; FoehnCraft VTU and MSH 4.1 only".into());
+            if let Some(d) = report["reference"]["relative_deviation"].as_f64() {
+                l.push(format!(
+                    "volume differs from the template's analytic shape by {:.3} % (chords between wall nodes)",
+                    100.0 * d
+                ));
+            }
+            l.push("flow accuracy on this mesh is untested".into());
+        }
         "mesh.generate_duct" => {
             if let (Some(v), Some(s)) =
                 (report["volume"].as_f64(), report["source_volume"].as_f64())
