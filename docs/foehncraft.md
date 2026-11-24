@@ -59,7 +59,8 @@ Formats", VTKHDF section) in HDF5 written by KoflCraft's own writer
 - Every cell is a polyhedron (type 42) in the 2.4 arrays (`FaceOffsets`,
   `FaceConnectivity`, `PolyhedronOffsets`, `PolyhedronToFaces`); its faces
   are listed per cell and wound outward from it, so an interior face
-  appears once in each of its two cells. Every integer is 64-bit except
+  appears once in each of its two cells, and its `Connectivity` holds its
+  distinct points in the order its faces first use them. Every integer is 64-bit except
   `Types` and `vtkGhostType` (8-bit) and `zone` (32-bit).
 - `CellData`: `zone` (the `region` of the VTU), `GlobalCellIds` (the
   cell's position among the owned cells of the file, also for a ghost),

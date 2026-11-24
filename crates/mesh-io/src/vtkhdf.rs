@@ -21,7 +21,7 @@ use std::io::{self, Write};
 
 use mesh_core::geometry::Vec3;
 
-use crate::handoff::{CellFaceList, HandoffMesh, PatchRole, cell_nodes};
+use crate::handoff::{CellFaceList, HandoffMesh, PatchRole};
 use crate::hdf5::{DataWriter, Element, H5File, Obj};
 
 /// Owned cells per block (the last block holds the rest).
@@ -72,6 +72,26 @@ pub fn hilbert_index(mut x: [u32; 3]) -> u64 {
         }
     }
     h
+}
+
+/// The distinct points of cell `c` in the order its faces first use them,
+/// each face wound outward from the cell: the `Connectivity` of a
+/// polyhedron in the layout.
+fn cell_points(mesh: &HandoffMesh, cells: &CellFaceList, c: usize, points: &mut Vec<usize>) {
+    points.clear();
+    for (f, outward) in cells.cell(c) {
+        let ring = mesh.face(f);
+        let mut take = |p: usize| {
+            if !points.contains(&p) {
+                points.push(p);
+            }
+        };
+        if outward {
+            ring.iter().for_each(|&p| take(p));
+        } else {
+            ring.iter().rev().for_each(|&p| take(p));
+        }
+    }
 }
 
 /// The bounding box of points.
@@ -163,7 +183,7 @@ impl Plan {
         let mut node_count = Vec::with_capacity(n);
         let mut keys: Vec<(u64, usize)> = Vec::with_capacity(n);
         for c in 0..n {
-            cell_nodes(mesh, cells, c, nodes);
+            cell_points(mesh, cells, c, nodes);
             node_count.push(nodes.len() as u32);
             let mut s = Vec3::ZERO;
             for &v in nodes.iter() {
@@ -191,7 +211,7 @@ impl Plan {
         let mut extra: Vec<(usize, u32)> = Vec::new();
         for (f, &c) in order.iter().enumerate() {
             let b = (f / block_cells) as u32;
-            cell_nodes(mesh, cells, c, nodes);
+            cell_points(mesh, cells, c, nodes);
             for &p in nodes.iter() {
                 if point_owner[p] == NONE {
                     point_owner[p] = b;
@@ -216,7 +236,7 @@ impl Plan {
         let mut pairs: Vec<(u32, usize)> = Vec::new();
         for (f, &c) in order.iter().enumerate() {
             let b = (f / block_cells) as u32;
-            cell_nodes(mesh, cells, c, nodes);
+            cell_points(mesh, cells, c, nodes);
             for &p in nodes.iter() {
                 let others = std::iter::once(point_owner[p]).chain(
                     extra[extra_start[p]..extra_start[p + 1]]
@@ -270,7 +290,7 @@ impl Plan {
             let cells_b: Vec<usize> = plan.cells(b).collect();
             for (i, &f) in cells_b.iter().enumerate() {
                 let c = plan.order[f];
-                cell_nodes(mesh, cells, c, nodes);
+                cell_points(mesh, cells, c, nodes);
                 for &p in nodes.iter() {
                     if !seen[p] {
                         seen[p] = true;
@@ -645,7 +665,7 @@ fn write_internal(
     for b in 0..blocks {
         localise(local, b);
         for f in plan.cells(b) {
-            cell_nodes(mesh, cells, plan.order[f], nodes);
+            cell_points(mesh, cells, plan.order[f], nodes);
             for &p in nodes.iter() {
                 w.i64(i64::from(local[p]))?;
             }
@@ -1098,6 +1118,13 @@ mod tests {
                     })
                     .collect();
                 assert_eq!(faces, &expected, "faces wound outward from the cell");
+                let mut first_use: Vec<usize> = Vec::new();
+                for p in expected.iter().flatten() {
+                    if !first_use.contains(p) {
+                        first_use.push(*p);
+                    }
+                }
+                assert_eq!(nodes, &first_use, "points in the order the faces use them");
             }
             // the ghosts are exactly the point neighbours of other blocks
             let used: BTreeSet<usize> = part.cells[..part.owned]
