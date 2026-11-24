@@ -113,6 +113,8 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 - `split_cap_wall_join_stays_available_and_valid_on_the_elbow` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
 - `columns_wall_join_is_valid_on_the_manifold` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
 - `contact_chains` in [crates/mesh-algorithms/src/duct/columns.rs](../crates/mesh-algorithms/src/duct/columns.rs)
+- `ears_of_notched_and_straight_rings_are_positive` in [crates/mesh-algorithms/src/duct/columns.rs](../crates/mesh-algorithms/src/duct/columns.rs)
+- `notched_boundary_face_has_its_true_area` in [crates/mesh-algorithms/src/duct/verify.rs](../crates/mesh-algorithms/src/duct/verify.rs)
 - `seed_is_on_the_three_balls_on_the_fluid_side` in [crates/mesh-algorithms/src/duct/wall_seeds.rs](../crates/mesh-algorithms/src/duct/wall_seeds.rs)
 - `seed_cells_cut_the_wall_in_their_triangles` in [crates/mesh-algorithms/src/duct/wall_seeds.rs](../crates/mesh-algorithms/src/duct/wall_seeds.rs)
 - `pair_that_is_not_regular_is_flipped` in [crates/mesh-algorithms/src/duct/wall_seeds.rs](../crates/mesh-algorithms/src/duct/wall_seeds.rs)

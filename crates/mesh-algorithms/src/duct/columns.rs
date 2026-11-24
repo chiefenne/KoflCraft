@@ -54,7 +54,7 @@ pub(super) struct Columns {
 
 /// A corner is straight when its triangle is below this share of the square
 /// of its longest edge.
-const STRAIGHT_CORNER: f64 = 1e-12;
+const STRAIGHT_CORNER: f64 = 1e-9;
 
 /// Triangles of a simple planar polygon, as positions in the ring and in
 /// the ring's winding (ear clipping). A wall polygon need not be convex: a
