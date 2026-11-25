@@ -269,6 +269,17 @@ pub fn generate(
 ) -> Result<Value, EngineError> {
     let invalid = |s: &str| EngineError::new(ErrorCode::InvalidDomain, s);
     let start = Instant::now();
+    // KOFL_TRACE=1: the wall-clock seconds of each stage on standard error
+    let mut stage = Instant::now();
+    let mut lap = |name: &str| {
+        if mesh_algorithms::trace_enabled() {
+            eprintln!(
+                "kofl trace: stage {name}: {:.1} s",
+                stage.elapsed().as_secs_f64()
+            );
+        }
+        stage = Instant::now();
+    };
     let (surface, patches, names) = prepare(data, patch_map, plan)?;
     let source_digest = sha256(data);
     let mut steps = Vec::new();
@@ -371,7 +382,9 @@ pub fn generate(
             return Err(invalid("invalid scaffold geometry error limit"));
         }
         let (input, built) = load_scaffold(&surface, &patches, spec, scaffold_data)?;
+        lap("scaffold");
         let deviation = wall_deviation(&surface, &patches, &input);
+        lap("wall deviation");
         if let Some(max) = spec.max_wall_deviation {
             if !max.is_finite() || max <= 0.0 {
                 return Err(invalid("invalid wall deviation limit"));
@@ -432,6 +445,7 @@ pub fn generate(
                 }
             }
         };
+        lap("core, layers and checks");
         let mut mesh = mesh;
         unmark_slip(&mut mesh, names.len());
         scaffold_volume = Some(shell.volume());
@@ -580,45 +594,70 @@ pub fn generate(
     });
     let report_json = serde_json::to_vec_pretty(&report)
         .map_err(|e| EngineError::new(ErrorCode::SerializationFailed, e))?;
-    let handoff = mesh_io::duct::handoff(&mesh).map_err(crate::handoff::export_error)?;
+    lap("report");
     let generator = report["algorithm"].as_str().unwrap_or("duct").to_string();
-    // each file goes to disk as it is written, hashed on the way
+    // each file goes to disk as it is written, hashed on the way; the
+    // volume, Gmsh and patch files are written side by side while the
+    // hand-off mesh is built
     let fail = crate::handoff::stream_error;
     let mut bundle = dir
         .bundle(name)
         .map_err(|e| EngineError::new(ErrorCode::IoError, e))?;
-    bundle
-        .stream("volume.vtu", |w| mesh_io::duct::volume(&mesh, w))
-        .map_err(fail)?;
-    bundle
-        .stream("mesh.msh", |w| {
-            mesh_io::duct::gmsh(&mesh, mesh_io::GmshVersion::V4_1, w)
-        })
-        .map_err(fail)?;
-    bundle
-        .stream("mesh.vtm", |w| w.write_all(mesh_io::channel::MULTIBLOCK))
-        .map_err(fail)?;
+    let mesh_ref = &mesh;
+    let mut files: Vec<(&str, mesh_io::Content<'_>)> = vec![
+        (
+            "volume.vtu",
+            Box::new(move |w: &mut dyn std::io::Write| mesh_io::duct::volume(mesh_ref, w)),
+        ),
+        (
+            "mesh.msh",
+            Box::new(move |w: &mut dyn std::io::Write| {
+                mesh_io::duct::gmsh(mesh_ref, mesh_io::GmshVersion::V4_1, w)
+            }),
+        ),
+        (
+            "mesh.vtm",
+            Box::new(|w: &mut dyn std::io::Write| w.write_all(mesh_io::channel::MULTIBLOCK)),
+        ),
+    ];
     for (i, file) in ["inlet.vtu", "outlet.vtu", "walls.vtu"]
         .into_iter()
         .enumerate()
     {
-        bundle
-            .stream(file, |w| mesh_io::duct::patch(&mesh, i + 1, w))
-            .map_err(fail)?;
+        files.push((
+            file,
+            Box::new(move |w: &mut dyn std::io::Write| mesh_io::duct::patch(mesh_ref, i + 1, w)),
+        ));
     }
-    bundle
-        .stream("report.json", |w| w.write_all(&report_json))
-        .map_err(fail)?;
+    let report_bytes = &report_json;
+    files.push((
+        "report.json",
+        Box::new(move |w: &mut dyn std::io::Write| w.write_all(report_bytes)),
+    ));
+    let (handoff, written) = std::thread::scope(|scope| {
+        let handoff = scope.spawn(|| mesh_io::duct::handoff(mesh_ref));
+        let written = bundle.stream_all(files);
+        (handoff.join(), written)
+    });
+    // the mesh's own error first, then the file system's
+    let handoff = handoff
+        .map_err(|_| crate::handoff::export_error("the hand-off worker stopped"))?
+        .map_err(crate::handoff::export_error)?;
+    written.map_err(fail)?;
+    lap("hand-off mesh, volume, Gmsh and patch files");
     bundle
         .stream(handoff_format.file_name(), |w| {
             handoff_format.write(&handoff, &[], w)
         })
         .map_err(fail)?;
+    lap("hand-off file");
     let evidence = crate::handoff::evidence(&handoff, &generator, bundle.files())?;
+    lap("evidence");
     bundle
         .stream(crate::handoff::MESH_EVIDENCE, |w| w.write_all(&evidence))
         .map_err(fail)?;
     bundle.finish();
+    lap("small files and finish");
     Ok(report)
 }
 

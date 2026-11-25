@@ -449,6 +449,26 @@ fn chunked<T: Send>(
         .collect()
 }
 
+/// Face `at` of an element (a polyhedron's own ring, no copy of the rest).
+fn ring_of<'a>(element: &'a Element, at: usize, buffer: &'a mut Rings) -> &'a [usize] {
+    match element {
+        Element::Polyhedron(poly) => &poly.faces[at],
+        _ => {
+            buffer.load(element);
+            buffer.get(at)
+        }
+    }
+}
+
+/// The number of faces of an element.
+fn face_count(element: &Element) -> usize {
+    match element {
+        Element::Polyhedron(poly) => poly.faces.len(),
+        Element::Tet(_) => 4,
+        Element::Wedge(_) => 5,
+    }
+}
+
 /// The faces of a mesh by vertex set, with the cells that use each one. The
 /// map is split into shards by hash, built in parallel.
 pub(super) struct FaceTable {
@@ -458,14 +478,7 @@ pub(super) struct FaceTable {
 impl FaceTable {
     pub(super) fn new(cells: &[Cell]) -> Result<Self, String> {
         let count = threads();
-        let rings: usize = cells
-            .iter()
-            .map(|c| match &c.element {
-                Element::Polyhedron(poly) => poly.faces.len(),
-                Element::Tet(_) => 4,
-                Element::Wedge(_) => 5,
-            })
-            .sum();
+        let rings: usize = cells.iter().map(|c| face_count(&c.element)).sum();
         let shards = chunked(count, 1, |shard| {
             let mut map = KeyMap::with_capacity_and_hasher(
                 rings / 2 / count + 16,
@@ -1084,10 +1097,12 @@ pub(super) fn check_with_interface_count(
     layers: usize,
     expected_interfaces: usize,
 ) -> Result<Measurements, String> {
+    let started = std::time::Instant::now();
     let (solver_rules, solver_volumes, _) = solver_rules_and_volumes(p, cells)?;
     if crate::trace_enabled() {
         eprintln!(
-            "kofl trace: solver rules: {} of {} cells fail ({} in layers; open {}, volume {}, pyramids {}, turned away {}), max non-orthogonality {:.2}°",
+            "kofl trace: solver rules ({:.2} s): {} of {} cells fail ({} in layers; open {}, volume {}, pyramids {}, turned away {}), max non-orthogonality {:.2}°",
+            started.elapsed().as_secs_f64(),
             solver_rules.failing_cells,
             solver_rules.cells,
             solver_rules.failing_layer_cells,
@@ -1149,57 +1164,97 @@ pub(super) fn check_with_interface_count(
         }
     }
     // (cell, face index, layer) of a face met once so far
-    let mut pending: KeyMap<(usize, usize, usize)> = KeyMap::default();
+    // sized for every face up front: growing the maps cost more than the
+    // lookups on a million-cell mesh
+    let faces: usize = cells.iter().map(|c| face_count(&c.element)).sum();
+    let mut pending: KeyMap<(usize, usize, usize)> =
+        KeyMap::with_capacity_and_hasher(faces / 8 + 16, Default::default());
     let mut prism_core_faces = 0;
     let mut complete: std::collections::HashSet<FaceKey, std::hash::BuildHasherDefault<KeyHasher>> =
-        std::collections::HashSet::default();
+        std::collections::HashSet::with_capacity_and_hasher(faces / 2 + 16, Default::default());
     let (mut rings, mut earlier) = (Rings::default(), Rings::default());
-    let mut minimum_volume = f64::INFINITY;
+    // The solver rules decided above; the element measures are quality
+    // reports only, taken on all cores.
+    struct Report {
+        minimum_j: f64,
+        minimum_kernel_clearance: f64,
+        normal_thickness_ranges: Vec<[f64; 2]>,
+        minimum_tet_mean_ratio: f64,
+        tetrahedra_below_mean_ratio_0_1: usize,
+        sphericities: Vec<f64>,
+    }
+    let reports = chunked(cells.len(), CHECK_CHUNK, |range| {
+        let mut r = Report {
+            minimum_j: f64::INFINITY,
+            minimum_kernel_clearance: f64::INFINITY,
+            normal_thickness_ranges: vec![[f64::INFINITY, 0.0_f64]; layers],
+            minimum_tet_mean_ratio: 1.0_f64,
+            tetrahedra_below_mean_ratio_0_1: 0,
+            sphericities: Vec::new(),
+        };
+        for cell in &cells[range] {
+            match cell.element {
+                Element::Polyhedron(ref poly) if poly.prism.is_some() => {
+                    for w in poly.prism.iter().flatten() {
+                        let (jac, _, _) = wedge(w.map(|v| p[v]));
+                        r.minimum_j = r.minimum_j.min(jac);
+                    }
+                }
+                Element::Polyhedron(ref poly) => {
+                    if cell.layer == 0
+                        && let Ok((_, sphericity)) = poly_volume(poly, p)
+                    {
+                        r.sphericities.push(sphericity);
+                    }
+                }
+                Element::Tet(n) => {
+                    let [o, a, b, c] = n.map(|v| p[v]);
+                    let determinant = det(b - a, c - a, a - o);
+                    let clearance = determinant / (b - a).cross(c - a).length();
+                    r.minimum_kernel_clearance = r.minimum_kernel_clearance.min(clearance);
+                    let squared_edges = [b - a, c - b, a - c, a - o, b - o, c - o]
+                        .iter()
+                        .map(|e| e.dot(*e))
+                        .sum::<f64>();
+                    let mean_ratio = 12.0 * (determinant / 2.0).cbrt().powi(2) / squared_edges;
+                    r.minimum_tet_mean_ratio = r.minimum_tet_mean_ratio.min(mean_ratio);
+                    r.tetrahedra_below_mean_ratio_0_1 += usize::from(mean_ratio < 0.1);
+                }
+                Element::Wedge(n) => {
+                    let (jac, _, range) = wedge(n.map(|v| p[v]));
+                    r.minimum_j = r.minimum_j.min(jac);
+                    let t = &mut r.normal_thickness_ranges[cell.layer - 1];
+                    t[0] = t[0].min(range[0]);
+                    t[1] = t[1].max(range[1]);
+                }
+            }
+        }
+        r
+    })?;
     let mut minimum_j = f64::INFINITY;
     let mut minimum_kernel_clearance = f64::INFINITY;
     let mut normal_thickness_ranges = vec![[f64::INFINITY, 0.0_f64]; layers];
-    let mut volume = 0.;
     let mut minimum_tet_mean_ratio = 1.0_f64;
     let mut tetrahedra_below_mean_ratio_0_1 = 0;
     let mut sphericities = Vec::new();
-    for (id, cell) in cells.iter().enumerate() {
-        // The solver rules decided above; the element measures below are
-        // quality reports only.
-        match cell.element {
-            Element::Polyhedron(ref poly) if poly.prism.is_some() => {
-                for w in poly.prism.iter().flatten() {
-                    let (jac, _, _) = wedge(w.map(|v| p[v]));
-                    minimum_j = minimum_j.min(jac);
-                }
-            }
-            Element::Polyhedron(ref poly) => {
-                if cell.layer == 0
-                    && let Ok((_, sphericity)) = poly_volume(poly, p)
-                {
-                    sphericities.push(sphericity);
-                }
-            }
-            Element::Tet(n) => {
-                let [o, a, b, c] = n.map(|v| p[v]);
-                let determinant = det(b - a, c - a, a - o);
-                let clearance = determinant / (b - a).cross(c - a).length();
-                minimum_kernel_clearance = minimum_kernel_clearance.min(clearance);
-                let squared_edges = [b - a, c - b, a - c, a - o, b - o, c - o]
-                    .iter()
-                    .map(|e| e.dot(*e))
-                    .sum::<f64>();
-                let mean_ratio = 12.0 * (determinant / 2.0).cbrt().powi(2) / squared_edges;
-                minimum_tet_mean_ratio = minimum_tet_mean_ratio.min(mean_ratio);
-                tetrahedra_below_mean_ratio_0_1 += usize::from(mean_ratio < 0.1);
-            }
-            Element::Wedge(n) => {
-                let (jac, _, range) = wedge(n.map(|v| p[v]));
-                minimum_j = minimum_j.min(jac);
-                let r = &mut normal_thickness_ranges[cell.layer - 1];
-                r[0] = r[0].min(range[0]);
-                r[1] = r[1].max(range[1]);
-            }
+    for r in reports {
+        minimum_j = minimum_j.min(r.minimum_j);
+        minimum_kernel_clearance = minimum_kernel_clearance.min(r.minimum_kernel_clearance);
+        for (all, part) in normal_thickness_ranges
+            .iter_mut()
+            .zip(&r.normal_thickness_ranges)
+        {
+            all[0] = all[0].min(part[0]);
+            all[1] = all[1].max(part[1]);
         }
+        minimum_tet_mean_ratio = minimum_tet_mean_ratio.min(r.minimum_tet_mean_ratio);
+        tetrahedra_below_mean_ratio_0_1 += r.tetrahedra_below_mean_ratio_0_1;
+        sphericities.extend(r.sphericities);
+    }
+    let measured = std::time::Instant::now();
+    let mut minimum_volume = f64::INFINITY;
+    let mut volume = 0.;
+    for (id, cell) in cells.iter().enumerate() {
         let value = solver_volumes[id];
         if !value.is_finite() || value <= 0. {
             return Err(format!(
@@ -1224,8 +1279,11 @@ pub(super) fn check_with_interface_count(
                     prism_core_faces += 1;
                 }
                 complete.insert(k);
-                earlier.load(&cells[previous].element);
-                if !same_ring(earlier.get(at), ring, true) {
+                if !same_ring(
+                    ring_of(&cells[previous].element, at, &mut earlier),
+                    ring,
+                    true,
+                ) {
                     return Err("interior face has inconsistent winding".into());
                 }
             } else {
@@ -1235,6 +1293,13 @@ pub(super) fn check_with_interface_count(
     }
     if !pending.is_empty() || !exterior.is_empty() {
         return Err("unpaired interior or missing exterior face".into());
+    }
+    if crate::trace_enabled() {
+        eprintln!(
+            "kofl trace: measures {:.2} s, face pairing {:.2} s",
+            (measured - started).as_secs_f64(),
+            measured.elapsed().as_secs_f64()
+        );
     }
     if !volume.is_finite() || (volume / surface.volume() - 1.).abs() >= 1e-9 {
         return Err(format!(
