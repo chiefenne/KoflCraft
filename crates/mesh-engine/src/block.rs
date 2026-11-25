@@ -164,6 +164,9 @@ pub struct Reference {
     pub template: String,
     pub parameters: Value,
     pub analytic_volume: f64,
+    /// What the layout optimisation of the template changed (MB1g).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<Value>,
 }
 
 /// The file `koflcraft.block-topology` (BS-02).
@@ -760,11 +763,24 @@ pub fn template_with(
             template: name.into(),
             parameters,
             analytic_volume: t.analytic_volume,
+            layout: t.layout.as_ref().map(layout_report),
         }),
     );
     // a template's topology always passes its own check
     algo::check(&t.topology).map_err(issues_error)?;
     Ok(file)
+}
+
+/// The layout report as JSON: the grid's non-orthogonality (2D, in the
+/// plane of the extrusion) before and after the optimisation.
+fn layout_report(r: &algo::layout::LayoutReport) -> Value {
+    let q = |o: &algo::layout::Orthogonality| {
+        json!({"max_nonorthogonality_deg": o.max_deg, "mean_nonorthogonality_deg": o.mean_deg,
+               "cells_over_70_deg": o.cells_over_70, "max_growth": o.max_growth,
+               "folded_corners": o.folded_corners})
+    };
+    json!({"parameters": r.parameters, "sweeps": r.sweeps, "trials": r.trials,
+           "before": q(&r.before), "after": q(&r.after)})
 }
 
 /// The check of a topology (`block.check`): counts, chains, faces, or every

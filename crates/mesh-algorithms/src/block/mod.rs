@@ -7,6 +7,7 @@
 
 pub mod distribution;
 pub mod grid;
+pub mod layout;
 pub mod multi_element;
 pub mod smooth;
 pub mod templates;

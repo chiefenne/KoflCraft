@@ -698,7 +698,10 @@ fn block_templates_build_an_elbow_and_an_airfoil_from_a_file() {
     );
     let (ok, e) = kofl_in(&dir, &["call", "block.template", "--input", "m.json"]);
     assert!(ok, "{e}");
-    assert_eq!(e["result"]["check"]["blocks"], 16);
+    assert_eq!(e["result"]["check"]["blocks"], 28);
+    // the template's layout optimisation reports its result
+    assert_eq!(e["result"]["layout"]["after"]["cells_over_70_deg"], 0);
+    assert_eq!(e["result"]["layout"]["after"]["folded_corners"], 0);
     write(
         "gm.json",
         serde_json::json!({"topology": "multi.json", "output": "multi"}),
