@@ -43,6 +43,12 @@ const WORST_ANGLE: f64 = 40.0;
 const WORST_POWER: i32 = 12;
 /// Growth of the cells across a face that costs as much as a 45° face.
 const GROWTH_SCALE: f64 = 2.5;
+/// A face may grow up to this, or up to its growth in the start layout
+/// when that is larger, before the steep growth cost starts ...
+const GROWTH_FREE: f64 = 2.0;
+/// ... which makes a growth this much over that limit cost about as much
+/// as a folded corner (it doubles every factor of this).
+const GROWTH_STEP: f64 = 1.25;
 /// Cost of one folded cell corner.
 const FOLD_COST: f64 = 1.0e4;
 /// Corners sharper than this sine cost `SHARP_COST` times the squared
@@ -69,6 +75,11 @@ pub struct LayoutOptions {
     pub rigid_patches: Vec<usize>,
     /// Most sweeps over all parameters.
     pub max_sweeps: usize,
+    /// Keep each face's growth (cell size ratio) within the larger of 2
+    /// and its growth in the start layout, so that no new size jumps are
+    /// traded for angles (a block split, MB1h). Ignored when the start
+    /// layout has folded cells, which need free sizes to unfold.
+    pub hold_growth: bool,
 }
 
 impl Default for LayoutOptions {
@@ -76,6 +87,7 @@ impl Default for LayoutOptions {
         Self {
             rigid_patches: Vec::new(),
             max_sweeps: 40,
+            hold_growth: false,
         }
     }
 }
@@ -93,6 +105,13 @@ pub struct Orthogonality {
     pub max_growth: f64,
     /// Cell corners where a cell is folded.
     pub folded_corners: usize,
+}
+
+/// The worst face of one block's cells: angle (degrees) and growth.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BlockOrthogonality {
+    pub max_deg: f64,
+    pub max_growth: f64,
 }
 
 /// What [`optimize`] did.
@@ -168,6 +187,9 @@ struct Block {
     folded: usize,
     /// Faces inside the block and folded corners.
     cost: f64,
+    /// Growth limit of each face inside the block (in the order of
+    /// [`Block::angles`]); empty while the start layout is measured.
+    hold: Vec<f64>,
 }
 
 /// The cells on both sides of one block edge shared by two blocks.
@@ -175,6 +197,8 @@ struct Interface {
     edge: usize,
     sides: [(usize, usize); 2],
     cost: f64,
+    /// Growth limit of each face along the edge.
+    hold: Vec<f64>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -218,6 +242,20 @@ fn face_cost(p: P, q: P, c0: P, c1: P) -> f64 {
     let w = theta / WORST_ANGLE.to_radians();
     let g = growth(p, q, c0, c1).ln() / GROWTH_SCALE.ln();
     a * a + w.powi(WORST_POWER) + g * g
+}
+
+/// The steep cost of a face's growth `g` over its limit `hold`.
+fn growth_excess(g: f64, hold: f64) -> f64 {
+    if g > hold {
+        (1.0 + (g / hold).ln() / GROWTH_STEP.ln()).powi(WORST_POWER) - 1.0
+    } else {
+        0.0
+    }
+}
+
+/// The growth limit of a face that starts with growth `g`.
+fn growth_hold(g: f64) -> f64 {
+    g.max(GROWTH_FREE)
 }
 
 /// Ratio of the distances of the two centroids from the face's middle.
@@ -405,9 +443,18 @@ impl Block {
             }
         }
         let mut cost = FOLD_COST * folded as f64 + sharp;
+        let mut f = 0;
+        let mut face = |p: P, q: P, c0: P, c1: P| {
+            let mut c = face_cost(p, q, c0, c1);
+            if let Some(&h) = self.hold.get(f) {
+                c += growth_excess(growth(p, q, c0, c1), h);
+            }
+            f += 1;
+            c
+        };
         for j in 0..nj {
             for i in 1..ni {
-                cost += face_cost(
+                cost += face(
                     x[i + w * j],
                     x[i + w * (j + 1)],
                     centroids[i - 1 + ni * j],
@@ -417,7 +464,7 @@ impl Block {
         }
         for j in 1..nj {
             for i in 0..ni {
-                cost += face_cost(
+                cost += face(
                     x[i + w * j],
                     x[i + 1 + w * j],
                     centroids[i + ni * (j - 1)],
@@ -551,6 +598,7 @@ impl Model {
                 centroids: Vec::new(),
                 folded: 0,
                 cost: 0.0,
+                hold: Vec::new(),
             });
         }
         // rigid blocks: a side face on a rigid patch
@@ -617,6 +665,7 @@ impl Model {
                     edge: e,
                     sides: [o[0], o[1]],
                     cost: 0.0,
+                    hold: Vec::new(),
                 });
             }
         }
@@ -773,23 +822,64 @@ impl Model {
         Ok((nodes, [tangent(true), tangent(false)]))
     }
 
-    fn interface_cost(&self, i: usize) -> f64 {
+    /// Keep the growth of every face within [`growth_hold`] of its growth
+    /// now: beyond it the face costs steeply ([`growth_excess`]).
+    fn hold_growth(&mut self) {
+        for block in &mut self.blocks {
+            block.hold = block.angles().0.iter().map(|f| growth_hold(f.3)).collect();
+            block.fill(&self.edges);
+        }
+        for i in 0..self.interfaces.len() {
+            let hold = self
+                .interface_faces(i)
+                .map(|(p, q, c0, c1)| growth_hold(growth(p, q, c0, c1)))
+                .collect();
+            self.interfaces[i].hold = hold;
+            self.interfaces[i].cost = self.interface_cost(i);
+        }
+    }
+
+    /// The faces along the edge of interface `i`: ends and the centroids
+    /// of the cells on both sides.
+    fn interface_faces(&self, i: usize) -> impl Iterator<Item = (P, P, P, P)> + '_ {
         let f = &self.interfaces[i];
         let edge = &self.edges[f.edge];
         let n = edge.cells;
         let ([b0, s0], [b1, s1]) = ([f.sides[0].0, f.sides[0].1], [f.sides[1].0, f.sides[1].1]);
         let (k0, k1) = (&self.blocks[b0], &self.blocks[b1]);
         let (fw0, fw1) = (k0.sides[s0].1, k1.sides[s1].1);
-        (0..n)
-            .map(|k| {
-                let c0 = k0.centroids[k0.cell(s0, if fw0 { k } else { n - 1 - k })];
-                let c1 = k1.centroids[k1.cell(s1, if fw1 { k } else { n - 1 - k })];
-                face_cost(edge.nodes[k], edge.nodes[k + 1], c0, c1)
+        (0..n).map(move |k| {
+            let c0 = k0.centroids[k0.cell(s0, if fw0 { k } else { n - 1 - k })];
+            let c1 = k1.centroids[k1.cell(s1, if fw1 { k } else { n - 1 - k })];
+            (edge.nodes[k], edge.nodes[k + 1], c0, c1)
+        })
+    }
+
+    fn interface_cost(&self, i: usize) -> f64 {
+        let hold = &self.interfaces[i].hold;
+        self.interface_faces(i)
+            .enumerate()
+            .map(|(k, (p, q, c0, c1))| {
+                face_cost(p, q, c0, c1)
+                    + hold
+                        .get(k)
+                        .map_or(0.0, |&h| growth_excess(growth(p, q, c0, c1), h))
             })
             .sum()
     }
 
     fn orthogonality(&self) -> Orthogonality {
+        self.stats().0
+    }
+
+    /// The whole grid's measures, and per block the worst angle (degrees)
+    /// and the largest growth over the faces of its cells.
+    fn stats(&self) -> (Orthogonality, Vec<BlockOrthogonality>) {
+        let mut per = vec![BlockOrthogonality::default(); self.blocks.len()];
+        let mut note = |b: usize, t: f64, g: f64| {
+            per[b].max_deg = per[b].max_deg.max(t.to_degrees());
+            per[b].max_growth = per[b].max_growth.max(g);
+        };
         let mut worst: Vec<Vec<f64>> = self
             .blocks
             .iter()
@@ -801,6 +891,7 @@ impl Model {
             let (faces, f) = b.angles();
             folded += f;
             for (c0, c1, t, g) in faces {
+                note(bi, t, g);
                 max_growth = max_growth.max(g);
                 sum += t;
                 count += 1;
@@ -820,7 +911,10 @@ impl Model {
                 let (p, q) = (edge.nodes[k], edge.nodes[k + 1]);
                 let (c0, c1) = (k0.centroids[i0], k1.centroids[i1]);
                 let t = face_angle(p, q, c0, c1);
-                max_growth = max_growth.max(growth(p, q, c0, c1));
+                let g = growth(p, q, c0, c1);
+                note(b0, t, g);
+                note(b1, t, g);
+                max_growth = max_growth.max(g);
                 sum += t;
                 count += 1;
                 max = max.max(t);
@@ -829,7 +923,7 @@ impl Model {
             }
         }
         let limit = 70f64.to_radians();
-        Orthogonality {
+        let whole = Orthogonality {
             max_deg: max.to_degrees(),
             mean_deg: if count > 0 {
                 (sum / count as f64).to_degrees()
@@ -839,7 +933,8 @@ impl Model {
             cells_over_70: worst.iter().flatten().filter(|&&t| t > limit).count(),
             max_growth,
             folded_corners: folded,
-        }
+        };
+        (whole, per)
     }
 
     /// The parameters: sliding and free vertices, bendable edges.
@@ -1182,12 +1277,22 @@ pub fn orthogonality(t: &BlockTopology) -> Result<Orthogonality, String> {
     Ok(Model::new(t, &[])?.orthogonality())
 }
 
+/// Per block, the worst non-orthogonality and growth over the faces of its
+/// cells, in the order of `t.blocks` (for judging a local change, such as
+/// a triangle split, by the blocks it touches).
+pub fn block_orthogonality(t: &BlockTopology) -> Result<Vec<BlockOrthogonality>, String> {
+    Ok(Model::new(t, &[])?.stats().1)
+}
+
 /// Move the vertices and bend the edges of `t` away from the rigid
 /// patches so that the grid comes closer to orthogonal; see the module
 /// notes. A topology that is not extruded along z is refused.
 pub fn optimize(t: &mut BlockTopology, o: &LayoutOptions) -> Result<LayoutReport, String> {
     let mut model = Model::new(t, &o.rigid_patches)?;
     let before = model.orthogonality();
+    if o.hold_growth && before.folded_corners == 0 {
+        model.hold_growth();
+    }
     let mut dofs = model.dofs();
     let mut report = LayoutReport {
         parameters: dofs.len(),

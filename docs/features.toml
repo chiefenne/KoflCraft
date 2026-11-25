@@ -545,4 +545,24 @@ tests = [
   "crates/mesh-cli/tests/kofl.rs::block_templates_build_an_elbow_and_an_airfoil_from_a_file",
 ]
 commands = ["kofl call block.template", "kofl call block.grid"]
-gaps = "Overlapping elements (slot topology) are refused; the worst angles left sit in the gap blocks and at the box top (the triangle split is the next step for the gaps); the largest growth across a face (17 to 28) sits at the ring's blunt trailing-edge corner cells, which the optimiser does not move; the optimiser works on extruded topologies only and runs only inside this template, not as a tool; the template's smoothing settings are lost once an edit drops the reference; not in the acceptance runner yet"
+gaps = "Overlapping elements (slot topology) are refused; the worst angles left sit in the gap blocks and at the box top (the layout has no triangle blocks, so the MB1h trigger adds no split there); the largest growth across a face (17 to 28) sits at the ring's blunt trailing-edge corner cells, which the optimiser does not move; the optimiser works on extruded topologies only (as a tool: block.optimize_layout, MB1h); the template's smoothing settings are lost once an edit drops the reference; not in the acceptance runner yet"
+
+[[feature]]
+id = "block-mb1h-triangle-split"
+title = "Block-structured variant MB1h: triangle split (tri-center) with an automatic trigger; tetrahedron and prism as hexahedra"
+requirements = ["BS-03", "BS-05", "BS-13"]
+grade = "partial"
+how = "block.split_triangle splits a block with a corner of at least 120° into three blocks around a centre of valence 3 (side i-j gets n_i + n_j cells); the new count enters as a row that runs through the neighbouring blocks to the boundary (sheet insertion), new vertices on the edges' own curves and laws, halves fitted to the old grid, patches kept. block.optimize_layout runs the MB1g layout optimiser on any extruded topology and, by default, the trigger: every corner of 150° or more in the layout before optimisation is tried (split, then optimised with the growth held at the larger of 2 and the start growth) and kept only when its blocks' worst angle drops by 2° or more while the grid's worst angle, cells over 70°, folds and growth get no worse; kept and skipped corners are reported with the reason. The multi_element_airfoil template runs the trigger too. block::tri_center builds a prism as three hexahedra and a tetrahedron as four (edge midpoints, face centroids, body centroid; shared points made once, either orientation), with templates triangle and tetrahedron. A 171° triangle beside a quadrilateral: 61.9° after plain optimisation, 26.2° with the kept split, growth 2.0, 0.2 s; the nine MB1g airfoil cases have no 150° corner and stay unchanged (research/block-triangle-split.md)"
+tests = [
+  "crates/mesh-engine/src/block_triangle.rs::a_triangle_becomes_three_blocks_and_a_row",
+  "crates/mesh-engine/src/block_triangle.rs::the_trigger_keeps_a_split_that_helps",
+  "crates/mesh-engine/src/block_triangle.rs::the_trigger_leaves_a_layout_without_triangles_alone",
+  "crates/mesh-engine/src/block_triangle.rs::the_growth_hold_keeps_the_size_ratio",
+  "crates/mesh-engine/src/block_triangle.rs::a_split_is_refused_off_a_triangle_or_layer",
+  "crates/mesh-algorithms/src/block/tri_center.rs::a_tetrahedron_becomes_four_hexahedra",
+  "crates/mesh-algorithms/src/block/tri_center.rs::two_tetrahedra_share_their_face",
+  "crates/mesh-algorithms/src/block/tri_center.rs::a_triangle_becomes_a_prism_of_three_hexahedra",
+  "crates/mesh-cli/tests/kofl.rs::tri_center_tools_split_blocks_and_build_meshes",
+]
+commands = ["kofl call block.split_triangle", "kofl call block.optimize_layout", "kofl call block.template"]
+gaps = "One layer of blocks only (extruded topologies), like the layout optimiser; the tetrahedron split is a template building block, not an edit of a 3D topology; a corner of exactly 180° cannot be stored (the check refuses the block); the trigger tries at most four corners per round, one layout optimisation each; no template uses a triangle layout yet (the multi-element gaps have none); not in the acceptance runner yet"

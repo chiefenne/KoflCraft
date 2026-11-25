@@ -702,6 +702,11 @@ fn block_templates_build_an_elbow_and_an_airfoil_from_a_file() {
     // the template's layout optimisation reports its result
     assert_eq!(e["result"]["layout"]["after"]["cells_over_70_deg"], 0);
     assert_eq!(e["result"]["layout"]["after"]["folded_corners"], 0);
+    // the wall rings leave no triangle block: the trigger keeps none
+    assert_eq!(
+        e["result"]["layout"]["triangle_splits"]["kept"],
+        serde_json::json!([])
+    );
     write(
         "gm.json",
         serde_json::json!({"topology": "multi.json", "output": "multi"}),
@@ -709,6 +714,127 @@ fn block_templates_build_an_elbow_and_an_airfoil_from_a_file() {
     let (ok, e) = kofl_in(&dir, &["call", "block.grid", "--input", "gm.json"]);
     assert!(ok, "{e}");
     assert_eq!(e["result"]["report"]["summary"]["inverted_faces"], 0);
+}
+
+/// Invariant (BS-03, BS-13, MB1h): the tri-center tools and templates run
+/// through the registry: a tetrahedron becomes four hexahedra and a valid
+/// mesh (no inverted face, the volume conserved), a triangle three, and a
+/// triangle block split by hand and by `block.optimize_layout` gives a
+/// checked topology whose grid validates. A missing registry entry or
+/// schema, or a split whose blocks fail the mesh validation, breaks it;
+/// the engine tests do not build meshes or go through the command line.
+#[test]
+fn tri_center_tools_split_blocks_and_build_meshes() {
+    let dir = fresh("block-tri-center");
+    let write = |name: &str, v: Value| std::fs::write(dir.join(name), v.to_string()).unwrap();
+    write(
+        "t.json",
+        serde_json::json!({"config": {"template": "tetrahedron", "cells": [3, 4, 5, 6]},
+            "output": "tet.json"}),
+    );
+    let (ok, e) = kofl_in(&dir, &["call", "block.template", "--input", "t.json"]);
+    assert!(ok, "{e}");
+    assert_eq!(e["result"]["check"]["blocks"], 4);
+    assert_eq!(
+        e["result"]["check"]["cells"],
+        4 * 5 * 6 + 3 * 5 * 6 + 3 * 4 * 6 + 3 * 4 * 5
+    );
+    write(
+        "gt.json",
+        serde_json::json!({"topology": "tet.json", "output": "tet"}),
+    );
+    let (ok, e) = kofl_in(&dir, &["call", "block.grid", "--input", "gt.json"]);
+    assert!(ok, "{e}");
+    assert_eq!(e["result"]["report"]["summary"]["inverted_faces"], 0);
+    assert!(
+        e["result"]["report"]["relative_conservation_error"]
+            .as_f64()
+            .unwrap()
+            < 1e-10
+    );
+    write(
+        "p.json",
+        serde_json::json!({"config": {"template": "triangle", "cells": [4, 5, 6], "span": 0.1},
+            "output": "tri.json"}),
+    );
+    let (ok, e) = kofl_in(&dir, &["call", "block.template", "--input", "p.json"]);
+    assert!(ok, "{e}");
+    assert_eq!(e["result"]["check"]["cells"], 5 * 6 + 4 * 6 + 4 * 5);
+    // a triangle as one block (171° at vertex 1) beside a quadrilateral
+    let plane = [
+        [0.0, 0.0],
+        [1.0, -0.08],
+        [2.0, 0.0],
+        [1.0, 1.7],
+        [3.2, 0.0],
+        [2.4, 1.8],
+    ];
+    let vertices: Vec<[f64; 3]> = [0.0, 0.1]
+        .iter()
+        .flat_map(|&z| plane.iter().map(move |p| [p[0], p[1], z]))
+        .collect();
+    let b = |q: [usize; 4]| {
+        [
+            q[0],
+            q[1],
+            q[2],
+            q[3],
+            q[0] + 6,
+            q[1] + 6,
+            q[2] + 6,
+            q[3] + 6,
+        ]
+    };
+    let side = |p: usize, q: usize| [p, q, q + 6, p + 6];
+    let (b0, b1) = (b([0, 1, 2, 3]), b([2, 4, 5, 3]));
+    write(
+        "w.json",
+        serde_json::json!({"format": "koflcraft.block-topology", "format_version": "1.0",
+            "vertices": vertices,
+            "blocks": [{"vertices": b0, "cells": [8, 8, 1], "domain": "fluid"},
+                       {"vertices": b1, "cells": [10, 8, 1], "domain": "fluid"}],
+            "patches": [
+                {"name": "inlet", "faces": [side(0, 1), side(1, 2), side(3, 0)]},
+                {"name": "outlet", "faces": [side(2, 4), side(4, 5), side(5, 3)]},
+                {"name": "symmetry", "faces": [&b0[..4], &b0[4..], &b1[..4], &b1[4..]]}]}),
+    );
+    write(
+        "s.json",
+        serde_json::json!({"topology": "w.json", "output": "split.json", "block": 0, "vertex": 1}),
+    );
+    let (ok, e) = kofl_in(&dir, &["call", "block.split_triangle", "--input", "s.json"]);
+    assert!(ok, "{e}");
+    assert_eq!(e["result"]["check"]["blocks"], 5);
+    write(
+        "o.json",
+        serde_json::json!({"topology": "w.json", "output": "opt.json"}),
+    );
+    let (ok, e) = kofl_in(
+        &dir,
+        &["call", "block.optimize_layout", "--input", "o.json"],
+    );
+    assert!(ok, "{e}");
+    let layout = &e["result"]["layout"];
+    assert_eq!(
+        layout["triangle_splits"]["kept"].as_array().unwrap().len(),
+        1
+    );
+    assert!(
+        layout["after"]["max_nonorthogonality_deg"]
+            .as_f64()
+            .unwrap()
+            < 30.0
+    );
+    for (topology, output) in [("split.json", "split"), ("opt.json", "opt")] {
+        write(
+            "g.json",
+            serde_json::json!({"topology": topology, "output": output}),
+        );
+        let (ok, e) = kofl_in(&dir, &["call", "block.grid", "--input", "g.json"]);
+        assert!(ok, "{e}");
+        assert_eq!(e["result"]["report"]["summary"]["inverted_faces"], 0);
+        std::fs::remove_file(dir.join("g.json")).unwrap();
+    }
 }
 
 /// Keep rule (SW-18). Invariant (BC-03, BC-05, AG-13): an agent goes from a

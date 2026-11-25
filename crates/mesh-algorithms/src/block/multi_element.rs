@@ -1382,6 +1382,7 @@ pub fn multi_element_airfoil(
         patches,
         surfaces: Vec::new(),
     };
+    let unoptimised = topology.clone();
     // the corners, shapes and spacings of the blocks off the rings move
     // toward orthogonal cells; the rings (on the wall patches) stay
     let layout = super::layout::optimize(
@@ -1448,6 +1449,7 @@ pub fn multi_element_airfoil(
         topology,
         analytic_volume: area * span,
         layout: Some(layout),
+        unoptimised: Some(unoptimised),
     })
 }
 
