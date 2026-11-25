@@ -1,9 +1,9 @@
 use crate::handoff::{CellFaces, HandoffError, HandoffMesh, patches_from_names};
 use crate::msh::{GmshVersion, Model};
 use crate::{end_array, end_vtu, start_array, vtu_points, write_array, write_ids};
-use mesh_algorithms::duct::{DuctMesh, Element};
+use mesh_algorithms::duct::{DuctMesh, Element, FaceKey, KeyMap, KeySet};
 use mesh_core::geometry::Vec3;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::{self, Write};
 
 pub fn volume(mesh: &DuctMesh, out: &mut dyn Write) -> io::Result<()> {
@@ -92,20 +92,34 @@ pub fn patch(mesh: &DuctMesh, tag: usize, out: &mut dyn Write) -> io::Result<()>
 /// both sides of the face split it alike), otherwise a fan from a centre
 /// point shared by both sides.
 struct Splits {
-    caps: HashMap<Vec<usize>, Vec<[usize; 3]>>,
+    caps: KeyMap<Vec<[usize; 3]>>,
     /// Faces fanned from a centre although they have at most four corners:
     /// one of each pair of a cell's faces that share more than one edge.
     /// Cones over both faces would be two elements sharing two faces.
-    folds: HashSet<Vec<usize>>,
-    centres: HashMap<Vec<usize>, usize>,
+    folds: KeySet,
+    centres: KeyMap<usize>,
 }
 
 impl Splits {
-    fn new(mesh: &DuctMesh) -> Self {
-        let mut caps = HashMap::new();
-        for cell in &mesh.cells {
+    /// `natives`: per cell, whether it is written as its native prisms.
+    fn new(mesh: &DuctMesh, natives: &[bool]) -> Self {
+        // Only boundary faces and faces of general polyhedra are ever split,
+        // so only those can be caps.
+        let general = |id: usize| match &mesh.cells[id].element {
+            Element::Polyhedron(p) if !natives[id] => Some(p),
+            _ => None,
+        };
+        let mut asked = KeySet::default();
+        asked.extend(mesh.boundary.iter().map(|f| FaceKey::new(&f.nodes)));
+        for id in 0..mesh.cells.len() {
+            if let Some(p) = general(id) {
+                asked.extend(p.faces.iter().map(|f| FaceKey::new(f)));
+            }
+        }
+        let mut caps = KeyMap::default();
+        for (id, cell) in mesh.cells.iter().enumerate() {
             if let Element::Polyhedron(p) = &cell.element
-                && native(p)
+                && natives[id]
                 && let Some(wedges) = &p.prism
             {
                 let ends: Vec<[usize; 3]> = wedges
@@ -113,60 +127,86 @@ impl Splits {
                     .flat_map(|w| [[w[0], w[1], w[2]], [w[3], w[4], w[5]]])
                     .collect();
                 for face in &p.faces {
+                    let key = FaceKey::new(face);
+                    if !asked.contains(&key) {
+                        continue;
+                    }
                     let tris = end_triangles(&ends, face);
                     if !tris.is_empty() {
-                        caps.insert(sorted(face), tris);
+                        caps.insert(key, tris);
                     }
                 }
             }
         }
+        let pairs: Vec<(usize, Vec<(usize, usize)>)> = (0..mesh.cells.len())
+            .filter_map(|id| general(id).map(|p| (id, folded_pairs(&p.faces))))
+            .filter(|(_, pairs)| !pairs.is_empty())
+            .collect();
         // faces of tetrahedra, wedges and wall columns keep their shape
-        let mut fixed = HashSet::new();
-        for cell in &mesh.cells {
-            match &cell.element {
-                Element::Tet(n) => {
-                    for f in [[0, 1, 2], [0, 1, 3], [1, 2, 3], [0, 2, 3]] {
-                        fixed.insert(sorted(&f.map(|i| n[i])));
-                    }
+        let mut wanted = KeySet::default();
+        for (id, list) in &pairs {
+            if let Some(p) = general(*id) {
+                for &(i, j) in list {
+                    wanted.insert(FaceKey::new(&p.faces[i]));
+                    wanted.insert(FaceKey::new(&p.faces[j]));
                 }
-                Element::Wedge(n) => {
-                    for f in [[0, 1, 4, 3], [1, 2, 5, 4], [2, 0, 3, 5]] {
-                        fixed.insert(sorted(&f.map(|i| n[i])));
-                    }
-                }
-                Element::Polyhedron(p) if native(p) => {
-                    for f in &p.faces {
-                        fixed.insert(sorted(f));
-                    }
-                }
-                Element::Polyhedron(_) => {}
             }
         }
-        let mut folds = HashSet::new();
-        for cell in &mesh.cells {
-            let Element::Polyhedron(p) = &cell.element else {
+        let mut fixed = KeySet::default();
+        let mut keep = |ring: &[usize]| {
+            let key = FaceKey::new(ring);
+            if wanted.contains(&key) {
+                fixed.insert(key);
+            }
+        };
+        if !wanted.is_empty() {
+            for (id, cell) in mesh.cells.iter().enumerate() {
+                match &cell.element {
+                    Element::Tet(n) => {
+                        for f in [[0, 1, 2], [0, 1, 3], [1, 2, 3], [0, 2, 3]] {
+                            keep(&f.map(|i| n[i]));
+                        }
+                    }
+                    Element::Wedge(n) => {
+                        for f in [[0, 1, 4, 3], [1, 2, 5, 4], [2, 0, 3, 5]] {
+                            keep(&f.map(|i| n[i]));
+                        }
+                    }
+                    Element::Polyhedron(p) if natives[id] => {
+                        for f in &p.faces {
+                            keep(f);
+                        }
+                    }
+                    Element::Polyhedron(_) => {}
+                }
+            }
+        }
+        let mut folds = KeySet::default();
+        for (id, list) in pairs {
+            let Some(p) = general(id) else {
                 continue;
             };
-            if native(p) {
-                continue;
-            }
-            for (i, j) in folded_pairs(&p.faces) {
+            for (i, j) in list {
                 let (fi, fj) = (&p.faces[i], &p.faces[j]);
                 let fanned = |f: &Vec<usize>| {
-                    f.len() > 4 || caps.contains_key(&sorted(f)) || folds.contains(&sorted(f))
+                    let key = FaceKey::new(f);
+                    f.len() > 4 || caps.contains_key(&key) || folds.contains(&key)
                 };
                 if fanned(fi) || fanned(fj) {
                     continue;
                 }
-                if let Some(f) = [fi, fj].into_iter().find(|f| !fixed.contains(&sorted(f))) {
-                    folds.insert(sorted(f));
+                if let Some(f) = [fi, fj]
+                    .into_iter()
+                    .find(|f| !fixed.contains(&FaceKey::new(f)))
+                {
+                    folds.insert(FaceKey::new(f));
                 }
             }
         }
         Self {
             caps,
             folds,
-            centres: HashMap::new(),
+            centres: KeyMap::default(),
         }
     }
 
@@ -174,12 +214,12 @@ impl Splits {
     /// (a quadrilateral cap of a wall column is two triangles, not a quad), or
     /// a fold (see `folds`).
     fn is_cap(&self, ring: &[usize]) -> bool {
-        let key = sorted(ring);
+        let key = FaceKey::new(ring);
         self.caps.contains_key(&key) || self.folds.contains(&key)
     }
 
     fn split(&mut self, points: &mut Vec<Vec3>, ring: &[usize]) -> Vec<[usize; 3]> {
-        let key = sorted(ring);
+        let key = FaceKey::new(ring);
         if let Some(tris) = self.caps.get(&key) {
             let n = newell(points, ring);
             return tris
@@ -275,10 +315,15 @@ fn newell(points: &[Vec3], ring: &[usize]) -> Vec3 {
 
 pub fn gmsh(mesh: &DuctMesh, version: GmshVersion, out: &mut dyn Write) -> io::Result<()> {
     let mut points = mesh.points.clone();
+    let natives: Vec<bool> = mesh
+        .cells
+        .iter()
+        .map(|c| matches!(&c.element, Element::Polyhedron(p) if native(p)))
+        .collect();
     let mut apexes = Vec::with_capacity(mesh.cells.len());
-    for cell in &mesh.cells {
+    for (cell, &native) in mesh.cells.iter().zip(&natives) {
         apexes.push(match &cell.element {
-            Element::Polyhedron(p) if !native(p) => Some(p.cone_apex.unwrap_or_else(|| {
+            Element::Polyhedron(p) if !native => Some(p.cone_apex.unwrap_or_else(|| {
                 points.push(p.interior);
                 points.len() - 1
             })),
@@ -286,16 +331,16 @@ pub fn gmsh(mesh: &DuctMesh, version: GmshVersion, out: &mut dyn Write) -> io::R
         });
     }
     // polygons beyond quadrilaterals are split into triangles first
-    let mut splits = Splits::new(mesh);
+    let mut splits = Splits::new(mesh, &natives);
     let mut boundary_split = Vec::with_capacity(mesh.boundary.len());
     for face in &mesh.boundary {
         let split = face.nodes.len() > 4 || splits.is_cap(&face.nodes);
         boundary_split.push(split.then(|| splits.split(&mut points, &face.nodes)));
     }
     let mut cell_split = Vec::with_capacity(mesh.cells.len());
-    for cell in &mesh.cells {
+    for (cell, &native) in mesh.cells.iter().zip(&natives) {
         cell_split.push(match &cell.element {
-            Element::Polyhedron(p) if !native(p) => p
+            Element::Polyhedron(p) if !native => p
                 .faces
                 .iter()
                 .map(|f| (f.len() > 4 || splits.is_cap(f)).then(|| splits.split(&mut points, f)))
@@ -334,7 +379,7 @@ pub fn gmsh(mesh: &DuctMesh, version: GmshVersion, out: &mut dyn Write) -> io::R
         match &c.element {
             Element::Tet(n) => model.element_of(4, fluid, entity, n, parent_id)?,
             Element::Wedge(n) => model.element_of(6, fluid, entity, n, parent_id)?,
-            Element::Polyhedron(p) if native(p) => {
+            Element::Polyhedron(p) if natives[parent] => {
                 for w in p.prism.iter().flatten() {
                     model.element_of(6, fluid, entity, w, parent_id)?;
                 }

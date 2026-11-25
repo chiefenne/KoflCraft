@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::io::{self, Write};
 
+use mesh_algorithms::duct::{FaceKey, KeyMap};
 use mesh_core::geometry::Vec3;
 use mesh_core::mesh::{FaceAdjacency, Mesh};
 use serde::{Deserialize, Serialize};
@@ -348,12 +349,6 @@ fn merge_shared(
     Ok((out, merged))
 }
 
-fn key(ring: &[usize]) -> Vec<usize> {
-    let mut k = ring.to_vec();
-    k.sort_unstable();
-    k
-}
-
 impl HandoffMesh {
     /// Build from cells given as outward face rings. Two cells that share a
     /// face must list the same vertices (in opposite winding); a face of one
@@ -367,17 +362,22 @@ impl HandoffMesh {
         boundary: &[(Vec<usize>, usize)],
         patches: Vec<Patch>,
     ) -> Result<Self, HandoffError> {
-        let mut boundary_patch: HashMap<Vec<usize>, usize> = HashMap::new();
+        // keys without allocation for triangles and quadrilaterals; maps
+        // sized up front (growing them cost more than the lookups)
+        let mut boundary_patch: KeyMap<usize> =
+            KeyMap::with_capacity_and_hasher(boundary.len(), Default::default());
         for (ring, patch) in boundary {
             if *patch >= patches.len() {
                 return fail(format!("boundary face of the unknown patch {patch}"));
             }
-            if boundary_patch.insert(key(ring), *patch).is_some() {
+            if boundary_patch.insert(FaceKey::new(ring), *patch).is_some() {
                 return fail("a boundary face is listed twice");
             }
         }
-        let mut open: HashMap<Vec<usize>, (usize, usize)> = HashMap::new();
-        let mut interior: Vec<(usize, usize, Vec<usize>)> = Vec::new();
+        let faces: usize = cells.iter().map(|c| c.faces.len()).sum();
+        let mut open: KeyMap<(usize, usize)> =
+            KeyMap::with_capacity_and_hasher(faces / 8 + boundary.len() + 16, Default::default());
+        let mut interior: Vec<(usize, usize, Vec<usize>)> = Vec::with_capacity(faces / 2);
         for (c, cell) in cells.iter().enumerate() {
             if cell.zone >= zones.len() {
                 return fail(format!("cell {c} has the unknown zone {}", cell.zone));
@@ -389,9 +389,10 @@ impl HandoffMesh {
                 if ring.len() < 3 || ring.iter().any(|&v| v >= points.len()) {
                     return fail(format!("cell {c} face {f} is not a polygon of the points"));
                 }
-                match open.remove(&key(ring)) {
+                let key = FaceKey::new(ring);
+                match open.remove(&key) {
                     None => {
-                        open.insert(key(ring), (c, f));
+                        open.insert(key, (c, f));
                     }
                     Some((o, of)) => {
                         let first = &cells[o].faces[of];

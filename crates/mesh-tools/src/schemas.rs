@@ -231,7 +231,7 @@ pub(crate) fn output_schema(name: &str) -> Value {
                 "schema_version":version,"algorithm":string,"mode":{"enum":["bulk","layered","polyhedral"]},
                 "source_sha256":digest,"config_sha256":digest,"regions":count,"source_facets":count,"scaffold_volume":{"type":["number","null"]},"stl_patch_areas":object_schema(json!({"inlet":number,"outlet":number,"walls":number})),
                 "patches":{"type":"array","items":object_schema(json!({"id":count,"name":string,"role":{"enum":["inlet","outlet","wall"]},"layered":{"type":"boolean"},"stl_area":number,"area":number}))},
-                "tetrahedra":count,"polyhedra":count,"core_sphericity":{"anyOf":[object_schema(json!({"minimum":number,"p05":number,"median":number})),{"type":"null"}]},"polyhedron_face_range":{"type":["array","null"], "items":count,"minItems":2,"maxItems":2},"prism_core_faces":count,"prisms":count,"source_volume":number,"volume":number,
+                "tetrahedra":count,"polyhedra":count,"layer_polyhedra":count,"core_sphericity":{"anyOf":[object_schema(json!({"minimum":number,"p05":number,"median":number})),{"type":"null"}]},"polyhedron_face_range":{"type":["array","null"], "items":count,"minItems":2,"maxItems":2},"prism_core_faces":count,"prisms":count,"source_volume":number,"volume":number,
                 "minimum_cell_volume":number,"minimum_tet_mean_ratio":{"type":["number","null"]},"tetrahedra_below_mean_ratio_0_1":count,
                 "minimum_wedge_jacobian":{"type":["number","null"]},"minimum_kernel_clearance":{"type":["number","null"]},
                 "patch_areas":object_schema(json!({"inlet":number,"outlet":number,"walls":number})),

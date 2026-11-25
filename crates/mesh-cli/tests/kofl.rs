@@ -310,7 +310,8 @@ fn estimates_match_the_built_cell_counts() {
         } else {
             // Polyhedral duct: cells split at reentrant edges or where they
             // break the solver rules come after the estimate (on the elbow's
-            // median dual 10 and 6); the basis must say so.
+            // median dual 11 core cells and 24 corner prisms of the wall
+            // layers); the basis must say so.
             assert_eq!(args[4], "polyhedral");
             assert!(
                 estimate["cells_basis"]
@@ -318,7 +319,7 @@ fn estimates_match_the_built_cell_counts() {
                     .unwrap()
                     .contains("solver rules")
             );
-            assert_eq!(actual, predicted + 11, "{args:?}");
+            assert_eq!(actual, predicted + 35, "{args:?}");
         }
     }
     let (ok, _) = kofl_in(&dir, &["--check", "check", "m.json"]);
