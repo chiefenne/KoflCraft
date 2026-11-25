@@ -91,6 +91,9 @@ pub struct Remeshed {
     pub source: Vec<Option<usize>>,
     /// The group (see [`remesh_grouped`]) of every triangle.
     pub group: Vec<usize>,
+    /// The edges of the marked lines given to [`remesh_lines`] after the
+    /// remesh, each with its label.
+    pub lines: Vec<((usize, usize), usize)>,
     pub stats: RemeshStats,
 }
 
@@ -302,6 +305,8 @@ struct Work<'a> {
     /// Target edge length at each vertex.
     h: Vec<f64>,
     feature: HashSet<(usize, usize)>,
+    /// Feature edges of marked lines (see [`remesh_lines`]) and their label.
+    marked: HashMap<(usize, usize), usize>,
     surface: &'a ClosestSet,
     lines: &'a ClosestSet,
     size: &'a WeightedSet,
@@ -487,6 +492,10 @@ impl Work<'_> {
             self.feature.remove(&key(a, b));
             self.feature.insert(key(a, m));
             self.feature.insert(key(m, b));
+            if let Some(label) = self.marked.remove(&key(a, b)) {
+                self.marked.insert(key(a, m), label);
+                self.marked.insert(key(m, b), label);
+            }
         }
         for f in faces {
             let t = self.t[f];
@@ -614,8 +623,12 @@ impl Work<'_> {
         for v in &moved {
             self.feature.remove(&key(a, *v));
             self.feature.insert(key(b, *v));
+            if let Some(label) = self.marked.remove(&key(a, *v)) {
+                self.marked.insert(key(b, *v), label);
+            }
         }
         self.feature.remove(&key(a, b));
+        self.marked.remove(&key(a, b));
         for f in faces {
             self.remove_face(f);
         }
@@ -857,9 +870,28 @@ pub fn remesh_grouped(
     opts: RemeshOptions,
     field: Option<&SizeField>,
 ) -> Result<Remeshed, String> {
+    remesh_lines(vertices, triangles, keep, group, opts, field, &[])
+}
+
+/// [`remesh_grouped`] with marked lines: source edges kept as feature lines
+/// whatever their angle (the line where a zero-thickness shell meets the
+/// wall, SHL-01), each with a label. The result lists their edges after the
+/// remesh (`Remeshed::lines`); an end of a line is a corner and stays.
+pub fn remesh_lines(
+    vertices: &[Vec3],
+    triangles: &[[usize; 3]],
+    keep: &[bool],
+    group: &[usize],
+    opts: RemeshOptions,
+    field: Option<&SizeField>,
+    lines: &[((usize, usize), usize)],
+) -> Result<Remeshed, String> {
     if keep.len() != triangles.len()
         || group.len() != triangles.len()
         || triangles.iter().flatten().any(|&v| v >= vertices.len())
+        || lines
+            .iter()
+            .any(|&((a, b), _)| a == b || a.max(b) >= vertices.len())
     {
         return Err("invalid remesh input".into());
     }
@@ -920,6 +952,13 @@ pub fn remesh_grouped(
                 });
             }
         }
+    }
+    let mut marked = HashMap::default();
+    for &((a, b), label) in lines {
+        if feature.insert(key(a, b)) {
+            line_items.push(Primitive::Segment([vertices[a], vertices[b]]));
+        }
+        marked.insert(key(a, b), label);
     }
     let wall: Vec<Primitive> = triangles
         .iter()
@@ -988,6 +1027,7 @@ pub fn remesh_grouped(
         h: Vec::new(),
         locked,
         feature,
+        marked,
         surface: &surface,
         field,
         lines: &lines,
@@ -1250,6 +1290,16 @@ pub fn remesh_grouped(
         triangles: out_t,
         source,
         group: out_group,
+        lines: {
+            let mut lines: Vec<((usize, usize), usize)> = w
+                .marked
+                .iter()
+                .filter(|&(&(a, b), _)| map[a] != usize::MAX && map[b] != usize::MAX)
+                .map(|(&(a, b), &label)| (key(map[a], map[b]), label))
+                .collect();
+            lines.sort_unstable();
+            lines
+        },
         stats,
     })
 }
