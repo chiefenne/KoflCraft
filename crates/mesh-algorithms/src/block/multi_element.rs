@@ -1305,7 +1305,7 @@ pub fn multi_element_airfoil(
         ]
     };
     let mut ring_owner = Vec::new();
-    for k in 0..ne {
+    for (k, e) in elements.iter().enumerate() {
         for (a, b, cells) in ring_blocks(k) {
             block_col.push(None);
             ring_owner.push(k);
@@ -1320,7 +1320,7 @@ pub fn multi_element_airfoil(
                     oid(k, b, 1),
                     oid(k, a, 1),
                 ],
-                cells: [cells, elements[k].ring_cells, p.span_cells],
+                cells: [cells, e.ring_cells, p.span_cells],
                 domain: "fluid".into(),
             });
         }

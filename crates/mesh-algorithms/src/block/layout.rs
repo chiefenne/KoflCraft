@@ -386,10 +386,10 @@ impl Block {
                     cy += (p[1] + r[1]) * c;
                     let (u, w) = (sub(r, p), sub(q[(k + 3) % 4], p));
                     let sine = self.sign * cross(u, w) / (norm(u) * norm(w));
-                    if !(sine > 0.0) {
+                    if sine.is_nan() || sine <= 0.0 {
                         folded += 1;
                     }
-                    if !(sine >= SHARP_SINE) {
+                    if sine.is_nan() || sine < SHARP_SINE {
                         let d = (SHARP_SINE - sine.max(-1.0)) / SHARP_SINE;
                         sharp += SHARP_COST * d * d;
                     }
@@ -1197,8 +1197,7 @@ pub fn optimize(t: &mut BlockTopology, o: &LayoutOptions) -> Result<LayoutReport
     };
     for _ in 0..o.max_sweeps {
         let mut active = false;
-        for i in 0..dofs.len() {
-            let d = &dofs[i];
+        for d in dofs.iter_mut() {
             if d.step < d.min_step {
                 continue;
             }
@@ -1210,10 +1209,9 @@ pub fn optimize(t: &mut BlockTopology, o: &LayoutOptions) -> Result<LayoutReport
                 report.trials += 1;
                 ok = model.trial(d, -s);
                 if ok {
-                    dofs[i].sign = -dofs[i].sign;
+                    d.sign = -d.sign;
                 }
             }
-            let d = &mut dofs[i];
             d.step = if ok {
                 (1.5 * d.step).min(d.max_step)
             } else {
