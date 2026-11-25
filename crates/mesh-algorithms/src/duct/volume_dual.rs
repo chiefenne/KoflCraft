@@ -973,10 +973,13 @@ pub fn build_volume_dual(
     // Repeat the split until the mesh as exported passes the solver rules:
     // a core cell that fails (or whose layer neighbour fails) is split again
     // into halves by volume, until it passes or is a single corner piece.
+    // After the first check of the whole mesh only the cells near a split
+    // are checked again (verify::ExportedCheck), with the same verdicts.
+    let mut exported = verify::ExportedCheck::new(p, &front.cells)?;
     loop {
-        let failing = verify::exported_failures(p, &front.cells);
+        let failing = exported.failing();
         let mut targets = std::collections::BTreeSet::new();
-        for (id, neighbours) in &failing {
+        for (id, neighbours) in failing {
             if *id >= layer_cells {
                 targets.insert(*id);
             } else {
@@ -994,6 +997,8 @@ pub fn build_volume_dual(
         if targets.is_empty() {
             break;
         }
+        let split: std::collections::BTreeSet<usize> = targets.clone();
+        front.boundary.retain(|b| !split.contains(&b.owner));
         for c in targets {
             let (d, group) = origin[c - layer_cells].clone();
             let cell = &dual[d];
@@ -1004,7 +1009,6 @@ pub fn build_volume_dual(
                 .collect();
             let half = group.iter().map(|&k| cell.corners[k].volume).sum::<f64>() / 2.;
             let pieces = split_invalid(p, cell, group, &earlier, &split_quads, Some(half));
-            front.boundary.retain(|b| b.owner != c);
             for (k, piece) in pieces.into_iter().enumerate() {
                 let id = if k == 0 { c } else { front.cells.len() };
                 for &corner in &piece {
@@ -1015,6 +1019,7 @@ pub fn build_volume_dual(
                 let (built, boundary) = build_part(p, cell, &piece, mapped[d], layered, id);
                 front.boundary.extend(boundary);
                 if k == 0 {
+                    exported.remove(c, &front.cells[c].element);
                     front.cells[c] = built;
                     origin[c - layer_cells].1 = piece;
                 } else {
@@ -1022,8 +1027,10 @@ pub fn build_volume_dual(
                     cells_of[d].push(id);
                     origin.push((d, piece));
                 }
+                exported.insert(id, &front.cells[id].element);
             }
         }
+        exported.recheck(p, &front.cells);
     }
     compact_points(p, &mut front.cells, &mut front.boundary);
     let measurements = verify::check_with_interface_count(

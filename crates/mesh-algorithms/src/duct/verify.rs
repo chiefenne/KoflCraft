@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub struct Measurements {
     pub volume: f64,
@@ -78,7 +78,10 @@ fn fv_face(p: &[Vec3], ring: &[usize]) -> (Vec3, Vec3) {
 /// Counts the cells of a mesh against [`SolverRules`].
 #[cfg(test)]
 fn solver_rules(p: &[Vec3], cells: &[Cell]) -> SolverRules {
-    solver_rules_and_volumes(p, cells).0
+    match solver_rules_and_volumes(p, cells) {
+        Ok((rules, _, _)) => rules,
+        Err(e) => panic!("{e}"),
+    }
 }
 
 /// Largest angle between a fan triangle of a face and its area vector.
@@ -114,24 +117,81 @@ impl Shell {
     }
 }
 
-/// The shell of a cell given by its outward face rings.
-pub(super) fn cell_shell(p: &[Vec3], rings: &[Vec<usize>]) -> Shell {
-    let geometry: Vec<(Vec3, Vec3)> = rings.iter().map(|r| fv_face(p, r)).collect();
-    shell(p, rings, &geometry)
+/// Face rings stored one after another, so the faces of a cell need no
+/// allocation per face.
+#[derive(Default)]
+pub(super) struct Rings {
+    flat: Vec<usize>,
+    ends: Vec<usize>,
 }
 
-fn shell(p: &[Vec3], rings: &[Vec<usize>], geometry: &[(Vec3, Vec3)]) -> Shell {
-    // closed shell: every edge twice, area vectors summing to zero
-    let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
-    for r in rings {
-        for (i, &a) in r.iter().enumerate() {
-            let b = r[(i + 1) % r.len()];
-            *edges.entry((a.min(b), a.max(b))).or_default() += 1;
+impl Rings {
+    fn clear(&mut self) {
+        self.flat.clear();
+        self.ends.clear();
+    }
+    fn push(&mut self, ring: &[usize]) {
+        self.flat.extend_from_slice(ring);
+        self.ends.push(self.flat.len());
+    }
+    fn len(&self) -> usize {
+        self.ends.len()
+    }
+    fn get(&self, i: usize) -> &[usize] {
+        let start = if i == 0 { 0 } else { self.ends[i - 1] };
+        &self.flat[start..self.ends[i]]
+    }
+    fn iter(&self) -> impl Iterator<Item = &[usize]> + '_ {
+        (0..self.len()).map(|i| self.get(i))
+    }
+    /// The faces of an element, in the order of [`Element::faces`].
+    fn load(&mut self, element: &Element) {
+        self.clear();
+        match *element {
+            Element::Polyhedron(ref poly) => poly.faces.iter().for_each(|r| self.push(r)),
+            Element::Tet([a, b, c, d]) => {
+                for ring in [[a, c, b], [a, b, d], [b, c, d], [c, a, d]] {
+                    self.push(&ring);
+                }
+            }
+            Element::Wedge([a, b, c, d, e, f]) => {
+                self.push(&[a, c, b]);
+                self.push(&[d, e, f]);
+                self.push(&[a, b, e, d]);
+                self.push(&[b, c, f, e]);
+                self.push(&[c, a, d, f]);
+            }
         }
     }
+}
+
+/// The shell of a cell given by its outward face rings.
+pub(super) fn cell_shell(p: &[Vec3], rings: &[Vec<usize>]) -> Shell {
+    let mut flat = Rings::default();
+    rings.iter().for_each(|r| flat.push(r));
+    let geometry: Vec<(Vec3, Vec3)> = flat.iter().map(|r| fv_face(p, r)).collect();
+    shell(p, &flat, &geometry, &mut Vec::new())
+}
+
+fn shell(
+    p: &[Vec3],
+    rings: &Rings,
+    geometry: &[(Vec3, Vec3)],
+    edges: &mut Vec<(usize, usize)>,
+) -> Shell {
+    // closed shell: every edge twice, area vectors summing to zero
+    edges.clear();
+    for r in rings.iter() {
+        for (i, &a) in r.iter().enumerate() {
+            let b = r[(i + 1) % r.len()];
+            edges.push((a.min(b), a.max(b)));
+        }
+    }
+    edges.sort_unstable();
+    let twice = edges.chunk_by(|x, y| x == y).all(|uses| uses.len() == 2);
     let sum = geometry.iter().fold(Vec3::ZERO, |s, g| s + g.0);
     let total: f64 = geometry.iter().map(|g| g.0.length()).sum();
-    let open = edges.values().any(|&n| n != 2)
+    let open = !twice
         || sum.length().partial_cmp(&(1e-6 * total)) == Some(std::cmp::Ordering::Greater)
         || !total.is_finite();
     let (volume, centre) = fan_volume_centre(p, rings);
@@ -147,36 +207,47 @@ fn shell(p: &[Vec3], rings: &[Vec<usize>], geometry: &[(Vec3, Vec3)]) -> Shell {
 /// The union of rings that share their inner edges, as one ring (the
 /// hand-off merges the faces between two cells this way); `None` when the
 /// union is not one loop.
-pub(super) fn merge_rings(rings: &[&Vec<usize>]) -> Option<Vec<usize>> {
-    if rings.len() == 1 {
-        return Some(rings[0].clone());
+pub(super) fn merge_rings<R: AsRef<[usize]>>(rings: &[R]) -> Option<Vec<usize>> {
+    if let [ring] = rings {
+        return Some(ring.as_ref().to_vec());
     }
-    let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
+    // directed edges left after the shared ones cancel, with their counts
+    let mut edges: Vec<((usize, usize), u32)> = Vec::new();
     for ring in rings {
+        let ring = ring.as_ref();
         for (k, &a) in ring.iter().enumerate() {
             let b = ring[(k + 1) % ring.len()];
-            if let Some(n) = edges.get_mut(&(b, a)) {
-                *n -= 1;
-                if *n == 0 {
-                    edges.remove(&(b, a));
+            if let Some(i) = edges.iter().position(|&(e, _)| e == (b, a)) {
+                edges[i].1 -= 1;
+                if edges[i].1 == 0 {
+                    edges.swap_remove(i);
                 }
+            } else if let Some(i) = edges.iter().position(|&(e, _)| e == (a, b)) {
+                edges[i].1 += 1;
             } else {
-                *edges.entry((a, b)).or_insert(0) += 1;
+                edges.push(((a, b), 1));
             }
         }
     }
-    let mut next: HashMap<usize, usize> = HashMap::new();
-    for (&(a, b), &n) in &edges {
-        if n != 1 || next.insert(a, b).is_some() {
-            return None;
-        }
+    if edges.iter().any(|&(_, n)| n != 1) {
+        return None;
     }
-    let &start = next.keys().min()?;
+    let mut next: Vec<(usize, usize)> = edges.into_iter().map(|(e, _)| e).collect();
+    next.sort_unstable();
+    if next.windows(2).any(|w| w[0].0 == w[1].0) {
+        return None;
+    }
+    let follow = |at: usize| {
+        next.binary_search_by_key(&at, |e| e.0)
+            .ok()
+            .map(|i| next[i].1)
+    };
+    let &(start, _) = next.first()?;
     let mut ring = vec![start];
-    let mut at = next[&start];
+    let mut at = follow(start)?;
     while at != start && ring.len() <= next.len() {
         ring.push(at);
-        at = next[&at];
+        at = follow(at)?;
     }
     (ring.len() == next.len()).then_some(ring)
 }
@@ -184,13 +255,13 @@ pub(super) fn merge_rings(rings: &[&Vec<usize>]) -> Option<Vec<usize>> {
 /// Volume and centroid of a closed shell as the hand-off and FoehnCraft
 /// take them: tetrahedra on the first vertex, each face fanned from its
 /// vertex mean.
-fn fan_volume_centre(p: &[Vec3], rings: &[Vec<usize>]) -> (f64, Vec3) {
-    let Some(origin) = rings.first().and_then(|r| r.first()).map(|&v| p[v]) else {
+fn fan_volume_centre(p: &[Vec3], rings: &Rings) -> (f64, Vec3) {
+    let Some(origin) = rings.iter().next().and_then(|r| r.first()).map(|&v| p[v]) else {
         return (0.0, Vec3::ZERO);
     };
     let mut v6 = 0.0;
     let mut moment = Vec3::ZERO;
-    for ring in rings {
+    for ring in rings.iter() {
         let c = ring.iter().fold(Vec3::ZERO, |s, &v| s + p[v]) / ring.len() as f64 - origin;
         for (k, &a) in ring.iter().enumerate() {
             let (pa, pb) = (p[a] - origin, p[ring[(k + 1) % ring.len()]] - origin);
@@ -202,138 +273,610 @@ fn fan_volume_centre(p: &[Vec3], rings: &[Vec<usize>]) -> (f64, Vec3) {
     (v6 / 6.0, origin + moment / v6)
 }
 
-/// The solver rules and each cell's volume as the solver takes it (the sum
-/// of its face pyramids).
-#[allow(clippy::type_complexity)]
-fn solver_rules_and_volumes(
-    p: &[Vec3],
-    cells: &[Cell],
-) -> (SolverRules, Vec<f64>, Vec<(usize, Vec<usize>)>) {
-    // The mesh as it is exported: the faces between two cells merged into
-    // one polygon (the hand-off and FoehnCraft allow one face per pair).
-    let all_rings: Vec<Vec<Vec<usize>>> = cells.iter().map(|c| c.element.faces()).collect();
-    let mut users: HashMap<Vec<usize>, Vec<usize>> = HashMap::new();
-    for (id, rings) in all_rings.iter().enumerate() {
-        for r in rings {
-            users.entry(key(r)).or_default().push(id);
+/// A face's vertex set, sorted, with its hash: every cell that uses the face
+/// makes the same key. Triangles and quadrilaterals need no allocation.
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct FaceKey {
+    hash: u64,
+    vertices: KeyVertices,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum KeyVertices {
+    Small([u32; 4]),
+    Large(Box<[usize]>),
+}
+
+impl std::hash::Hash for FaceKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.hash);
+    }
+}
+
+fn mix(h: u64, v: u64) -> u64 {
+    let x = (h ^ v).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    x ^ (x >> 29)
+}
+
+/// The splitmix64 finalizer: every bit of the hash depends on every vertex.
+fn avalanche(mut x: u64) -> u64 {
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^ (x >> 31)
+}
+
+impl FaceKey {
+    pub(super) fn new(ring: &[usize]) -> Self {
+        let small = ring.len() <= 4 && ring.iter().all(|&v| v < u32::MAX as usize);
+        if small {
+            let mut vertices = [u32::MAX; 4];
+            for (slot, &v) in vertices.iter_mut().zip(ring) {
+                *slot = v as u32;
+            }
+            vertices[..ring.len()].sort_unstable();
+            let h = vertices
+                .iter()
+                .fold(ring.len() as u64, |h, &v| mix(h, u64::from(v)));
+            Self {
+                hash: avalanche(h),
+                vertices: KeyVertices::Small(vertices),
+            }
+        } else {
+            let mut vertices = ring.to_vec();
+            vertices.sort_unstable();
+            let h = vertices
+                .iter()
+                .fold(ring.len() as u64, |h, &v| mix(h, v as u64));
+            Self {
+                hash: avalanche(h),
+                vertices: KeyVertices::Large(vertices.into_boxed_slice()),
+            }
         }
     }
-    let mut out = SolverRules {
-        cells: cells.len(),
-        ..SolverRules::default()
-    };
-    let mut volumes = Vec::with_capacity(cells.len());
-    let mut centres = Vec::with_capacity(cells.len());
-    let mut bad = vec![false; cells.len()];
-    // (owner, neighbour, owner's area vector) once per pair
-    let mut shared: Vec<(usize, usize, Vec3)> = Vec::new();
-    let mut boundary: Vec<(usize, Vec3, Vec3)> = Vec::new();
-    for (id, rings) in all_rings.iter().enumerate() {
-        let mut by_neighbour: std::collections::BTreeMap<usize, Vec<&Vec<usize>>> =
-            std::collections::BTreeMap::new();
-        let mut merged: Vec<Vec<usize>> = Vec::new();
-        let mut neighbours: Vec<Option<usize>> = Vec::new();
-        for r in rings {
-            match users[&key(r)].iter().find(|&&c| c != id) {
-                Some(&other) => by_neighbour.entry(other).or_default().push(r),
-                None => {
-                    merged.push(r.clone());
-                    neighbours.push(None);
+}
+
+/// Hands the precomputed [`FaceKey`] hash to the map.
+#[derive(Default)]
+struct KeyHasher(u64);
+
+impl std::hash::Hasher for KeyHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = mix(self.0, u64::from(b));
+        }
+    }
+    fn write_u64(&mut self, v: u64) {
+        self.0 = v;
+    }
+}
+
+type KeyMap<V> = HashMap<FaceKey, V, std::hash::BuildHasherDefault<KeyHasher>>;
+
+/// The cells that use one face, ascending (a cell that lists the face twice
+/// appears twice): the order in which a pass over the cells meets them.
+#[derive(Clone)]
+enum Users {
+    Few([usize; 2], u8),
+    Many(Vec<usize>),
+}
+
+impl Users {
+    fn as_slice(&self) -> &[usize] {
+        match self {
+            Users::Few(cells, n) => &cells[..usize::from(*n)],
+            Users::Many(cells) => cells,
+        }
+    }
+    fn insert(&mut self, cell: usize) {
+        if let Users::Few(cells, n @ 1) = self {
+            cells[1] = cell;
+            *n = 2;
+            if cells[0] > cells[1] {
+                cells.swap(0, 1);
+            }
+            return;
+        }
+        let mut cells = self.as_slice().to_vec();
+        let at = cells.partition_point(|&c| c <= cell);
+        cells.insert(at, cell);
+        *self = Users::Many(cells);
+    }
+    /// Removes one use by `cell`; true when no cell uses the face any more.
+    fn remove(&mut self, cell: usize) -> bool {
+        let mut cells = self.as_slice().to_vec();
+        if let Some(i) = cells.iter().position(|&c| c == cell) {
+            cells.remove(i);
+        }
+        *self = match cells[..] {
+            [] => return true,
+            [a] => Users::Few([a, 0], 1),
+            [a, b] => Users::Few([a, b], 2),
+            _ => Users::Many(cells),
+        };
+        false
+    }
+}
+
+/// Cores used by the checks of the whole mesh.
+fn threads() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .clamp(1, 64)
+}
+
+/// Runs `f` on the chunks of `0..count` on all cores (a shared queue, so
+/// costly cells anywhere in the range balance out); results in chunk order.
+fn chunked<T: Send>(
+    count: usize,
+    chunk: usize,
+    f: impl Fn(std::ops::Range<usize>) -> T + Sync,
+) -> Result<Vec<T>, String> {
+    let chunk = chunk.max(1);
+    let chunks = count.div_ceil(chunk);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers = threads().min(chunks).max(1);
+    let (f, next) = (&f, &next);
+    let results = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(move || {
+                    let mut done = Vec::new();
+                    loop {
+                        let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if k >= chunks {
+                            break done;
+                        }
+                        let start = k * chunk;
+                        done.push((k, f(start..(start + chunk).min(count))));
+                    }
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join()).collect::<Vec<_>>()
+    });
+    let mut slots: Vec<Option<T>> = (0..chunks).map(|_| None).collect();
+    for result in results {
+        for (k, value) in result.map_err(|_| "a check worker panicked".to_string())? {
+            slots[k] = Some(value);
+        }
+    }
+    slots
+        .into_iter()
+        .map(|s| s.ok_or_else(|| "a check chunk is missing".to_string()))
+        .collect()
+}
+
+/// The faces of a mesh by vertex set, with the cells that use each one. The
+/// map is split into shards by hash, built in parallel.
+pub(super) struct FaceTable {
+    shards: Vec<KeyMap<Users>>,
+}
+
+impl FaceTable {
+    pub(super) fn new(cells: &[Cell]) -> Result<Self, String> {
+        let count = threads();
+        let rings: usize = cells
+            .iter()
+            .map(|c| match &c.element {
+                Element::Polyhedron(poly) => poly.faces.len(),
+                Element::Tet(_) => 4,
+                Element::Wedge(_) => 5,
+            })
+            .sum();
+        let shards = chunked(count, 1, |shard| {
+            let mut map = KeyMap::with_capacity_and_hasher(
+                rings / 2 / count + 16,
+                std::hash::BuildHasherDefault::default(),
+            );
+            let mut buffer = Rings::default();
+            for (id, cell) in cells.iter().enumerate() {
+                buffer.load(&cell.element);
+                for ring in buffer.iter() {
+                    let key = FaceKey::new(ring);
+                    if Self::shard_of(key.hash, count) == shard.start {
+                        map.entry(key)
+                            .and_modify(|u: &mut Users| u.insert(id))
+                            .or_insert(Users::Few([id, 0], 1));
+                    }
+                }
+            }
+            map
+        })?;
+        Ok(Self { shards })
+    }
+
+    fn shard_of(hash: u64, count: usize) -> usize {
+        (hash >> 32) as usize % count
+    }
+
+    fn users(&self, ring: &[usize]) -> &[usize] {
+        let key = FaceKey::new(ring);
+        self.shards[Self::shard_of(key.hash, self.shards.len())]
+            .get(&key)
+            .map_or(&[], Users::as_slice)
+    }
+
+    /// The first cell other than `id` that uses the face, as the hand-off
+    /// pairs it.
+    fn other(&self, ring: &[usize], id: usize) -> Option<usize> {
+        self.users(ring).iter().copied().find(|&c| c != id)
+    }
+
+    /// The cells that share a face with the cell, ascending, and itself not.
+    fn neighbours(&self, id: usize, element: &Element, buffer: &mut Rings) -> Vec<usize> {
+        buffer.load(element);
+        let mut out: Vec<usize> = buffer
+            .iter()
+            .flat_map(|r| self.users(r).iter().copied())
+            .filter(|&c| c != id)
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Adds (`add`) or removes the uses of every face of a cell; returns the
+    /// other cells that use those faces.
+    fn update(&mut self, id: usize, element: &Element, add: bool) -> Vec<usize> {
+        let mut buffer = Rings::default();
+        buffer.load(element);
+        let count = self.shards.len();
+        let mut others = Vec::new();
+        for ring in buffer.iter() {
+            let key = FaceKey::new(ring);
+            let shard = &mut self.shards[Self::shard_of(key.hash, count)];
+            if add {
+                let users = shard
+                    .entry(key)
+                    .and_modify(|u| u.insert(id))
+                    .or_insert(Users::Few([id, 0], 1));
+                others.extend(users.as_slice().iter().filter(|&&c| c != id));
+            } else if let Some(users) = shard.get_mut(&key) {
+                others.extend(users.as_slice().iter().filter(|&&c| c != id));
+                if users.remove(id) {
+                    shard.remove(&key);
                 }
             }
         }
+        others
+    }
+}
+
+/// One cell as the solver sees it after the hand-off: the faces it shares
+/// with one neighbour merged into one polygon. Buffers are reused from cell
+/// to cell.
+#[derive(Default)]
+struct Exported {
+    rings: Rings,
+    tagged: Vec<(usize, usize)>,
+    merged: Rings,
+    /// Per merged face: the cell across, or none on the boundary.
+    across: Vec<Option<usize>>,
+    /// Per merged face: area vector and centre.
+    geometry: Vec<(Vec3, Vec3)>,
+    edges: Vec<(usize, usize)>,
+}
+
+/// The rules of one cell that need no neighbour, and its largest warping.
+struct Verdict {
+    open: bool,
+    volume: f64,
+    centre: Vec3,
+    pyramids_ok: bool,
+    warping: f64,
+}
+
+impl Verdict {
+    fn nonpositive(&self) -> bool {
+        self.volume.is_nan() || self.volume <= 0.0
+    }
+    fn bad(&self) -> bool {
+        self.open || self.nonpositive() || !self.pyramids_ok
+    }
+}
+
+impl Exported {
+    fn evaluate(&mut self, p: &[Vec3], table: &FaceTable, id: usize, element: &Element) -> Verdict {
+        self.rings.load(element);
+        self.tagged.clear();
+        self.merged.clear();
+        self.across.clear();
+        self.geometry.clear();
+        for (i, ring) in self.rings.iter().enumerate() {
+            match table.other(ring, id) {
+                Some(other) => self.tagged.push((other, i)),
+                None => {
+                    self.merged.push(ring);
+                    self.across.push(None);
+                }
+            }
+        }
+        // by neighbour, ascending; each neighbour's faces in cell order
+        self.tagged.sort_unstable();
         let mut unmergeable = false;
-        for (other, group) in by_neighbour {
-            match merge_rings(&group) {
+        for group in self.tagged.chunk_by(|a, b| a.0 == b.0) {
+            let other = group[0].0;
+            if let [(_, i)] = group {
+                self.merged.push(self.rings.get(*i));
+                self.across.push(Some(other));
+                continue;
+            }
+            let pieces: Vec<&[usize]> = group.iter().map(|&(_, i)| self.rings.get(i)).collect();
+            match merge_rings(&pieces) {
                 Some(ring) => {
-                    merged.push(ring);
-                    neighbours.push(Some(other));
+                    self.merged.push(&ring);
+                    self.across.push(Some(other));
                 }
                 None => {
                     unmergeable = true;
-                    for r in group {
-                        merged.push(r.clone());
-                        neighbours.push(Some(other));
+                    for ring in pieces {
+                        self.merged.push(ring);
+                        self.across.push(Some(other));
                     }
                 }
             }
         }
-        let geometry: Vec<(Vec3, Vec3)> = merged.iter().map(|r| fv_face(p, r)).collect();
-        for (r, g) in merged.iter().zip(&geometry) {
-            out.maximum_warping = out.maximum_warping.max(warping(p, r, g.0));
+        let mut worst = 0.0_f64;
+        for ring in self.merged.iter() {
+            let g = fv_face(p, ring);
+            worst = worst.max(warping(p, ring, g.0));
+            self.geometry.push(g);
         }
         let Shell {
             open,
             volume,
             centre,
             pyramids_ok,
-        } = shell(p, &merged, &geometry);
-        let open = open || unmergeable;
-        out.open_cells += usize::from(open);
-        let nonpositive = volume.is_nan() || volume <= 0.0;
-        out.nonpositive_volume += usize::from(nonpositive);
-        out.negative_pyramids += usize::from(!pyramids_ok);
-        bad[id] = open || nonpositive || !pyramids_ok;
-        centres.push(centre);
-        volumes.push(volume);
-        for (n, (area, c)) in neighbours.into_iter().zip(geometry) {
-            match n {
-                Some(other) if other > id => shared.push((id, other, area)),
-                Some(_) => {}
-                None => boundary.push((id, area, c)),
-            }
+        } = shell(p, &self.merged, &self.geometry, &mut self.edges);
+        Verdict {
+            open: open || unmergeable,
+            volume,
+            centre,
+            pyramids_ok,
+            warping: worst,
         }
     }
-    let mut turned = vec![false; cells.len()];
-    let mut worst = 0.0_f64;
-    let mut check = |cells_of_face: &[usize], d: Vec3, area: Vec3| {
-        let cos = d.dot(area) / (d.length() * area.length());
-        let degrees = if cos.is_finite() {
-            cos.clamp(-1.0, 1.0).acos().to_degrees()
-        } else {
-            180.0
-        };
-        worst = worst.max(degrees);
-        if cos.is_nan() || cos <= 0.0 {
-            for &c in cells_of_face {
-                turned[c] = true;
-            }
-        }
+}
+
+/// The angle in degrees between the owner-to-neighbour (or centre-to-face)
+/// vector and the face normal, and whether the face points back (90° or
+/// more, or no angle at all).
+fn non_orthogonality(d: Vec3, area: Vec3) -> (f64, bool) {
+    let cos = d.dot(area) / (d.length() * area.length());
+    let degrees = if cos.is_finite() {
+        cos.clamp(-1.0, 1.0).acos().to_degrees()
+    } else {
+        180.0
     };
-    for (owner, neighbour, area) in shared {
-        check(
-            &[owner, neighbour],
-            centres[neighbour] - centres[owner],
-            area,
-        );
+    (degrees, cos.is_nan() || cos <= 0.0)
+}
+
+/// Cells per chunk of the parallel checks.
+const CHECK_CHUNK: usize = 2048;
+
+/// The solver rules and each cell's volume as the solver takes it (the sum
+/// of its face pyramids), with the failing cells and the cells they share a
+/// face with.
+#[allow(clippy::type_complexity)]
+fn solver_rules_and_volumes(
+    p: &[Vec3],
+    cells: &[Cell],
+) -> Result<(SolverRules, Vec<f64>, Vec<(usize, Vec<usize>)>), String> {
+    let table = FaceTable::new(cells)?;
+    solver_rules_on(p, cells, &table)
+}
+
+#[allow(clippy::type_complexity)]
+fn solver_rules_on(
+    p: &[Vec3],
+    cells: &[Cell],
+    table: &FaceTable,
+) -> Result<(SolverRules, Vec<f64>, Vec<(usize, Vec<usize>)>), String> {
+    // Each cell as exported: the faces between two cells merged into one
+    // polygon (the hand-off and FoehnCraft allow one face per pair).
+    struct Part {
+        bad: Vec<bool>,
+        volumes: Vec<f64>,
+        centres: Vec<Vec3>,
+        counts: [usize; 3],
+        warping: f64,
+        // (owner, neighbour, owner's area vector) once per pair
+        shared: Vec<(usize, usize, Vec3)>,
+        boundary: Vec<(usize, Vec3, Vec3)>,
     }
-    for (owner, area, c) in boundary {
-        check(&[owner], c - centres[owner], area);
+    let parts = chunked(cells.len(), CHECK_CHUNK, |range| {
+        let mut part = Part {
+            bad: Vec::with_capacity(range.len()),
+            volumes: Vec::with_capacity(range.len()),
+            centres: Vec::with_capacity(range.len()),
+            counts: [0; 3],
+            warping: 0.0,
+            shared: Vec::new(),
+            boundary: Vec::new(),
+        };
+        let mut cell = Exported::default();
+        for id in range {
+            let verdict = cell.evaluate(p, table, id, &cells[id].element);
+            part.warping = part.warping.max(verdict.warping);
+            part.counts[0] += usize::from(verdict.open);
+            part.counts[1] += usize::from(verdict.nonpositive());
+            part.counts[2] += usize::from(!verdict.pyramids_ok);
+            part.bad.push(verdict.bad());
+            part.volumes.push(verdict.volume);
+            part.centres.push(verdict.centre);
+            for (n, &(area, c)) in cell.across.iter().zip(&cell.geometry) {
+                match *n {
+                    Some(other) if other > id => part.shared.push((id, other, area)),
+                    Some(_) => {}
+                    None => part.boundary.push((id, area, c)),
+                }
+            }
+        }
+        part
+    })?;
+    let mut out = SolverRules {
+        cells: cells.len(),
+        ..SolverRules::default()
+    };
+    let mut bad = Vec::with_capacity(cells.len());
+    let mut volumes = Vec::with_capacity(cells.len());
+    let mut centres = Vec::with_capacity(cells.len());
+    for part in &parts {
+        out.maximum_warping = out.maximum_warping.max(part.warping);
+        out.open_cells += part.counts[0];
+        out.nonpositive_volume += part.counts[1];
+        out.negative_pyramids += part.counts[2];
+        bad.extend_from_slice(&part.bad);
+        volumes.extend_from_slice(&part.volumes);
+        centres.extend_from_slice(&part.centres);
     }
-    out.maximum_non_orthogonality = worst;
+    let centres = &centres;
+    let turned_parts = chunked(parts.len(), 1, |range| {
+        let mut worst = 0.0_f64;
+        let mut turned = Vec::new();
+        for part in &parts[range] {
+            for &(owner, neighbour, area) in &part.shared {
+                let (degrees, back) = non_orthogonality(centres[neighbour] - centres[owner], area);
+                worst = worst.max(degrees);
+                if back {
+                    turned.extend([owner, neighbour]);
+                }
+            }
+            for &(owner, area, c) in &part.boundary {
+                let (degrees, back) = non_orthogonality(c - centres[owner], area);
+                worst = worst.max(degrees);
+                if back {
+                    turned.push(owner);
+                }
+            }
+        }
+        (worst, turned)
+    })?;
+    let mut turned = vec![false; cells.len()];
+    for (worst, ids) in turned_parts {
+        out.maximum_non_orthogonality = out.maximum_non_orthogonality.max(worst);
+        for id in ids {
+            turned[id] = true;
+        }
+    }
     out.faces_turned_away = turned.iter().filter(|&&t| t).count();
     let mut failing = Vec::new();
+    let mut buffer = Rings::default();
     for (id, ((b, t), cell)) in bad.iter().zip(&turned).zip(cells).enumerate() {
         if *b || *t {
             out.failing_cells += 1;
             out.failing_layer_cells += usize::from(cell.layer > 0);
-            let mut neighbours: Vec<usize> = all_rings[id]
-                .iter()
-                .flat_map(|r| users[&key(r)].iter().copied())
-                .filter(|&c| c != id)
-                .collect();
-            neighbours.sort_unstable();
-            neighbours.dedup();
-            failing.push((id, neighbours));
+            failing.push((id, table.neighbours(id, &cell.element, &mut buffer)));
         }
     }
-    (out, volumes, failing)
+    Ok((out, volumes, failing))
 }
 
-/// The cells that fail the solver rules on the mesh as exported, each with
-/// the cells it shares a face with.
-pub(super) fn exported_failures(p: &[Vec3], cells: &[Cell]) -> Vec<(usize, Vec<usize>)> {
-    solver_rules_and_volumes(p, cells).2
+/// A merged face: the cell across (none on the boundary), area vector and
+/// centre.
+type MergedFace = (Option<usize>, Vec3, Vec3);
+
+/// The solver rules on the mesh as exported, kept up to date while cells
+/// are split: after a change only the cells whose verdict can change are
+/// checked again (those within two face neighbours of a changed cell), with
+/// the same verdicts as a check of the whole mesh.
+pub(super) struct ExportedCheck {
+    table: FaceTable,
+    /// The failing cells, each with the cells it shares a face with.
+    failing: BTreeMap<usize, Vec<usize>>,
+    /// Cells whose faces changed, and the cells that share those faces.
+    touched: BTreeSet<usize>,
+}
+
+impl ExportedCheck {
+    pub(super) fn new(p: &[Vec3], cells: &[Cell]) -> Result<Self, String> {
+        let table = FaceTable::new(cells)?;
+        let (_, _, failing) = solver_rules_on(p, cells, &table)?;
+        Ok(Self {
+            table,
+            failing: failing.into_iter().collect(),
+            touched: BTreeSet::new(),
+        })
+    }
+
+    pub(super) fn failing(&self) -> &BTreeMap<usize, Vec<usize>> {
+        &self.failing
+    }
+
+    /// Call with the old element before cell `id` changes.
+    pub(super) fn remove(&mut self, id: usize, element: &Element) {
+        let others = self.table.update(id, element, false);
+        self.touched.insert(id);
+        self.touched.extend(others);
+    }
+
+    /// Call with the new element after cell `id` changed or was added.
+    pub(super) fn insert(&mut self, id: usize, element: &Element) {
+        let others = self.table.update(id, element, true);
+        self.touched.insert(id);
+        self.touched.extend(others);
+    }
+
+    /// Checks again every cell whose verdict the changes since the last call
+    /// can have changed.
+    pub(super) fn recheck(&mut self, p: &[Vec3], cells: &[Cell]) {
+        let mut buffer = Rings::default();
+        let touched = std::mem::take(&mut self.touched);
+        let mut dirty = touched.clone();
+        for &s in &touched {
+            dirty.extend(self.table.neighbours(s, &cells[s].element, &mut buffer));
+        }
+        let mut cache: HashMap<usize, (Verdict, Vec<MergedFace>)> = HashMap::new();
+        let mut exported = Exported::default();
+        let table = &self.table;
+        let mut verdict = |id: usize| {
+            cache.entry(id).or_insert_with(|| {
+                let v = exported.evaluate(p, table, id, &cells[id].element);
+                let faces = exported
+                    .across
+                    .iter()
+                    .zip(&exported.geometry)
+                    .map(|(&n, &(area, c))| (n, area, c))
+                    .collect();
+                (v, faces)
+            });
+        };
+        for &x in &dirty {
+            verdict(x);
+            for y in table.neighbours(x, &cells[x].element, &mut buffer) {
+                verdict(y);
+            }
+        }
+        for &x in &dirty {
+            let (own, faces) = &cache[&x];
+            let mut fails = own.bad();
+            for &(n, area, c) in faces {
+                fails |= match n {
+                    None => non_orthogonality(c - own.centre, area).1,
+                    Some(y) if y > x => non_orthogonality(cache[&y].0.centre - own.centre, area).1,
+                    Some(_) => false,
+                };
+            }
+            // faces whose owner is a neighbour with a lower id
+            for y in table.neighbours(x, &cells[x].element, &mut buffer) {
+                if y < x {
+                    let (theirs, their_faces) = &cache[&y];
+                    fails |= their_faces.iter().any(|&(n, area, _)| {
+                        n == Some(x) && non_orthogonality(own.centre - theirs.centre, area).1
+                    });
+                }
+            }
+            if fails {
+                let neighbours = table.neighbours(x, &cells[x].element, &mut buffer);
+                self.failing.insert(x, neighbours);
+            } else {
+                self.failing.remove(&x);
+            }
+        }
+    }
 }
 
 fn det(a: Vec3, b: Vec3, c: Vec3) -> f64 {
@@ -367,11 +910,6 @@ pub(super) fn wedge(p: [Vec3; 6]) -> (f64, f64, [f64; 2]) {
     (minimum, volume, thickness)
 }
 
-fn key(ring: &[usize]) -> Vec<usize> {
-    let mut k = ring.to_vec();
-    k.sort_unstable();
-    k
-}
 fn same_ring(a: &[usize], b: &[usize], reverse: bool) -> bool {
     let n = a.len();
     b.len() == n
@@ -546,7 +1084,7 @@ pub(super) fn check_with_interface_count(
     layers: usize,
     expected_interfaces: usize,
 ) -> Result<Measurements, String> {
-    let (solver_rules, solver_volumes, _) = solver_rules_and_volumes(p, cells);
+    let (solver_rules, solver_volumes, _) = solver_rules_and_volumes(p, cells)?;
     if crate::trace_enabled() {
         eprintln!(
             "kofl trace: solver rules: {} of {} cells fail ({} in layers; open {}, volume {}, pyramids {}, turned away {}), max non-orthogonality {:.2}°",
@@ -578,12 +1116,12 @@ pub(super) fn check_with_interface_count(
             solver_rules.faces_turned_away
         ));
     }
-    let mut exterior = HashMap::new();
+    let mut exterior: KeyMap<&BoundaryFace> = KeyMap::default();
     let ids = patches.iter().copied().max().unwrap_or(0).max(super::WALL);
     let mut areas = vec![0.; ids];
     let mut port_layer_areas = [vec![0.; layers + 1], vec![0.; layers + 1]];
     for face in boundary {
-        if exterior.insert(key(&face.nodes), face).is_some() {
+        if exterior.insert(FaceKey::new(&face.nodes), face).is_some() {
             return Err("duplicate outer boundary face".into());
         }
         let area = boundary_area(p, &face.nodes);
@@ -610,9 +1148,12 @@ pub(super) fn check_with_interface_count(
             ));
         }
     }
-    let mut pending = HashMap::<Vec<usize>, (Vec<usize>, usize)>::new();
+    // (cell, face index, layer) of a face met once so far
+    let mut pending: KeyMap<(usize, usize, usize)> = KeyMap::default();
     let mut prism_core_faces = 0;
-    let mut complete = std::collections::HashSet::new();
+    let mut complete: std::collections::HashSet<FaceKey, std::hash::BuildHasherDefault<KeyHasher>> =
+        std::collections::HashSet::default();
+    let (mut rings, mut earlier) = (Rings::default(), Rings::default());
     let mut minimum_volume = f64::INFINITY;
     let mut minimum_j = f64::INFINITY;
     let mut minimum_kernel_clearance = f64::INFINITY;
@@ -667,26 +1208,28 @@ pub(super) fn check_with_interface_count(
         }
         volume += value;
         minimum_volume = minimum_volume.min(value);
-        for ring in cell.element.faces() {
-            let k = key(&ring);
+        rings.load(&cell.element);
+        for (index, ring) in rings.iter().enumerate() {
+            let k = FaceKey::new(ring);
             if complete.contains(&k) {
                 return Err("too many incidences on one face".into());
             }
             if let Some(face) = exterior.remove(&k) {
                 complete.insert(k);
-                if id != face.owner || !same_ring(&face.nodes, &ring, false) {
+                if id != face.owner || !same_ring(&face.nodes, ring, false) {
                     return Err("incorrect boundary owner or winding".into());
                 }
-            } else if let Some((previous, other_layer)) = pending.remove(&k) {
+            } else if let Some((previous, at, other_layer)) = pending.remove(&k) {
                 if (other_layer == 0) != (cell.layer == 0) {
                     prism_core_faces += 1;
                 }
                 complete.insert(k);
-                if !same_ring(&previous, &ring, true) {
+                earlier.load(&cells[previous].element);
+                if !same_ring(earlier.get(at), ring, true) {
                     return Err("interior face has inconsistent winding".into());
                 }
             } else {
-                pending.insert(k, (ring, cell.layer));
+                pending.insert(k, (id, index, cell.layer));
             }
         }
     }
@@ -876,5 +1419,122 @@ mod tests {
         // square of 16 without the triangle (4,4) (2,1) (0,4) of area 6
         let area = boundary_area(&points, &[0, 1, 2, 3, 4]);
         assert!((area - 10.0).abs() < 1e-12);
+    }
+
+    /// Eight tetrahedra around the centre of an octahedron, all positive.
+    fn octahedron() -> (Vec<Vec3>, Vec<Cell>) {
+        let p = vec![
+            Vec3::new(0., 0., 0.),
+            Vec3::new(1., 0., 0.),
+            Vec3::new(-1., 0., 0.),
+            Vec3::new(0., 1., 0.),
+            Vec3::new(0., -1., 0.),
+            Vec3::new(0., 0., 1.),
+            Vec3::new(0., 0., -1.),
+        ];
+        let mut cells = Vec::new();
+        for x in [1, 2] {
+            for y in [3, 4] {
+                for z in [5, 6] {
+                    let mut t = [0, x, y, z];
+                    let [o, a, b, c] = t.map(|i| p[i]);
+                    if (a - o).cross(b - o).dot(c - o) < 0.0 {
+                        t.swap(2, 3);
+                    }
+                    cells.push(cell(Element::Tet(t)));
+                }
+            }
+        }
+        (p, cells)
+    }
+
+    /// Invariant: the faces the checks read are the faces of the element,
+    /// in the same order (the order decides the fan origin of the volume).
+    /// Reordering a wedge's faces in `Rings::load` breaks this; the mesh
+    /// tests would only see slightly different volumes.
+    #[test]
+    fn flat_rings_are_the_element_faces() {
+        let poly = Polyhedron::new(vec![vec![0, 1, 2], vec![2, 1, 3, 4]], Vec3::ZERO, None, 1.0);
+        let mut rings = Rings::default();
+        for element in [
+            Element::Tet([3, 1, 4, 1]),
+            Element::Wedge([5, 9, 2, 6, 5, 3]),
+            Element::Polyhedron(Box::new(poly)),
+        ] {
+            rings.load(&element);
+            let flat: Vec<Vec<usize>> = rings.iter().map(<[usize]>::to_vec).collect();
+            assert_eq!(flat, element.faces());
+        }
+    }
+
+    /// Invariant: two faces that share an edge merge into one ring starting
+    /// at the smallest vertex, and faces that do not form one loop do not
+    /// merge. A merge that kept a shared edge, or started elsewhere, would
+    /// change the exported faces; the duct tests see that only as changed
+    /// cell counts.
+    #[test]
+    fn rings_merge_into_one_loop() {
+        let a = vec![4, 5, 6, 7];
+        let b = vec![7, 6, 8, 9];
+        assert_eq!(merge_rings(&[&a, &b]), Some(vec![4, 5, 6, 8, 9, 7]));
+        let apart = vec![10, 11, 12];
+        assert_eq!(merge_rings(&[&a, &apart]), None);
+    }
+
+    /// Invariant: after cells change, the local re-check reports exactly the
+    /// failing cells (and their neighbours) of a check of the whole mesh.
+    /// Re-checking only the changed cells, not the cells within two face
+    /// neighbours, breaks this: a neighbour whose merged face or centre
+    /// moved keeps its old verdict. The duct builds would show it only as a
+    /// slightly different cell count, or a final check that fails.
+    #[test]
+    fn local_recheck_matches_the_whole_mesh() {
+        let (mut p, mut cells) = octahedron();
+        let mut check = ExportedCheck::new(&p, &cells).expect("check");
+        let whole = |p: &[Vec3], cells: &[Cell]| -> Vec<(usize, Vec<usize>)> {
+            solver_rules_and_volumes(p, cells).expect("check").2
+        };
+        let local = |check: &ExportedCheck| -> Vec<(usize, Vec<usize>)> {
+            check
+                .failing()
+                .iter()
+                .map(|(&k, v)| (k, v.clone()))
+                .collect()
+        };
+        assert_eq!(local(&check), whole(&p, &cells));
+        assert!(local(&check).is_empty());
+        // turn one tetrahedron inside out
+        let Element::Tet([o, a, b, c]) = cells[3].element else {
+            panic!("tetrahedron expected");
+        };
+        check.remove(3, &cells[3].element);
+        cells[3].element = Element::Tet([o, b, a, c]);
+        check.insert(3, &cells[3].element);
+        check.recheck(&p, &cells);
+        assert!(!local(&check).is_empty());
+        assert_eq!(local(&check), whole(&p, &cells));
+        // split another at an edge midpoint: a new cell, faces that no
+        // longer match their neighbours
+        let Element::Tet([o, a, b, c]) = cells[5].element else {
+            panic!("tetrahedron expected");
+        };
+        p.push((p[o] + p[a]) * 0.5);
+        let m = p.len() - 1;
+        check.remove(5, &cells[5].element);
+        cells[5].element = Element::Tet([o, m, b, c]);
+        check.insert(5, &cells[5].element);
+        cells.push(cell(Element::Tet([m, a, b, c])));
+        check.insert(cells.len() - 1, &cells[cells.len() - 1].element);
+        check.recheck(&p, &cells);
+        assert_eq!(local(&check), whole(&p, &cells));
+        // and back: the inverted cell restored
+        check.remove(3, &cells[3].element);
+        let Element::Tet(restored) = octahedron().1[3].element else {
+            panic!("tetrahedron expected");
+        };
+        cells[3].element = Element::Tet(restored);
+        check.insert(3, &cells[3].element);
+        check.recheck(&p, &cells);
+        assert_eq!(local(&check), whole(&p, &cells));
     }
 }
