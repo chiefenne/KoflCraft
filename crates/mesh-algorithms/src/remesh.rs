@@ -32,6 +32,10 @@ use crate::sizing::surface::{
 use mesh_core::geometry::Vec3;
 use mesh_geometry::patches::closest_point;
 
+/// Turn (degrees) of a source feature line below which its vertex is still
+/// kept as a corner: the chords of a tube's polygonal rim.
+const RIM_TURN: f64 = 5.0;
+
 /// The settings of a wall remesh.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RemeshOptions {
@@ -985,7 +989,15 @@ pub fn remesh_grouped(
             let (d0, d1) = (unit(w.p[lines[0]] - w.p[v]), unit(w.p[v] - w.p[lines[1]]));
             d0.dot(d1) < (45f64).to_radians().cos()
         };
-        if (!lines.is_empty() && lines.len() != 2) || turn {
+        // Every vertex of a source feature line is kept: a tube's polygonal
+        // rim turns by a few degrees per vertex, and collapsing those
+        // vertices lets one rim chord cut across the hole (its midpoint
+        // then lies off the source by far more than the chord tolerance).
+        let polygon = lines.len() == 2 && {
+            let (d0, d1) = (unit(w.p[lines[0]] - w.p[v]), unit(w.p[v] - w.p[lines[1]]));
+            d0.dot(d1) < (RIM_TURN).to_radians().cos()
+        };
+        if (!lines.is_empty() && lines.len() != 2) || turn || polygon {
             w.corner[v] = true;
         }
     }

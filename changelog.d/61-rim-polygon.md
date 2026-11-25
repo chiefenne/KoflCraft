@@ -1,0 +1,1 @@
+- **Rim vertices of a tube keep its polygon**: every vertex of a source feature line is now kept as a corner of the wall remesh, so the rim of a tube (or any polygonal opening) follows the STL's segments and no long chord cuts across the hole. On the furnace the layer rings at the side walls sat up to 4.5 mm inside the tube circle; they now stay on the polygon.
