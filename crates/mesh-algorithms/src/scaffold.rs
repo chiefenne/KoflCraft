@@ -9,8 +9,10 @@
 //!    approach of Murphy, Mount & Gable 2001 and Cohen-Steiner, Colin de
 //!    Verdière & Yvinec 2002, restricted to midpoints). The split points lie
 //!    on the surface triangles, so the wall shape does not change.
-//! 3. Tetrahedra reachable from the bounding box without crossing a surface
-//!    triangle are outside and dropped.
+//! 3. Tetrahedra reachable from the bounding box without crossing a wall
+//!    triangle are outside and dropped. Zero-thickness shell triangles
+//!    (SHL-01) are recovered like the wall but do not stop this flood: the
+//!    fluid lies on both sides of them.
 //! 4. Delaunay refinement of the interior (Shewchuk 1998, *Tetrahedral Mesh
 //!    Generation by Delaunay Refinement*): the circumcentre of an interior
 //!    tetrahedron that is larger than the size field, or whose
@@ -143,7 +145,43 @@ pub fn build_graded(
     opts: ScaffoldOptions,
     field: Option<&SizeField>,
 ) -> Result<(Scaffold, ScaffoldStats), String> {
-    if triangles.len() != tags.len() || triangles.iter().flatten().any(|&v| v >= vertices.len()) {
+    build_with_shells(vertices, triangles, tags, &[], opts, field, None)
+}
+
+/// [`build_graded`] with a hole: tetrahedra whose centroid `hole` claims
+/// are dropped before refinement (the cubes of a hex core, whose shell is
+/// part of `triangles`, see [`crate::hexcore`]).
+pub fn build_with_hole(
+    vertices: &[Vec3],
+    triangles: &[[usize; 3]],
+    tags: &[usize],
+    opts: ScaffoldOptions,
+    field: Option<&SizeField>,
+    hole: Option<&dyn Fn(Vec3) -> bool>,
+) -> Result<(Scaffold, ScaffoldStats), String> {
+    build_with_shells(vertices, triangles, tags, &[], opts, field, hole)
+}
+
+/// [`build_with_hole`] with zero-thickness shell triangles inside the
+/// domain (each with its shell index; ids into `vertices`, sharing the wall
+/// vertices where a shell meets the wall). They are recovered as faces of
+/// the tetrahedralization and kept by the refinement, but bound no region,
+/// and are returned in `Scaffold::shells` with their orientation.
+pub fn build_with_shells(
+    vertices: &[Vec3],
+    triangles: &[[usize; 3]],
+    tags: &[usize],
+    shells: &[([usize; 3], usize)],
+    opts: ScaffoldOptions,
+    field: Option<&SizeField>,
+    hole: Option<&dyn Fn(Vec3) -> bool>,
+) -> Result<(Scaffold, ScaffoldStats), String> {
+    if triangles.len() != tags.len()
+        || triangles.iter().flatten().any(|&v| v >= vertices.len())
+        || shells
+            .iter()
+            .any(|(t, _)| t.iter().any(|&v| v >= vertices.len()))
+    {
         return Err("invalid scaffold surface".into());
     }
     if !(opts.max_size > 0.0
@@ -173,10 +211,12 @@ pub fn build_graded(
         surface_points: vertices.len(),
         ..Default::default()
     };
-    let mut surface: Vec<([usize; 3], usize)> = triangles
+    // (triangle, tag or shell index, whether it is a shell triangle)
+    let mut surface: Vec<([usize; 3], usize, bool)> = triangles
         .iter()
         .zip(tags)
-        .map(|(t, &g)| (t.map(|v| id[v]), g))
+        .map(|(t, &g)| (t.map(|v| id[v]), g, false))
+        .chain(shells.iter().map(|(t, s)| (t.map(|v| id[v]), *s, true)))
         .collect();
     // 2. boundary recovery
     let input: HashSet<usize> = id.iter().copied().collect();
@@ -186,7 +226,7 @@ pub fn build_graded(
         let edges = dt.edge_set();
         let faces = dt.face_set();
         let mut split: HashSet<(usize, usize)> = HashSet::default();
-        for (t, _) in &surface {
+        for (t, _, _) in &surface {
             let mut missing_edge = false;
             for k in 0..3 {
                 let (a, b) = (t[k], t[(k + 1) % 3]);
@@ -238,20 +278,20 @@ pub fn build_graded(
         }
         // split the surface triangles along the split edges
         let mut next = Vec::with_capacity(surface.len());
-        let mut queue: Vec<([usize; 3], usize)> = surface;
-        while let Some((t, g)) = queue.pop() {
+        let mut queue: Vec<([usize; 3], usize, bool)> = surface;
+        while let Some((t, g, s)) = queue.pop() {
             let hit = (0..3).find(|&k| {
                 let (a, b) = (t[k], t[(k + 1) % 3]);
                 midpoint.contains_key(&(a.min(b), a.max(b)))
             });
             match hit {
-                None if t[0] != t[1] && t[1] != t[2] && t[2] != t[0] => next.push((t, g)),
+                None if t[0] != t[1] && t[1] != t[2] && t[2] != t[0] => next.push((t, g, s)),
                 None => {}
                 Some(k) => {
                     let (a, b, c) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
                     let m = midpoint[&(a.min(b), a.max(b))];
-                    queue.push(([a, m, c], g));
-                    queue.push(([m, b, c], g));
+                    queue.push(([a, m, c], g, s));
+                    queue.push(([m, b, c], g, s));
                 }
             }
         }
@@ -260,13 +300,28 @@ pub fn build_graded(
     if !recovered {
         return Err("boundary recovery did not converge".into());
     }
-    dt.constrained = surface.iter().map(|(t, _)| sorted(*t)).collect();
-    // 3. inside / outside
-    let mut inside = classify(&dt);
+    dt.constrained = surface.iter().map(|(t, _, _)| sorted(*t)).collect();
+    // 3. inside / outside: only the wall bounds the domain
+    let barrier: HashSet<[usize; 3]> = surface
+        .iter()
+        .filter(|(_, _, s)| !s)
+        .map(|(t, _, _)| sorted(*t))
+        .collect();
+    let mut inside = classify(&dt, &barrier);
+    if let Some(hole) = hole {
+        for t in 0..dt.tets.len() {
+            if inside[t] {
+                let p = dt.tets[t].map(|v| dt.points[v]);
+                if hole((p[0] + p[1] + p[2] + p[3]) / 4.0) {
+                    inside[t] = false;
+                }
+            }
+        }
+    }
     // 4. refinement
     let size_items: Vec<Weighted> = surface
         .iter()
-        .map(|(t, _)| {
+        .map(|(t, _, _)| {
             let p = t.map(|v| dt.points[v]);
             let l =
                 ((p[0] - p[1]).length() + (p[1] - p[2]).length() + (p[2] - p[0]).length()) / 3.0;
@@ -281,7 +336,7 @@ pub fn build_graded(
     let wall = ClosestSet::new(
         surface
             .iter()
-            .map(|(t, _)| Primitive::Triangle(t.map(|v| dt.points[v])))
+            .map(|(t, _, _)| Primitive::Triangle(t.map(|v| dt.points[v])))
             .collect(),
     );
     let h = |x: Vec3| {
@@ -355,10 +410,10 @@ pub fn build_graded(
     // two wall facets and the other diagonal) is removed by a point just
     // inside the wall behind it; an interior one by its circumcentre or a
     // random point near it (the perturbation of Li & Teng 2001).
-    let on_wall: HashSet<usize> = surface.iter().flat_map(|(t, _)| *t).collect();
+    let on_wall: HashSet<usize> = surface.iter().flat_map(|(t, _, _)| *t).collect();
     let surface_edges: HashSet<(usize, usize)> = surface
         .iter()
-        .flat_map(|(t, _)| {
+        .flat_map(|(t, _, _)| {
             (0..3).map(move |k| (t[k].min(t[(k + 1) % 3]), t[k].max(t[(k + 1) % 3])))
         })
         .collect();
@@ -470,10 +525,16 @@ pub fn build_graded(
             tetrahedra.push(tet.map(|v| use_point(v, &mut points)));
         }
     }
-    let boundary: Vec<([usize; 3], usize)> = surface
-        .iter()
-        .map(|(t, g)| (t.map(|v| use_point(v, &mut points)), *g))
-        .collect();
+    let mut boundary: Vec<([usize; 3], usize)> = Vec::new();
+    let mut shell_out: Vec<([usize; 3], usize)> = Vec::new();
+    for (t, g, s) in &surface {
+        let t = t.map(|v| use_point(v, &mut points));
+        if *s {
+            shell_out.push((t, *g));
+        } else {
+            boundary.push((t, *g));
+        }
+    }
     stats.tetrahedra = tetrahedra.len();
     stats.volume = volume;
     Ok((
@@ -481,6 +542,9 @@ pub fn build_graded(
             points,
             boundary,
             tetrahedra,
+            shells: shell_out,
+            twins: Vec::new(),
+            shell_sides: Vec::new(),
         },
         stats,
     ))
@@ -561,8 +625,8 @@ pub fn quality(p: [Vec3; 4]) -> f64 {
 }
 
 /// Interior flags: tetrahedra not reachable from a bounding-box corner
-/// without crossing a constrained face.
-fn classify(dt: &Delaunay) -> Vec<bool> {
+/// without crossing a face of `barrier`.
+fn classify(dt: &Delaunay, barrier: &HashSet<[usize; 3]>) -> Vec<bool> {
     let mut outside = vec![false; dt.tets.len()];
     let mut stack: Vec<usize> = (0..dt.tets.len())
         .filter(|&t| dt.alive[t] && dt.tets[t].iter().any(|&v| v < dt.corners))
@@ -577,7 +641,7 @@ fn classify(dt: &Delaunay) -> Vec<bool> {
                 continue;
             }
             let face = sorted(FACES[i].map(|k| dt.tets[t][k]));
-            if dt.constrained.contains(&face) {
+            if barrier.contains(&face) {
                 continue;
             }
             outside[n] = true;

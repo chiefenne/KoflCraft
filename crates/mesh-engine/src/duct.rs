@@ -6,8 +6,9 @@ use crate::{
     artifact::{digest, require_schema, sha256, vector},
 };
 use mesh_algorithms::duct::{self, Region};
+use mesh_algorithms::hexcore::{self, HexCore};
 use mesh_algorithms::sizing::surface::SurfaceGeometry;
-use mesh_algorithms::{remesh, scaffold as scaffold_build};
+use mesh_algorithms::{remesh, scaffold as scaffold_build, shell_surface};
 use mesh_geometry::{StlOptions, import_closed_stl};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -34,6 +35,21 @@ pub struct Partition {
     /// own layers straight through down to them, with no mitre.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layers_yield: Vec<String>,
+    /// Zero-thickness shells inside the fluid (baffles, plates, fins), cut
+    /// into the finished mesh as walls with two sides.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shells: Vec<ShellConfig>,
+}
+
+/// A planar zero-thickness shell: a convex polygon, its corners
+/// counter-clockwise about the side named `name` (the other side is
+/// `<name>_back`). A shell that should span the duct may reach past the
+/// wall; the part outside the fluid is ignored.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ShellConfig {
+    pub name: String,
+    pub polygon: Vec<[f64; 3]>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -61,6 +77,9 @@ pub struct ScaffoldConfig {
     /// How the wall layers meet the Voronoi core.
     #[serde(default, skip_serializing_if = "WallJoinKind::is_default")]
     pub wall_join: WallJoinKind,
+    /// Settings of the hex core.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hex_core: Option<HexCoreConfig>,
 }
 
 /// How the wall layers meet the Voronoi core.
@@ -182,6 +201,22 @@ pub enum CoreKind {
     /// a tet mesh is in production polyhedral meshers.
     #[default]
     MedianDual,
+    /// Octree cubes in the bulk, the median dual between them and the wall
+    /// layers ("hex core with layers", prototype; research/hex-core.md).
+    /// Needs a built scaffold.
+    HexCore,
+}
+
+/// Settings of the hex core (`"core": "hex_core"`).
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct HexCoreConfig {
+    /// Cube edge over the local scaffold spacing (default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_factor: Option<f64>,
+    /// Gap between the layer stack and the cubes, in cube edges (default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub margin: Option<f64>,
 }
 
 impl CoreKind {
@@ -318,7 +353,33 @@ pub fn generate(
         }
         stage = Instant::now();
     };
-    let (surface, patches, names) = prepare(data, patch_map, plan)?;
+    let (surface, patches, mut names) = prepare(data, patch_map, plan)?;
+    // the STL's own patches; shells built into the scaffold follow them
+    let stl_patches = names.len();
+    let scaffold_shells = !plan.shells.is_empty()
+        && matches!(mode, Mode::Polyhedral)
+        && scaffold_data.is_none()
+        && plan
+            .volume_scaffold
+            .as_ref()
+            .is_some_and(|s| s.build.is_some() && matches!(s.core, CoreKind::MedianDual));
+    if scaffold_shells {
+        if !plan.layers_yield.is_empty() {
+            return Err(invalid(
+                "shells and layers_yield in one build are not supported yet",
+            ));
+        }
+        for s in &plan.shells {
+            for name in [s.name.clone(), format!("{}_back", s.name)] {
+                if name.is_empty() || names.iter().any(|(n, _)| *n == name) {
+                    return Err(invalid(&format!(
+                        "shell patch name {name:?} is empty or already used"
+                    )));
+                }
+                names.push((name, "wall".to_string()));
+            }
+        }
+    }
     let source_digest = sha256(data);
     let mut steps = Vec::new();
     if matches!(mode, Mode::Layered | Mode::Polyhedral) {
@@ -408,6 +469,11 @@ pub fn generate(
     let validated = |e: String| EngineError::new(ErrorCode::ValidationFailed, e);
     let mut scaffold_volume = None;
     let mut scaffold_report: Option<Value> = None;
+    let mut shell_report: Vec<(
+        ShellConfig,
+        shell_surface::ShellSurfaceStats,
+        duct::CrackStats,
+    )> = Vec::new();
     let mut grading_field = None;
     let mut voronoi: Option<duct::VoronoiStats> = None;
     let mut source_areas = vec![0.; names.len()];
@@ -420,10 +486,34 @@ pub fn generate(
         if !limit.is_finite() || !(0.0..1.0).contains(&limit) {
             return Err(invalid("invalid scaffold geometry error limit"));
         }
-        let (input, built) = load_scaffold(&surface, &patches, spec, scaffold_data)?;
+        let shell_configs: &[ShellConfig] = if scaffold_shells { &plan.shells } else { &[] };
+        let (input, built, hex, shell_surfaces) = load_scaffold(
+            &surface,
+            &patches,
+            spec,
+            scaffold_data,
+            steps.iter().sum(),
+            shell_configs,
+        )?;
         lap("scaffold");
         let deviation = wall_deviation(&surface, &patches, &input);
         lap("wall deviation");
+        // the shells' two sides become boundary faces (patches without
+        // layers: the wall layers run into a shell as into a no_layers wall)
+        let sides: Vec<(usize, usize)> = (0..shell_surfaces.len())
+            .map(|k| {
+                (
+                    stl_patches + 1 + 2 * k + duct::SLIP,
+                    stl_patches + 2 + 2 * k + duct::SLIP,
+                )
+            })
+            .collect();
+        let (input, crack) = duct::crack_shells(input, &sides).map_err(validated)?;
+        shell_report = shell_surfaces
+            .iter()
+            .enumerate()
+            .map(|(k, st)| (plan.shells[k].clone(), *st, crack))
+            .collect();
         if let Some(max) = spec.max_wall_deviation {
             if !max.is_finite() || max <= 0.0 {
                 return Err(invalid("invalid wall deviation limit"));
@@ -447,6 +537,12 @@ pub fn generate(
         let retry_input = input.clone();
         let (mesh, shell) = match spec.core {
             CoreKind::MedianDual => duct::build_volume_dual(input, &steps).map_err(validated)?,
+            CoreKind::HexCore => {
+                let core = hex
+                    .as_ref()
+                    .ok_or_else(|| invalid("the hex core needs a built scaffold"))?;
+                duct::build_volume_dual_hex(input, &steps, core).map_err(validated)?
+            }
             CoreKind::Voronoi => {
                 let lloyd_iterations = spec
                     .lloyd_iterations
@@ -492,15 +588,26 @@ pub fn generate(
         let mut mesh = mesh;
         unmark_slip(&mut mesh, names.len());
         scaffold_volume = Some(shell.volume());
-        if (shell.volume() / surface.volume() - 1.).abs() > limit
-            || source_areas
-                .iter()
-                .zip(&mesh.measurements.areas)
-                .any(|(&a, &b)| a > 0. && (b / a - 1.).abs() > limit)
+        let volume_error = shell.volume() / surface.volume() - 1.;
+        if volume_error.abs() > limit {
+            return Err(invalid(&format!(
+                "remeshed volume differs from the STL by {:.3}% (limit {:.3}%); a smaller build tolerance or a larger max_relative_geometry_error helps",
+                100. * volume_error,
+                100. * limit
+            )));
+        }
+        if let Some((i, (a, b))) = source_areas
+            .iter()
+            .zip(&mesh.measurements.areas)
+            .enumerate()
+            .find(|&(_, (&a, &b))| a > 0. && (b / a - 1.).abs() > limit)
         {
-            return Err(invalid(
-                "remeshed volume or patch areas exceed configured STL error limit",
-            ));
+            return Err(invalid(&format!(
+                "remeshed area of patch {:?} differs from the STL by {:.3}% (limit {:.3}%); a smaller build tolerance or a larger max_relative_geometry_error helps",
+                names[i].0,
+                100. * (b / a - 1.),
+                100. * limit
+            )));
         }
         for tag in 1..duct::WALL {
             let Some((f, _)) = surface
@@ -564,6 +671,12 @@ pub fn generate(
     let mut mesh = mesh;
     mesh.patches = names.clone();
     unmark_slip(&mut mesh, names.len());
+    let shells = if scaffold_shells {
+        scaffold_shell_report(&mesh, stl_patches, &shell_report)
+    } else {
+        // the exact cut of the finished cells (convex cores)
+        imprint_shells(&mut mesh, &plan.shells)?
+    };
     let unlayered: Vec<usize> = patches
         .iter()
         .filter(|&&p| duct::is_slip(p))
@@ -577,15 +690,16 @@ pub fn generate(
         source_areas[duct::patch_index(tag) - 1] += f.normalized_area * scale * scale;
     }
     let m = &mesh.measurements;
-    let walls_of = |a: &[f64]| a.iter().skip(duct::WALL - 1).sum::<f64>();
+    // the walls of the STL; shells are reported on their own
+    let walls_of = |a: &[f64]| a.iter().take(stl_patches).skip(duct::WALL - 1).sum::<f64>();
     let patch_list: Vec<Value> = names
         .iter()
         .enumerate()
-        .filter(|&(i, _)| source_areas[i] > 0.)
+        .filter(|&(i, _)| source_areas.get(i).is_some_and(|&a| a > 0.) || i >= stl_patches)
         .map(|(i, (name, role))| {
             json!({"id": i + 1, "name": name, "role": role,
-                   "layered": duct::is_wall(i + 1) && !unlayered.contains(&(i + 1)),
-                   "stl_area": source_areas[i], "area": m.areas.get(i).copied().unwrap_or(0.)})
+                   "layered": duct::is_wall(i + 1) && !unlayered.contains(&(i + 1)) && i < stl_patches,
+                   "stl_area": source_areas.get(i).copied().unwrap_or(0.), "area": m.areas.get(i).copied().unwrap_or(0.)})
         })
         .collect();
     let mut tetrahedra = 0;
@@ -609,7 +723,8 @@ pub fn generate(
     let report = json!({
         "schema_version": 1,
         "grading": grading,
-        "algorithm": if voronoi.is_some() {"volume_clipped_voronoi_cvt_v1"} else if scaffold_volume.is_some() {"volume_median_dual_v2"} else if polyhedra > 0 {"stl_partitioned_dual_v1"} else {"stl_partitioned_star_v1"},
+        "shells": shells,
+        "algorithm": if voronoi.is_some() {"volume_clipped_voronoi_cvt_v1"} else if plan.volume_scaffold.as_ref().is_some_and(|s| s.core == CoreKind::HexCore) {"volume_hex_core_v1"} else if scaffold_volume.is_some() {"volume_median_dual_v2"} else if polyhedra > 0 {"stl_partitioned_dual_v1"} else {"stl_partitioned_star_v1"},
         "mode": mode,
         "source_sha256": source_digest,
         "config_sha256": digest(&(patch_map, plan, mode))?,
@@ -765,6 +880,95 @@ fn prepare(
         }
     }
     Ok((surface, patches, names))
+}
+
+/// The report entry of every shell built into the scaffold: its two
+/// patches (front: the side its normal points into), the measured area of
+/// each side, the shell surface and what the crack of the scaffold did.
+fn scaffold_shell_report(
+    mesh: &duct::DuctMesh,
+    stl_patches: usize,
+    shells: &[(
+        ShellConfig,
+        shell_surface::ShellSurfaceStats,
+        duct::CrackStats,
+    )],
+) -> Vec<Value> {
+    let area = |id: usize| mesh.measurements.areas.get(id - 1).copied().unwrap_or(0.0);
+    let polygon_area = |p: &[[f64; 3]]| {
+        let v: Vec<mesh_core::geometry::Vec3> = p
+            .iter()
+            .map(|&[x, y, z]| mesh_core::geometry::Vec3::new(x, y, z))
+            .collect();
+        let mut n = mesh_core::geometry::Vec3::ZERO;
+        for i in 0..v.len() {
+            n = n + (v[i] - v[0]).cross(v[(i + 1) % v.len()] - v[0]);
+        }
+        n.length() / 2.0
+    };
+    shells
+        .iter()
+        .enumerate()
+        .map(|(k, (s, st, crack))| {
+            let (front, back) = (stl_patches + 1 + 2 * k, stl_patches + 2 + 2 * k);
+            let faces = |id: usize| mesh.boundary.iter().filter(|f| f.patch == id).count();
+            json!({
+                "name": s.name,
+                "method": "scaffold_baffle_v1",
+                "patches": {"front": {"id": front, "name": s.name},
+                            "back": {"id": back, "name": format!("{}_back", s.name)}},
+                "polygon_area": polygon_area(&s.polygon),
+                "surface_area": st.area,
+                "front_area": area(front),
+                "back_area": area(back),
+                "front_faces": faces(front),
+                "back_faces": faces(back),
+                "shell_triangles": st.triangles,
+                "free_edge_length": st.free_edge_length,
+                "wall_line_length": st.wall_line_length,
+                "free_edge_ends": st.free_edge_ends,
+                "min_triangle_angle_degrees": st.min_angle_degrees,
+                "scaffold_node_copies": crack.copies,
+                "free_edge_nodes": crack.single_nodes,
+            })
+        })
+        .collect()
+}
+
+/// Cut the shells into the finished mesh, in their order; the report entry
+/// of each.
+fn imprint_shells(
+    mesh: &mut duct::DuctMesh,
+    shells: &[ShellConfig],
+) -> Result<Vec<Value>, EngineError> {
+    let mut out = Vec::with_capacity(shells.len());
+    for s in shells {
+        let shell = duct::PlanarShell {
+            name: s.name.clone(),
+            polygon: s
+                .polygon
+                .iter()
+                .map(|&[x, y, z]| mesh_core::geometry::Vec3::new(x, y, z))
+                .collect(),
+        };
+        let st = duct::imprint_planar_shell(mesh, &shell)
+            .map_err(|e| EngineError::new(ErrorCode::InvalidDomain, e))?;
+        out.push(json!({
+            "name": s.name,
+            "patches": {"front": {"id": st.patches[0], "name": s.name},
+                        "back": {"id": st.patches[1], "name": format!("{}_back", s.name)}},
+            "polygon_area": st.polygon_area,
+            "front_area": st.front_area,
+            "back_area": st.back_area,
+            "front_faces": st.front_faces,
+            "back_faces": st.back_faces,
+            "cut_cells": st.cut_cells,
+            "through_cuts": st.through_cuts,
+            "snapped_vertices": st.snapped_vertices,
+            "doubled_vertices": st.doubled_vertices,
+        }));
+    }
+    Ok(out)
 }
 
 /// Drop the [`duct::SLIP`] mark of the patches without layers from the
@@ -926,6 +1130,7 @@ pub fn setup(
         (v * digits).round() / digits
     };
     let plan = Partition {
+        shells: Vec::new(),
         schema_version: 1,
         source_sha256: sha256(data),
         regions: Vec::new(),
@@ -952,6 +1157,7 @@ pub fn setup(
             core: CoreKind::default(),
             lloyd_iterations: None,
             wall_join: WallJoinKind::default(),
+            hex_core: None,
         }),
         first_thickness: round(first_thickness),
         growth,
@@ -1120,7 +1326,13 @@ pub fn cell_count(
         ));
     }
     if let (Mode::Polyhedral, Some(config)) = (mode, &plan.volume_scaffold) {
-        let (scaffold, _) = load_scaffold(&surface, &patches, config, scaffold_data)?;
+        let height = if plan.growth == 1.0 {
+            plan.first_thickness * layers as f64
+        } else {
+            plan.first_thickness * (plan.growth.powi(layers as i32) - 1.) / (plan.growth - 1.)
+        };
+        let (scaffold, _, hex, _) =
+            load_scaffold(&surface, &patches, config, scaffold_data, height, &[])?;
         let walls = scaffold
             .boundary
             .iter()
@@ -1133,6 +1345,10 @@ pub fn cell_count(
         // layer bound the fixtures from above (elbow 0.8, Manifold 2.1).
         let (per_wall, core) = match config.core {
             CoreKind::MedianDual => (6, scaffold.points.len()),
+            CoreKind::HexCore => (
+                6,
+                scaffold.points.len() + hex.as_ref().map_or(0, |c| c.cubes.len()),
+            ),
             CoreKind::Voronoi => {
                 let mut used = vec![false; scaffold.points.len()];
                 for t in &scaffold.tetrahedra {
@@ -1189,13 +1405,26 @@ pub fn cell_count(
 
 /// The scaffold of a polyhedral run: the configured file (digest checked)
 /// or, with `build`, the STL wall remeshed onto itself to the chord
-/// tolerance and tetrahedralized in Rust; the build's statistics.
+/// tolerance and tetrahedralized in Rust. Returns the scaffold, the
+/// build's statistics, the hex core (when asked) and the surface of each
+/// shell built into it (`shells` only with a built scaffold).
+#[allow(clippy::type_complexity)]
 fn load_scaffold(
     surface: &mesh_geometry::ClosedSurface,
     patches: &[usize],
     spec: &ScaffoldConfig,
     data: Option<&[u8]>,
-) -> Result<(duct::Scaffold, Option<Value>), EngineError> {
+    layer_height: f64,
+    shells: &[ShellConfig],
+) -> Result<
+    (
+        duct::Scaffold,
+        Option<Value>,
+        Option<HexCore>,
+        Vec<shell_surface::ShellSurfaceStats>,
+    ),
+    EngineError,
+> {
     let invalid = |s: &str| EngineError::new(ErrorCode::InvalidDomain, s);
     let validated = |e: String| EngineError::new(ErrorCode::ValidationFailed, e);
     match (&spec.file, &spec.build) {
@@ -1204,7 +1433,15 @@ fn load_scaffold(
             if spec.sha256.as_deref() != Some(sha256(bytes).as_str()) {
                 return Err(invalid("volume scaffold digest mismatch"));
             }
-            Ok((scaffold::read(bytes).map_err(validated)?, None))
+            if spec.core == CoreKind::HexCore {
+                return Err(invalid("the hex core needs a built scaffold"));
+            }
+            Ok((
+                scaffold::read(bytes).map_err(validated)?,
+                None,
+                None,
+                Vec::new(),
+            ))
         }
         (None, Some(b)) => {
             if spec.sha256.is_some() {
@@ -1238,11 +1475,46 @@ fn load_scaffold(
                 .map(|f| f.triangle.vertices)
                 .collect();
             let keep: Vec<bool> = patches.iter().map(|&p| duct::is_cap(p)).collect();
-            let wall = remesh::remesh_grouped(
-                surface.vertices(),
-                &triangles,
-                &keep,
-                patches,
+            // the line where each shell meets the wall, cut into the STL so
+            // the remeshed wall has edges along it (SHL-01)
+            let polygons: Vec<Vec<mesh_core::geometry::Vec3>> = shells
+                .iter()
+                .map(|s| s.polygon.iter().map(|&p| vector(p)).collect())
+                .collect();
+            let named: Vec<(&str, &[mesh_core::geometry::Vec3])> = shells
+                .iter()
+                .zip(&polygons)
+                .map(|(s, p)| (s.name.as_str(), p.as_slice()))
+                .collect();
+            let imprinted = if shells.is_empty() {
+                None
+            } else {
+                Some(
+                    shell_surface::imprint(surface.vertices(), &triangles, &keep, patches, &named)
+                        .map_err(|e| invalid(&e))?,
+                )
+            };
+            let (source_v, source_t, source_keep, source_group, lines) = match &imprinted {
+                Some(i) => (
+                    i.vertices.as_slice(),
+                    i.triangles.as_slice(),
+                    i.keep.as_slice(),
+                    i.group.as_slice(),
+                    i.lines.as_slice(),
+                ),
+                None => (
+                    surface.vertices(),
+                    triangles.as_slice(),
+                    keep.as_slice(),
+                    patches,
+                    &[][..],
+                ),
+            };
+            let wall = remesh::remesh_lines(
+                source_v,
+                source_t,
+                source_keep,
+                source_group,
                 remesh::RemeshOptions {
                     tolerance: b.tolerance,
                     min_size: b.min_size,
@@ -1258,6 +1530,7 @@ fn load_scaffold(
                     }),
                 },
                 field.as_ref(),
+                lines,
             )
             .map_err(validated)?;
             let remesh_seconds = start.elapsed().as_secs_f64();
@@ -1276,11 +1549,79 @@ fn load_scaffold(
                     w.thickness_clamped
                 );
             }
-            let tags: Vec<usize> = wall.group.clone();
-            let (scaffold, st) = scaffold_build::build_graded(
+            let mut tags: Vec<usize> = wall.group.clone();
+            let mut vertices = wall.vertices.clone();
+            let mut triangles = wall.triangles.clone();
+            let hex_start = Instant::now();
+            let core = if spec.core == CoreKind::HexCore {
+                let c = spec.hex_core.unwrap_or(HexCoreConfig {
+                    size_factor: None,
+                    margin: None,
+                });
+                let defaults = hexcore::HexCoreOptions::default();
+                let core = hexcore::build(
+                    &wall.vertices,
+                    &wall.triangles,
+                    b.max_size,
+                    b.rate,
+                    field.as_ref(),
+                    layer_height,
+                    hexcore::HexCoreOptions {
+                        size_factor: c.size_factor.unwrap_or(defaults.size_factor),
+                        margin: c.margin.unwrap_or(defaults.margin),
+                        ..defaults
+                    },
+                )
+                .map_err(validated)?;
+                let offset = vertices.len();
+                vertices.extend_from_slice(&core.shell_points);
+                for t in &core.shell_triangles {
+                    triangles.push(t.map(|v| v + offset));
+                    tags.push(duct::HEX);
+                }
+                Some(core)
+            } else {
+                None
+            };
+            let hex_seconds = hex_start.elapsed().as_secs_f64();
+            let hole = core
+                .as_ref()
+                .map(|c| move |x: mesh_core::geometry::Vec3| c.contains(x));
+            // each shell meshed in its plane at the scaffold's spacing
+            let spacing = shell_surface::Spacing::new(
                 &wall.vertices,
                 &wall.triangles,
+                b.rate,
+                b.max_size,
+                field.as_ref(),
+            );
+            let mut shell_triangles = Vec::new();
+            let mut shell_stats = Vec::new();
+            for (k, polygon) in polygons.iter().enumerate() {
+                let line: Vec<(usize, usize)> = wall
+                    .lines
+                    .iter()
+                    .filter(|&&(_, l)| l == k)
+                    .map(|&(e, _)| e)
+                    .collect();
+                let m = shell_surface::mesh_shell(
+                    polygon,
+                    &wall.vertices,
+                    &wall.triangles,
+                    &line,
+                    &|x| spacing.at(x),
+                    vertices.len(),
+                )
+                .map_err(|e| invalid(&format!("shell {:?}: {e}", shells[k].name)))?;
+                vertices.extend(m.vertices);
+                shell_triangles.extend(m.triangles.into_iter().map(|t| (t, k)));
+                shell_stats.push(m.stats);
+            }
+            let (scaffold, st) = scaffold_build::build_with_shells(
+                &vertices,
+                &triangles,
                 &tags,
+                &shell_triangles,
                 scaffold_build::ScaffoldOptions {
                     max_size: b.max_size,
                     rate: b.rate,
@@ -1288,12 +1629,24 @@ fn load_scaffold(
                     ..Default::default()
                 },
                 field.as_ref(),
+                hole.as_ref()
+                    .map(|h| h as &dyn Fn(mesh_core::geometry::Vec3) -> bool),
             )
             .map_err(validated)?;
             let w = wall.stats;
+            let hex_report = core.as_ref().map(|c| {
+                json!({
+                    "cubes": c.stats.cubes,
+                    "cube_sizes": c.stats.sizes.iter().map(|(e, n)| json!({"edge": e, "count": n})).collect::<Vec<_>>(),
+                    "removed_for_manifold_shell": c.stats.removed_for_manifold,
+                    "shell_triangles": c.stats.shell_triangles,
+                    "octree_seconds": hex_seconds,
+                })
+            });
             Ok((
                 scaffold,
                 Some(json!({
+                    "hex_core": hex_report,
                     "settings": b,
                     "wall_triangles": tags.iter().filter(|&&t| duct::is_wall(t)).count(),
                     "feature_edges": w.feature_edges,
@@ -1314,6 +1667,8 @@ fn load_scaffold(
                     "remesh_seconds": remesh_seconds,
                     "tetrahedralize_seconds": start.elapsed().as_secs_f64() - remesh_seconds,
                 })),
+                core,
+                shell_stats,
             ))
         }
         _ => Err(invalid(
@@ -1341,7 +1696,7 @@ fn wall_deviation(
     let wall: Vec<[mesh_core::geometry::Vec3; 3]> = scaffold
         .boundary
         .iter()
-        .filter(|(_, p)| !duct::is_cap(*p))
+        .filter(|(_, p)| !duct::is_cap(*p) && !duct::is_hex(*p))
         .map(|(t, _)| t.map(|v| scaffold.points[v]))
         .collect();
     let one_way = |from: &[[mesh_core::geometry::Vec3; 3]],
