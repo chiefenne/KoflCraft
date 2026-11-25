@@ -23,7 +23,9 @@ use mesh_algorithms::block as algo;
 use mesh_algorithms::block::layout::{
     self, BlockOrthogonality, LayoutOptions, LayoutReport, Orthogonality,
 };
-use mesh_core::block::{BLOCK_FACES, Curve, Distribution, EdgeEnd, block_edges, corner_slot, face_key};
+use mesh_core::block::{
+    BLOCK_FACES, Curve, Distribution, EdgeEnd, block_edges, corner_slot, face_key,
+};
 use mesh_core::geometry::Vec3;
 use serde::Serialize;
 
@@ -154,7 +156,9 @@ pub(crate) fn split_triangle(
     }
     let old = file.blocks[b0].clone();
     let Some(slot) = old.vertices.iter().position(|&v| v == vertex) else {
-        return Err(refused(format!("vertex {vertex} is no corner of block {b0}")));
+        return Err(refused(format!(
+            "vertex {vertex} is no corner of block {b0}"
+        )));
     };
     let f = slot % 4;
     for side in [4, 5] {
@@ -192,8 +196,7 @@ pub(crate) fn split_triangle(
         None => {
             let p = |i: usize| v3(file.vertices[lay(i, 0)]);
             let centre = (p(ia) + p(ib) + p(ic)) / 3.0;
-            let h = ((p(im) - p(ia)).length() / n_b as f64
-                + (p(ib) - p(im)).length() / n_a as f64)
+            let h = ((p(im) - p(ia)).length() / n_b as f64 + (p(ib) - p(im)).length() / n_a as f64)
                 / 2.0;
             (((centre - p(im)).length() / h).round() as usize).max(1)
         }
@@ -258,12 +261,12 @@ pub(crate) fn split_triangle(
                         "the new row would enter block {o} from both ends; split by hand"
                     )));
                 }
-                if let Some(&(a2, _)) = crossed.get(&o) {
-                    if a2 != a {
-                        return Err(refused(format!(
-                            "the new row would cross block {o} twice; split by hand"
-                        )));
-                    }
+                if let Some(&(a2, _)) = crossed.get(&o)
+                    && a2 != a
+                {
+                    return Err(refused(format!(
+                        "the new row would cross block {o} twice; split by hand"
+                    )));
                 }
                 crossed.insert(o, (a, at_start));
                 for (p, q) in edges {
@@ -370,7 +373,8 @@ pub(crate) fn split_triangle(
         }
         r.nodes = nodes;
     }
-    file.edges.retain(|e| !row.contains_key(&key(e.vertices[0], e.vertices[1])));
+    file.edges
+        .retain(|e| !row.contains_key(&key(e.vertices[0], e.vertices[1])));
     // cut every crossed block in two along the row
     let mut faces_split: BTreeMap<[usize; 4], Vec<[usize; 4]>> = BTreeMap::new();
     let mut cut_edges: BTreeSet<(usize, usize)> = BTreeSet::new();
@@ -411,7 +415,10 @@ pub(crate) fn split_triangle(
             if face.0 != a {
                 faces_split.insert(
                     face_key(face_vertices(&ob.vertices, g)),
-                    vec![face_vertices(&low.vertices, g), face_vertices(&high.vertices, g)],
+                    vec![
+                        face_vertices(&low.vertices, g),
+                        face_vertices(&high.vertices, g),
+                    ],
                 );
             }
         }
@@ -882,7 +889,18 @@ mod tests {
                 vertices.push([p[0], p[1], z]);
             }
         }
-        let b = |q: [usize; 4]| [q[0], q[1], q[2], q[3], q[0] + 6, q[1] + 6, q[2] + 6, q[3] + 6];
+        let b = |q: [usize; 4]| {
+            [
+                q[0],
+                q[1],
+                q[2],
+                q[3],
+                q[0] + 6,
+                q[1] + 6,
+                q[2] + 6,
+                q[3] + 6,
+            ]
+        };
         let blocks = vec![
             BlockFile {
                 vertices: b([0, 1, 2, 3]),
@@ -958,13 +976,27 @@ mod tests {
         .unwrap();
         assert_eq!(g.blocks.len(), 5);
         assert_eq!(c.added_blocks.len(), 3);
-        let cells: usize = g.blocks.iter().map(|b| b.cells.iter().product::<usize>()).sum();
+        let cells: usize = g
+            .blocks
+            .iter()
+            .map(|b| b.cells.iter().product::<usize>())
+            .sum();
         assert_eq!(cells, (4 * 3 + 3 * 4 + 4 * 4) + 5 * (4 + 3));
         let checked = check(&g).unwrap();
         assert_eq!(checked["cells"].as_u64().unwrap() as usize, cells);
-        assert!((area(&g) - area(&f)).abs() < 1e-12 * area(&f), "{} {}", area(&g), area(&f));
+        assert!(
+            (area(&g) - area(&f)).abs() < 1e-12 * area(&f),
+            "{} {}",
+            area(&g),
+            area(&f)
+        );
         let faces = |file: &TopologyFile, name: &str| {
-            file.patches.iter().find(|p| p.name == name).unwrap().faces.len()
+            file.patches
+                .iter()
+                .find(|p| p.name == name)
+                .unwrap()
+                .faces
+                .len()
         };
         assert_eq!(faces(&g, "wall"), 4, "side 3–0 is cut by the row");
         assert_eq!(faces(&g, "outlet"), 4, "side 4–5 is cut by the row");
@@ -1003,15 +1035,23 @@ mod tests {
         assert_eq!(kept[0]["block"], 0);
         assert_eq!(kept[0]["vertex"], 1);
         assert_eq!(kept[0]["row_blocks"], serde_json::json!([1]));
-        let before = layout["before"]["max_nonorthogonality_deg"].as_f64().unwrap();
-        let after = layout["after"]["max_nonorthogonality_deg"].as_f64().unwrap();
+        let before = layout["before"]["max_nonorthogonality_deg"]
+            .as_f64()
+            .unwrap();
+        let after = layout["after"]["max_nonorthogonality_deg"]
+            .as_f64()
+            .unwrap();
         assert!(before > 60.0 && after < 30.0, "{before} {after}");
         assert!(layout["after"]["max_growth"].as_f64().unwrap() <= GROWTH_LIMIT * GROWTH_SLACK);
         assert_eq!(layout["after"]["folded_corners"], 0);
         // the second round tried a corner of the new blocks and left it
         let skipped = layout["triangle_splits"]["skipped"].as_array().unwrap();
         assert!(!skipped.is_empty());
-        assert!(skipped.iter().all(|s| !s["reason"].as_str().unwrap().is_empty()));
+        assert!(
+            skipped
+                .iter()
+                .all(|s| !s["reason"].as_str().unwrap().is_empty())
+        );
         assert_eq!(g.blocks.len(), 5);
         check(&g).unwrap();
         assert!((area(&g) - area(&f)).abs() < 1e-9 * area(&f));
@@ -1070,10 +1110,16 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(e.message.contains("needs a corner of at least"), "{}", e.message);
+        assert!(
+            e.message.contains("needs a corner of at least"),
+            "{}",
+            e.message
+        );
         // a second layer on top of the triangle
         let mut g = wedge();
-        let top: Vec<[f64; 3]> = (6..12).map(|v| [g.vertices[v][0], g.vertices[v][1], 0.2]).collect();
+        let top: Vec<[f64; 3]> = (6..12)
+            .map(|v| [g.vertices[v][0], g.vertices[v][1], 0.2])
+            .collect();
         g.vertices.extend(top);
         let mut upper = g.blocks[0].clone();
         upper.vertices = [6, 7, 8, 9, 12, 13, 14, 15];

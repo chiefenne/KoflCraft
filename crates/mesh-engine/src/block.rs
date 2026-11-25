@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 
 use mesh_algorithms::block::smooth::{SmoothOptions, smooth};
-use mesh_algorithms::block::{self as algo, BlockGrid, Issue, multi_element, templates, tri_center};
+use mesh_algorithms::block::{
+    self as algo, BlockGrid, Issue, multi_element, templates, tri_center,
+};
 use mesh_core::block::{
     BlockSpec, BlockTopology, Curve, Distribution, EdgeEnd, EdgeSpec, PatchSpec, Surface,
     SurfaceSpec,

@@ -364,11 +364,9 @@ pub struct OptimizeLayoutInput {
 pub(crate) fn optimize_layout(input: Value, ctx: &Context) -> Run {
     let i: OptimizeLayoutInput = decode(input)?;
     let file = topology(ctx, &i.topology)?;
-    let (new, layout) = mesh_engine::block_triangle::optimize_layout(
-        &file,
-        i.triangle_splits.unwrap_or(true),
-    )
-    .map_err(|e| Diagnostic::from(e).with_path(&i.topology))?;
+    let (new, layout) =
+        mesh_engine::block_triangle::optimize_layout(&file, i.triangle_splits.unwrap_or(true))
+            .map_err(|e| Diagnostic::from(e).with_path(&i.topology))?;
     let mut result = write_topology(ctx, &i.output, &new)?;
     result["layout"] = layout;
     Ok(result)

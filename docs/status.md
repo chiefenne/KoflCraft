@@ -5,7 +5,7 @@
 The verification grade of every feature (AG-17), how it was checked and what is still missing. A partial result is never presented as success; every tool result also carries a `limitations` list.
 
 - **verified** (9): checked against an exact or independent reference by a named test
-- **partial** (23): works on the named fixtures, with known gaps
+- **partial** (24): works on the named fixtures, with known gaps
 - **unverified** (1): built, not yet checked
 - **open** (0): not built
 

@@ -773,7 +773,18 @@ fn tri_center_tools_split_blocks_and_build_meshes() {
         .iter()
         .flat_map(|&z| plane.iter().map(move |p| [p[0], p[1], z]))
         .collect();
-    let b = |q: [usize; 4]| [q[0], q[1], q[2], q[3], q[0] + 6, q[1] + 6, q[2] + 6, q[3] + 6];
+    let b = |q: [usize; 4]| {
+        [
+            q[0],
+            q[1],
+            q[2],
+            q[3],
+            q[0] + 6,
+            q[1] + 6,
+            q[2] + 6,
+            q[3] + 6,
+        ]
+    };
     let side = |p: usize, q: usize| [p, q, q + 6, p + 6];
     let (b0, b1) = (b([0, 1, 2, 3]), b([2, 4, 5, 3]));
     write(
@@ -798,11 +809,22 @@ fn tri_center_tools_split_blocks_and_build_meshes() {
         "o.json",
         serde_json::json!({"topology": "w.json", "output": "opt.json"}),
     );
-    let (ok, e) = kofl_in(&dir, &["call", "block.optimize_layout", "--input", "o.json"]);
+    let (ok, e) = kofl_in(
+        &dir,
+        &["call", "block.optimize_layout", "--input", "o.json"],
+    );
     assert!(ok, "{e}");
     let layout = &e["result"]["layout"];
-    assert_eq!(layout["triangle_splits"]["kept"].as_array().unwrap().len(), 1);
-    assert!(layout["after"]["max_nonorthogonality_deg"].as_f64().unwrap() < 30.0);
+    assert_eq!(
+        layout["triangle_splits"]["kept"].as_array().unwrap().len(),
+        1
+    );
+    assert!(
+        layout["after"]["max_nonorthogonality_deg"]
+            .as_f64()
+            .unwrap()
+            < 30.0
+    );
     for (topology, output) in [("split.json", "split"), ("opt.json", "opt")] {
         write(
             "g.json",

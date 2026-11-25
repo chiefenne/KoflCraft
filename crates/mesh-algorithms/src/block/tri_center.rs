@@ -88,7 +88,10 @@ impl<'a> TriCenter<'a> {
         layers: usize,
         domain: &str,
     ) -> Result<[BlockSpec; 3], String> {
-        let (pb, pt) = (bottom.map(|v| self.vertices[v]), top.map(|v| self.vertices[v]));
+        let (pb, pt) = (
+            bottom.map(|v| self.vertices[v]),
+            top.map(|v| self.vertices[v]),
+        );
         let up = (pt[0] + pt[1] + pt[2]) / 3.0 - (pb[0] + pb[1] + pb[2]) / 3.0;
         let turn = (pb[1] - pb[0]).cross(pb[2] - pb[0]).dot(up);
         if !(turn.is_finite() && turn != 0.0) {
@@ -137,11 +140,7 @@ impl<'a> TriCenter<'a> {
         for i in 0..4 {
             let mut o: Vec<usize> = (0..4).filter(|&x| x != i).collect();
             // (j, k, l) such that i → j, i → k, i → l is right-handed
-            let turn = |o: &[usize]| {
-                (p[o[0]] - p[i])
-                    .cross(p[o[1]] - p[i])
-                    .dot(p[o[2]] - p[i])
-            };
+            let turn = |o: &[usize]| (p[o[0]] - p[i]).cross(p[o[1]] - p[i]).dot(p[o[2]] - p[i]);
             if turn(&o) < 0.0 {
                 o.swap(1, 2);
             }
@@ -251,7 +250,10 @@ pub fn triangle(
 /// template): `cells` per corner, all faces `walls`.
 pub fn tetrahedron(corners: [[f64; 3]; 4], cells: [usize; 4]) -> Result<Template, String> {
     let n = corner_counts(cells)?;
-    let mut vertices: Vec<Vec3> = corners.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect();
+    let mut vertices: Vec<Vec3> = corners
+        .iter()
+        .map(|p| Vec3::new(p[0], p[1], p[2]))
+        .collect();
     let volume = (vertices[1] - vertices[0])
         .cross(vertices[2] - vertices[0])
         .dot(vertices[3] - vertices[0])
@@ -359,7 +361,10 @@ mod tests {
                     .iter()
                     .position(|&s| b.vertices[s] == m)
                     .unwrap();
-                assert_eq!(b.cells[axis], n[other], "the half next to corner {other}'s cut");
+                assert_eq!(
+                    b.cells[axis], n[other],
+                    "the half next to corner {other}'s cut"
+                );
                 b.cells[axis]
             })
             .sum();

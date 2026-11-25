@@ -415,7 +415,11 @@ pub(crate) fn a3(p: Vec3) -> [f64; 3] {
 
 /// A law for nodes along an edge: uniform when the spacings agree,
 /// otherwise the `like` law's kind with the spacings at the ends.
-pub(crate) fn fitted_law(nodes: &[Vec3], curve: &CurveFile, like: &DistributionFile) -> DistributionFile {
+pub(crate) fn fitted_law(
+    nodes: &[Vec3],
+    curve: &CurveFile,
+    like: &DistributionFile,
+) -> DistributionFile {
     let s = arc_spacings(nodes, curve);
     let (lo, hi) = s
         .iter()
