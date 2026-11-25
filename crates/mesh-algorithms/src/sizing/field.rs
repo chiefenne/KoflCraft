@@ -225,7 +225,7 @@ fn frustum_distance(t: f64, rho: f64, length: f64, ra: f64, rb: f64) -> f64 {
 }
 
 /// Whether a source is a datum object (GRD-02), a coordinate region
-/// (GRD-03) or derived from the surface (GRD-04).
+/// (GRD-03), derived from the surface (GRD-04) or a shell's own sizes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceKind {
     Datum,
@@ -233,6 +233,9 @@ pub enum SourceKind {
     Curvature,
     Gap,
     FeatureEdges,
+    /// A zero-thickness shell's own sizes (SHL-01), see
+    /// [`crate::shell_surface::size_items`].
+    Shell,
 }
 
 impl SourceKind {
@@ -243,6 +246,7 @@ impl SourceKind {
             Self::Curvature => "curvature",
             Self::Gap => "gap",
             Self::FeatureEdges => "feature_edges",
+            Self::Shell => "shell",
         }
     }
 }

@@ -15,7 +15,12 @@
 //!    regions inside the fluid kept by their winding number (Jacobson,
 //!    Kavan & Sorkine-Hornung 2013), then Delaunay refinement by
 //!    circumcentres clear of the boundary (Chew 1989; Ruppert 1995;
-//!    Shewchuk 2002). The wall edges are never split here. No interior edge
+//!    Shewchuk 2002). A boundary edge a refinement point would crowd is
+//!    split instead (Ruppert's segment split): free-edge pieces as the size
+//!    asks, wall-line edges once (the caller bisects the wall triangles
+//!    there, see `ShellSurface::wall_splits`). The size is the shell's own
+//!    (`size_items`, in the build's size field) and is graded from the
+//!    wall-line edges, which keep every kink of a polygonal wall. No interior edge
 //!    joins two free-edge vertices, so the two sides of the shell share
 //!    nothing but the free edges once the scaffold is cracked.
 
@@ -377,8 +382,14 @@ fn polygons_meet(fa: &Frame, a: &[Vec3], fb: &Frame, b: &[Vec3]) -> bool {
 }
 
 /// The spacing a shell is meshed to: the scaffold's interior spacing, the
-/// size of the wall triangles grown by `rate` with the distance from them,
-/// bounded by `max_size` and the user size field.
+/// size of the wall triangles and of the edges of the shells' lines on the
+/// wall grown by `rate` with the distance from them, bounded by `max_size`
+/// and the size field (which holds each shell's own sizes, see
+/// [`size_items`]). The line edges count on their own because the wall
+/// line keeps every kink of a polygonal wall: a line edge far shorter
+/// than the wall triangles beside it (where the line ends next to a kink)
+/// asks for short free-edge pieces there, or its triangle on the shell is
+/// a needle.
 pub struct Spacing<'a> {
     set: WeightedSet,
     rate: f64,
@@ -390,10 +401,19 @@ impl<'a> Spacing<'a> {
     pub fn new(
         vertices: &[Vec3],
         triangles: &[[usize; 3]],
+        lines: &[(usize, usize)],
         rate: f64,
         max_size: f64,
         field: Option<&'a SizeField>,
     ) -> Self {
+        let line_items = lines.iter().filter_map(|&(a, b)| {
+            let l = (vertices[a] - vertices[b]).length();
+            (l > 0.0).then(|| Weighted {
+                primitive: Primitive::Segment([vertices[a], vertices[b]]),
+                size: l.min(max_size),
+                reach: 0.0,
+            })
+        });
         let items = triangles
             .iter()
             .map(|t| {
@@ -406,6 +426,7 @@ impl<'a> Spacing<'a> {
                     reach: 0.0,
                 }
             })
+            .chain(line_items)
             .collect();
         Self {
             set: WeightedSet::new(items),
@@ -421,8 +442,126 @@ impl<'a> Spacing<'a> {
     }
 }
 
+/// Check a shell polygon: at least three finite corners, planar, convex,
+/// counter-clockwise about its normal.
+pub fn check_polygon(polygon: &[Vec3]) -> Result<(), String> {
+    Frame::new(polygon).map(|_| ())
+}
+
+/// Whether two shell polygons touch or cross (shells that meet are not
+/// supported yet).
+pub fn polygons_touch(a: &[Vec3], b: &[Vec3]) -> Result<bool, String> {
+    let (fa, fb) = (Frame::new(a)?, Frame::new(b)?);
+    Ok(polygons_meet(&fa, a, &fb, b))
+}
+
+/// The narrow width of the part of a shell polygon inside the box
+/// `lo`..`hi` (the smallest distance between two parallel lines that hold
+/// it), or `None` when no part lies inside. The default shell size is an
+/// eighth of it (the maintainer's choice of 2026-11-25: about eight cells
+/// across a shell).
+pub fn narrow_width(polygon: &[Vec3], lo: Vec3, hi: Vec3) -> Result<Option<f64>, String> {
+    let frame = Frame::new(polygon)?;
+    // Sutherland-Hodgman against the six faces of the box
+    let c = |p: Vec3, axis: usize| [p.x, p.y, p.z][axis];
+    let mut poly: Vec<Vec3> = polygon.to_vec();
+    for axis in 0..3 {
+        for (bound, sign) in [(c(lo, axis), 1.0), (c(hi, axis), -1.0)] {
+            let side = |p: Vec3| sign * (c(p, axis) - bound);
+            let mut out = Vec::with_capacity(poly.len() + 1);
+            for i in 0..poly.len() {
+                let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+                let (da, db) = (side(a), side(b));
+                if da >= 0.0 {
+                    out.push(a);
+                }
+                if (da >= 0.0) != (db >= 0.0) {
+                    out.push(a + (b - a) * (da / (da - db)));
+                }
+            }
+            poly = out;
+            if poly.len() < 3 {
+                return Ok(None);
+            }
+        }
+    }
+    let q: Vec<[f64; 2]> = poly.iter().map(|&p| frame.uv(p)).collect();
+    let mut width = f64::INFINITY;
+    for i in 0..q.len() {
+        let (a, b) = (q[i], q[(i + 1) % q.len()]);
+        let e = [b[0] - a[0], b[1] - a[1]];
+        let l = e[0].hypot(e[1]);
+        if l <= 1e-12 * frame.scale {
+            continue;
+        }
+        let far = q
+            .iter()
+            .map(|p| ((p[0] - a[0]) * e[1] - (p[1] - a[1]) * e[0]).abs() / l)
+            .fold(0.0, f64::max);
+        width = width.min(far);
+    }
+    Ok((width.is_finite() && width > 0.0).then_some(width))
+}
+
+/// The size primitives a shell adds to the build's size field: its
+/// polygon at `size` (a fan of triangles) and its free edges, the parts of
+/// its outline inside the closed, outward wall, at `edge_size`. In the
+/// field they refine the wall along the shell's line (so the line's edges
+/// are split to the shell size), the scaffold around the shell, and the
+/// shell itself.
+pub fn size_items(
+    polygon: &[Vec3],
+    size: f64,
+    edge_size: f64,
+    wall_vertices: &[Vec3],
+    wall_triangles: &[[usize; 3]],
+) -> Result<Vec<Weighted>, String> {
+    Frame::new(polygon)?;
+    if !(size.is_finite() && size > 0.0 && edge_size.is_finite() && edge_size > 0.0) {
+        return Err("shell sizes must be positive and finite".into());
+    }
+    let mut items: Vec<Weighted> = (1..polygon.len() - 1)
+        .map(|i| Weighted {
+            primitive: Primitive::Triangle([polygon[0], polygon[i], polygon[i + 1]]),
+            size,
+            reach: 0.0,
+        })
+        .collect();
+    // the outline in pieces of at most four edge sizes (64 per side at
+    // most); runs of pieces inside the fluid are the free edges
+    for i in 0..polygon.len() {
+        let (a, b) = (polygon[i], polygon[(i + 1) % polygon.len()]);
+        let n = (((b - a).length() / (4.0 * edge_size)).ceil() as usize).clamp(1, 64);
+        let point = |j: usize| a + (b - a) * (j as f64 / n as f64);
+        let mut run: Option<usize> = None;
+        for j in 0..=n {
+            let inside = j < n
+                && winding(
+                    (point(j) + point(j + 1)) * 0.5,
+                    wall_vertices,
+                    wall_triangles,
+                )
+                .abs()
+                    > 0.5;
+            match (inside, run) {
+                (true, None) => run = Some(j),
+                (false, Some(start)) => {
+                    items.push(Weighted {
+                        primitive: Primitive::Segment([point(start), point(j)]),
+                        size: edge_size,
+                        reach: 0.0,
+                    });
+                    run = None;
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(items)
+}
+
 /// The generalized winding number of a closed, outward triangle mesh at p.
-fn winding(p: Vec3, vertices: &[Vec3], triangles: &[[usize; 3]]) -> f64 {
+pub fn winding(p: Vec3, vertices: &[Vec3], triangles: &[[usize; 3]]) -> f64 {
     let mut sum = 0.0;
     for t in triangles {
         let [a, b, c] = t.map(|v| vertices[v] - p);
@@ -441,6 +580,10 @@ pub struct ShellSurface {
     /// Counter-clockwise about the shell normal; ids below `base` are wall
     /// vertices (on the line where the shell meets the wall).
     pub triangles: Vec<[usize; 3]>,
+    /// Edges of the wall line split for the shell, as given in `line`,
+    /// with the new vertices on each from its first vertex to its second.
+    /// The wall triangles at these edges must be split at them too.
+    pub wall_splits: Vec<((usize, usize), Vec<usize>)>,
     pub stats: ShellSurfaceStats,
 }
 
@@ -455,6 +598,24 @@ pub struct ShellSurfaceStats {
     /// Ends of the wall line (where a free edge meets the wall).
     pub free_edge_ends: usize,
     pub min_angle_degrees: f64,
+    /// Pieces of the free edges inside the fluid.
+    pub free_edge_pieces: usize,
+    /// Shortest, median and longest edge of the shell triangles.
+    pub edge_lengths: [f64; 3],
+    /// Wall-line edges split (each once at most) and free-edge pieces
+    /// split by the refinement.
+    pub wall_line_splits: usize,
+    pub free_edge_splits: usize,
+}
+
+/// A boundary segment of the shell's triangulation.
+#[derive(Clone, Copy)]
+enum Segment {
+    /// A piece of a free edge.
+    Free,
+    /// A piece of the wall-line edge `edge`, between its parameters `t`
+    /// (0 at the edge's first vertex).
+    Wall { edge: (usize, usize), t: [f64; 2] },
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -573,36 +734,40 @@ pub fn mesh_shell(
         let (a, b) = (breaks[i], breaks[(i + 1) % breaks.len()]);
         let (pa, pb) = (pts.position[a], pts.position[b]);
         let length = (pb - pa).length();
-        // ∫ ds / h by the trapezoid rule on 16 pieces
-        const PIECES: usize = 16;
-        let h: Vec<f64> = (0..=PIECES)
-            .map(|j| size(pa + (pb - pa) * (j as f64 / PIECES as f64)).max(1e-12))
-            .collect();
+        // ∫ ds / h by the trapezoid rule, on pieces a quarter of the
+        // smallest spacing met on a first pass (the spacing can drop
+        // steeply towards an end, next to a short wall-line edge)
+        let at = |t: f64| size(pa + (pb - pa) * t).max(1e-12);
+        let smallest = (0..=16)
+            .map(|j| at(j as f64 / 16.0))
+            .fold(f64::INFINITY, f64::min);
+        let pieces = ((4.0 * length / smallest).ceil() as usize).clamp(16, 4096);
+        let h: Vec<f64> = (0..=pieces).map(|j| at(j as f64 / pieces as f64)).collect();
         let mut cumulative = vec![0.0];
-        for j in 0..PIECES {
-            let ds = length / PIECES as f64;
+        for j in 0..pieces {
+            let ds = length / pieces as f64;
             cumulative.push(cumulative[j] + 0.5 * ds * (1.0 / h[j] + 1.0 / h[j + 1]));
         }
-        let total = cumulative[PIECES];
+        let total = cumulative[pieces];
         let n = total.round().max(1.0) as usize;
         let mut arc = vec![a];
         for m in 1..n {
             let target = total * m as f64 / n as f64;
-            let j = (0..PIECES)
-                .find(|&j| cumulative[j + 1] >= target)
-                .unwrap_or(PIECES - 1);
+            let j = cumulative[1..]
+                .partition_point(|&c| c < target)
+                .min(pieces - 1);
             let share = (target - cumulative[j]) / (cumulative[j + 1] - cumulative[j]).max(1e-300);
-            let t = (j as f64 + share) / PIECES as f64;
+            let t = (j as f64 + share) / pieces as f64;
             arc.push(pts.add(&frame, Node::New, pa + (pb - pa) * t, true));
         }
         arc.push(b);
         arcs.push(arc);
     }
     let Points {
-        nodes,
+        mut nodes,
         uv,
-        position,
-        free,
+        mut position,
+        mut free,
         of_wall,
     } = pts;
     // triangulate
@@ -622,7 +787,7 @@ pub fn mesh_shell(
         id.push(c);
     }
     // back from CDT ids to node ids
-    let node_of: HashMap<usize, usize> = (0..id.len()).map(|i| (id[i], i)).collect();
+    let mut node_of: HashMap<usize, usize> = (0..id.len()).map(|i| (id[i], i)).collect();
     for &(a, b) in line {
         cdt.constrain(id[of_wall[&a]], id[of_wall[&b]])?;
     }
@@ -659,6 +824,7 @@ pub fn mesh_shell(
                     && cdt.tris[t].contains(&b)
             });
             if touches {
+                stats.free_edge_pieces += 1;
                 stats.free_edge_length += (position[w[0]] - position[w[1]]).length();
             }
         }
@@ -674,10 +840,32 @@ pub fn mesh_shell(
         }
     }
     let boundary = ClosestSet::new(segments);
+    // the same segments as CDT edges, for splits (a split leaves the
+    // boundary's geometry, so `boundary` stays valid)
+    let mut segs: Vec<(usize, usize, Segment)> = line
+        .iter()
+        .map(|&(a, b)| {
+            (
+                id[of_wall[&a]],
+                id[of_wall[&b]],
+                Segment::Wall {
+                    edge: (a, b),
+                    t: [0.0, 1.0],
+                },
+            )
+        })
+        .collect();
+    for arc in &arcs {
+        for w in arc.windows(2) {
+            segs.push((id[w[0]], id[w[1]], Segment::Free));
+        }
+    }
+    let mut wall_points: Vec<((usize, usize), f64, usize)> = Vec::new();
     const RADIUS_SHARE: f64 = 0.7;
     const RADIUS_EDGE: f64 = 1.5;
     const CLEARANCE: f64 = 0.45;
     const MAX_POINTS: usize = 2_000_000;
+    const SPLIT_SHARE: f64 = 0.6;
     let mut queue: VecDeque<usize> = (0..cdt.tris.len())
         .filter(|&t| cdt.alive[t] && fluid[cdt.region[t]])
         .collect();
@@ -714,6 +902,59 @@ pub fn mesh_shell(
         let x = frame.point(c);
         let clear = CLEARANCE * size(x).min(h);
         if boundary.closest(x).is_none_or(|(_, d)| d < clear) {
+            // Ruppert (1995): split the segment the centre crowds instead,
+            // when it is long for the spacing at its middle; a wall-line
+            // edge once at most (its wall triangles are bisected with it)
+            let Some(i) = nearest_segment(&cdt, &segs, c) else {
+                continue;
+            };
+            let (sa, sb, kind) = segs[i];
+            let (pa, pb) = (cdt.points[sa], cdt.points[sb]);
+            let mid = [(pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0];
+            let long = planar::distance(pa, pb) > SPLIT_SHARE * size(frame.point(mid));
+            let allowed = match kind {
+                Segment::Free => true,
+                Segment::Wall { t, .. } => t[1] - t[0] > 0.75,
+            };
+            if !(long && allowed) {
+                continue;
+            }
+            let Ok(v) = cdt.split_constrained(sa, sb) else {
+                continue;
+            };
+            let (p3, first, second, on_free) = match kind {
+                Segment::Free => {
+                    stats.free_edge_splits += 1;
+                    (frame.point(mid), Segment::Free, Segment::Free, true)
+                }
+                Segment::Wall { edge, t } => {
+                    stats.wall_line_splits += 1;
+                    let tm = 0.5 * (t[0] + t[1]);
+                    let (wa, wb) = (wall_vertices[edge.0], wall_vertices[edge.1]);
+                    wall_points.push((edge, tm, v));
+                    (
+                        wa + (wb - wa) * tm,
+                        Segment::Wall {
+                            edge,
+                            t: [t[0], tm],
+                        },
+                        Segment::Wall {
+                            edge,
+                            t: [tm, t[1]],
+                        },
+                        false,
+                    )
+                }
+            };
+            node_of.insert(v, nodes.len());
+            nodes.push(Node::New);
+            position.push(p3);
+            free.push(on_free);
+            segs[i] = (sa, v, first);
+            segs.push((v, sb, second));
+            queue.extend(cdt.created.iter().copied());
+            tried.remove(&sorted_tri);
+            queue.push_back(t);
             continue;
         }
         if cdt.insert(c).is_ok() {
@@ -829,11 +1070,60 @@ pub fn mesh_shell(
         triangles.push(tri);
     }
     stats.triangles = triangles.len();
+    let mut wall_splits: Vec<((usize, usize), Vec<usize>)> = Vec::new();
+    wall_points.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    for (edge, _, v) in wall_points {
+        let Some(&out) = out_id.get(&v) else {
+            return Err("a split wall-line point lies on no shell triangle".into());
+        };
+        match wall_splits.last_mut() {
+            Some((e, list)) if *e == edge => list.push(out),
+            _ => wall_splits.push((edge, vec![out])),
+        }
+    }
+    let mut edges: Vec<f64> = Vec::new();
+    let mut seen: HashSet<(usize, usize)> = HashSet::default();
+    let at = |v: usize| {
+        if v < base {
+            wall_vertices[v]
+        } else {
+            vertices[v - base]
+        }
+    };
+    for t in &triangles {
+        for i in 0..3 {
+            let (a, b) = (t[i], t[(i + 1) % 3]);
+            if seen.insert(key(a, b)) {
+                edges.push((at(a) - at(b)).length());
+            }
+        }
+    }
+    edges.sort_by(f64::total_cmp);
+    if let (Some(&lo), Some(&hi)) = (edges.first(), edges.last()) {
+        stats.edge_lengths = [lo, edges[edges.len() / 2], hi];
+    }
     Ok(ShellSurface {
         vertices,
         triangles,
+        wall_splits,
         stats,
     })
+}
+
+/// The segment nearest to `c` (in the plane).
+fn nearest_segment(cdt: &Cdt, segs: &[(usize, usize, Segment)], c: P2) -> Option<usize> {
+    let d = |&(a, b, _): &(usize, usize, Segment)| {
+        let (p, q) = (cdt.points[a], cdt.points[b]);
+        let e = [q[0] - p[0], q[1] - p[1]];
+        let l2 = e[0] * e[0] + e[1] * e[1];
+        let t = if l2 > 0.0 {
+            (((c[0] - p[0]) * e[0] + (c[1] - p[1]) * e[1]) / l2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        planar::distance(c, [p[0] + e[0] * t, p[1] + e[1] * t])
+    };
+    (0..segs.len()).min_by(|&i, &j| d(&segs[i]).total_cmp(&d(&segs[j])))
 }
 
 fn area2(cdt: &Cdt, t: usize) -> f64 {
@@ -1004,5 +1294,53 @@ mod tests {
             &[("a", &square(1.0)), ("d", &square(3.0))],
         )
         .unwrap();
+    }
+
+    // Keep rule (SW-18): the default shell size comes from the narrow
+    // width of the polygon inside the STL's box, and a shell's size
+    // primitives are its polygon plus only the parts of its outline inside
+    // the fluid. Breaks when the clip, the width or the winding test of
+    // the free edges goes wrong; the duct test sees only the end result.
+    #[test]
+    fn narrow_width_and_size_items_of_a_shell() {
+        // a 4 x 1 plate half outside the box [0, 2]^3: the clipped part is
+        // 1 x 1 (from x = 1 to 2)
+        let plate = vec![
+            Vec3::new(1.0, 0.5, 1.0),
+            Vec3::new(5.0, 0.5, 1.0),
+            Vec3::new(5.0, 1.5, 1.0),
+            Vec3::new(1.0, 1.5, 1.0),
+        ];
+        let (lo, hi) = (Vec3::ZERO, Vec3::new(2.0, 2.0, 2.0));
+        let w = narrow_width(&plate, lo, hi).unwrap().unwrap();
+        assert!((w - 1.0).abs() < 1e-12, "{w}");
+        let far: Vec<Vec3> = plate
+            .iter()
+            .map(|&p| p + Vec3::new(10.0, 0.0, 0.0))
+            .collect();
+        assert_eq!(narrow_width(&far, lo, hi).unwrap(), None);
+        let (v, t) = shapes::cuboid(hi);
+        let items = size_items(&plate, 0.2, 0.1, &v, &t).unwrap();
+        let triangles = items
+            .iter()
+            .filter(|w| matches!(w.primitive, Primitive::Triangle(_)))
+            .count();
+        assert_eq!(triangles, 2);
+        // free edges inside the box: y = 0.5 and y = 1.5 from x = 1 to 2,
+        // and the side at x = 1 (in pieces of four edge sizes, so a piece
+        // may reach 0.4 past the wall)
+        let length: f64 = items
+            .iter()
+            .filter_map(|w| match w.primitive {
+                Primitive::Segment([a, b]) => {
+                    assert_eq!(w.size, 0.1);
+                    assert!(a.x <= 2.4 + 1e-12 && b.x <= 2.4 + 1e-12, "{a:?} {b:?}");
+                    Some((b - a).length())
+                }
+                Primitive::Triangle(_) => None,
+            })
+            .sum();
+        assert!((3.0 - 1e-9..=3.8 + 1e-9).contains(&length), "{length}");
+        assert!(size_items(&plate, 0.0, 0.1, &v, &t).is_err());
     }
 }

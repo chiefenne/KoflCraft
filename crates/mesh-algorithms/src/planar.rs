@@ -230,7 +230,6 @@ impl Cdt {
                 return Err(Refused::Duplicate(v));
             }
         }
-        let region = self.region[start];
         let index = self.points.len();
         self.points.push(p);
         self.at.push(NONE);
@@ -255,7 +254,10 @@ impl Cdt {
             self.tris.push([a, b, index]);
             self.nbr.push([NONE, NONE, outer]);
             self.alive.push(true);
-            self.region.push(region);
+            // the cavity lies in one region, except when a constraint
+            // through `p` was lifted (see `split_constrained`): each new
+            // triangle then lies on the side of the old one it replaces
+            self.region.push(self.region[old]);
             if outer != NONE {
                 for j in 0..3 {
                     if self.nbr[outer][j] == old {
@@ -480,6 +482,31 @@ impl Cdt {
         Ok(())
     }
 
+    /// Split the constrained edge a–b at its midpoint (Ruppert's segment
+    /// split): the two halves stay constraints and the triangles on each
+    /// side keep their region. The new vertex's index.
+    pub fn split_constrained(&mut self, a: usize, b: usize) -> Result<usize, Refused> {
+        if !self.is_constrained(a, b) || !self.has_edge(a, b) {
+            return Err(Refused::Constrained);
+        }
+        let (pa, pb) = (self.points[a], self.points[b]);
+        let m = [(pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0];
+        self.constrained.remove(&key(a, b));
+        let v = match self.insert(m) {
+            Ok(v) => v,
+            Err(e) => {
+                self.constrained.insert(key(a, b));
+                return Err(e);
+            }
+        };
+        if !(self.has_edge(a, v) && self.has_edge(v, b)) {
+            return Err(Refused::Constrained);
+        }
+        self.constrained.insert(key(a, v));
+        self.constrained.insert(key(v, b));
+        Ok(v)
+    }
+
     /// Lawson flips of every unconstrained edge that is not locally
     /// Delaunay.
     pub fn make_delaunay(&mut self) {
@@ -640,7 +667,7 @@ mod tests {
         assert!(cdt.has_edge(a, b));
         let n = cdt.label_regions();
         assert!(n >= 2, "{n}");
-        let area = |r: usize| -> f64 {
+        let area_of = |cdt: &Cdt, r: usize| -> f64 {
             (0..cdt.tris.len())
                 .filter(|&t| cdt.alive[t] && cdt.region[t] == r)
                 .map(|t| {
@@ -649,7 +676,10 @@ mod tests {
                 })
                 .sum()
         };
-        let inner: f64 = (1..n).map(area).filter(|&x| (x - 0.36).abs() < 1e-12).sum();
+        let inner: f64 = (1..n)
+            .map(|r| area_of(&cdt, r))
+            .filter(|&x| (x - 0.36).abs() < 1e-12)
+            .sum();
         assert!((inner - 0.36).abs() < 1e-12, "{inner}");
         // a refinement point inside the square keeps the region label
         let t = cdt.locate([0.5, 0.5]).unwrap();
@@ -657,5 +687,19 @@ mod tests {
         cdt.insert([0.5, 0.5]).unwrap();
         assert!(cdt.created.iter().all(|&t| cdt.region[t] == r));
         check(&cdt);
+        // a split of a side of the square keeps both halves constrained and
+        // each side's triangles in their region, and the areas hold
+        let before: Vec<f64> = (0..n).map(|r| area_of(&cdt, r)).collect();
+        let m = cdt.split_constrained(ids[0], ids[1]).unwrap();
+        assert_eq!(cdt.points[m], [0.5, 0.2]);
+        assert!(cdt.is_constrained(ids[0], m) && cdt.is_constrained(m, ids[1]));
+        assert!(!cdt.is_constrained(ids[0], ids[1]));
+        check(&cdt);
+        for (r, a) in before.iter().enumerate() {
+            let now = area_of(&cdt, r);
+            assert!((now - a).abs() < 1e-12, "region {r}: {now} vs {a}");
+        }
+        // an edge that is no constraint is not split
+        assert!(cdt.split_constrained(ids[0], ids[2]).is_err());
     }
 }

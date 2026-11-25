@@ -50,6 +50,68 @@ pub struct Partition {
 pub struct ShellConfig {
     pub name: String,
     pub polygon: Vec<[f64; 3]>,
+    /// Cell size on the shell. Default: the build's `max_size` or an
+    /// eighth of the shell's narrow width inside the STL's box, whichever
+    /// is smaller (about eight cells across).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<f64>,
+    /// Cell size along the shell's free edges. Default: half the shell's
+    /// size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_size: Option<f64>,
+}
+
+/// The sizes a shell is built to, and whether each was set or chosen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShellSizes {
+    pub size: f64,
+    pub edge_size: f64,
+    pub size_set: bool,
+    pub edge_size_set: bool,
+}
+
+impl ShellConfig {
+    /// The shell's sizes in a build (see the fields' defaults); `lo`, `hi`
+    /// bound the STL.
+    pub fn sizes(
+        &self,
+        build: &ScaffoldBuild,
+        lo: mesh_core::geometry::Vec3,
+        hi: mesh_core::geometry::Vec3,
+    ) -> Result<ShellSizes, EngineError> {
+        let invalid = |m: String| EngineError::new(ErrorCode::InvalidArguments, m);
+        let positive = |v: f64| v.is_finite() && v > 0.0;
+        let polygon: Vec<mesh_core::geometry::Vec3> =
+            self.polygon.iter().map(|&p| vector(p)).collect();
+        let size = match self.size {
+            Some(v) if positive(v) => v.min(build.max_size),
+            Some(_) => {
+                return Err(invalid(format!(
+                    "shell {}: size must be positive",
+                    self.name
+                )));
+            }
+            None => shell_surface::narrow_width(&polygon, lo, hi)
+                .map_err(|e| invalid(format!("shell {}: {e}", self.name)))?
+                .map_or(build.max_size, |w| (w / 8.0).min(build.max_size)),
+        };
+        let edge_size = match self.edge_size {
+            Some(v) if positive(v) => v.min(build.max_size),
+            Some(_) => {
+                return Err(invalid(format!(
+                    "shell {}: edge_size must be positive",
+                    self.name
+                )));
+            }
+            None => size / 2.0,
+        };
+        Ok(ShellSizes {
+            size,
+            edge_size,
+            size_set: self.size.is_some(),
+            edge_size_set: self.edge_size.is_some(),
+        })
+    }
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -473,6 +535,7 @@ pub fn generate(
         ShellConfig,
         shell_surface::ShellSurfaceStats,
         duct::CrackStats,
+        Option<ShellSizes>,
     )> = Vec::new();
     let mut grading_field = None;
     let mut voronoi: Option<duct::VoronoiStats> = None;
@@ -512,8 +575,16 @@ pub fn generate(
         shell_report = shell_surfaces
             .iter()
             .enumerate()
-            .map(|(k, st)| (plan.shells[k].clone(), *st, crack))
-            .collect();
+            .map(|(k, st)| {
+                let s = &plan.shells[k];
+                let sizes = spec
+                    .build
+                    .as_ref()
+                    .map(|b| s.sizes(b, surface.bounds().min(), surface.bounds().max()))
+                    .transpose()?;
+                Ok((s.clone(), *st, crack, sizes))
+            })
+            .collect::<Result<_, EngineError>>()?;
         if let Some(max) = spec.max_wall_deviation {
             if !max.is_finite() || max <= 0.0 {
                 return Err(invalid("invalid wall deviation limit"));
@@ -892,6 +963,7 @@ fn scaffold_shell_report(
         ShellConfig,
         shell_surface::ShellSurfaceStats,
         duct::CrackStats,
+        Option<ShellSizes>,
     )],
 ) -> Vec<Value> {
     let area = |id: usize| mesh.measurements.areas.get(id - 1).copied().unwrap_or(0.0);
@@ -909,7 +981,7 @@ fn scaffold_shell_report(
     shells
         .iter()
         .enumerate()
-        .map(|(k, (s, st, crack))| {
+        .map(|(k, (s, st, crack, sizes))| {
             let (front, back) = (stl_patches + 1 + 2 * k, stl_patches + 2 + 2 * k);
             let faces = |id: usize| mesh.boundary.iter().filter(|f| f.patch == id).count();
             json!({
@@ -928,6 +1000,21 @@ fn scaffold_shell_report(
                 "wall_line_length": st.wall_line_length,
                 "free_edge_ends": st.free_edge_ends,
                 "min_triangle_angle_degrees": st.min_angle_degrees,
+                "sizes": sizes.map(|z| json!({
+                    "size": z.size,
+                    "size_from": if z.size_set {"set"} else {"default: max_size or narrow width / 8"},
+                    "edge_size": z.edge_size,
+                    "edge_size_from": if z.edge_size_set {"set"} else {"default: size / 2"},
+                })),
+                "achieved": {
+                    "shell_edge_min": st.edge_lengths[0],
+                    "shell_edge_median": st.edge_lengths[1],
+                    "shell_edge_max": st.edge_lengths[2],
+                    "free_edge_piece_mean": (st.free_edge_pieces > 0)
+                        .then(|| st.free_edge_length / st.free_edge_pieces as f64),
+                    "wall_line_splits": st.wall_line_splits,
+                    "free_edge_splits": st.free_edge_splits,
+                },
                 "scaffold_node_copies": crack.copies,
                 "free_edge_nodes": crack.single_nodes,
             })
@@ -1467,7 +1554,7 @@ fn load_scaffold(
             {
                 return Err(invalid("invalid scaffold build settings"));
             }
-            let field = b.grading.as_ref().map(|g| g.field(b)).transpose()?;
+            let field = build_field(b, surface, shells)?;
             let start = Instant::now();
             let triangles: Vec<[usize; 3]> = surface
                 .facets()
@@ -1588,9 +1675,11 @@ fn load_scaffold(
                 .as_ref()
                 .map(|c| move |x: mesh_core::geometry::Vec3| c.contains(x));
             // each shell meshed in its plane at the scaffold's spacing
+            let line_edges: Vec<(usize, usize)> = wall.lines.iter().map(|&(e, _)| e).collect();
             let spacing = shell_surface::Spacing::new(
                 &wall.vertices,
                 &wall.triangles,
+                &line_edges,
                 b.rate,
                 b.max_size,
                 field.as_ref(),
@@ -1614,6 +1703,8 @@ fn load_scaffold(
                 )
                 .map_err(|e| invalid(&format!("shell {:?}: {e}", shells[k].name)))?;
                 vertices.extend(m.vertices);
+                split_wall_edges(&mut triangles, &mut tags, &m.wall_splits)
+                    .map_err(|e| invalid(&format!("shell {:?}: {e}", shells[k].name)))?;
                 shell_triangles.extend(m.triangles.into_iter().map(|t| (t, k)));
                 shell_stats.push(m.stats);
             }
@@ -1675,6 +1766,141 @@ fn load_scaffold(
             "volume scaffold needs exactly one of file or build",
         )),
     }
+}
+
+/// Split the wall triangles at the wall-line edges a shell split: each
+/// triangle on such an edge becomes a fan from its third corner through
+/// the new points (in order from the edge's first vertex). The points lie
+/// on the edges, so the wall keeps its shape.
+fn split_wall_edges(
+    triangles: &mut Vec<[usize; 3]>,
+    tags: &mut Vec<usize>,
+    splits: &[((usize, usize), Vec<usize>)],
+) -> Result<(), String> {
+    if splits.is_empty() {
+        return Ok(());
+    }
+    let key = |a: usize, b: usize| (a.min(b), a.max(b));
+    let mut on: std::collections::HashMap<(usize, usize), Vec<usize>> =
+        std::collections::HashMap::new();
+    for ((a, b), _) in splits {
+        on.insert(key(*a, *b), Vec::new());
+    }
+    for (f, t) in triangles.iter().enumerate() {
+        for i in 0..3 {
+            if let Some(list) = on.get_mut(&key(t[i], t[(i + 1) % 3])) {
+                list.push(f);
+            }
+        }
+    }
+    for ((a, b), points) in splits {
+        let faces = on[&key(*a, *b)].clone();
+        if faces.len() != 2 {
+            return Err(format!(
+                "a split wall-line edge has {} wall triangles, not two",
+                faces.len()
+            ));
+        }
+        for f in faces {
+            let t = triangles[f];
+            let Some(i) = (0..3).find(|&i| key(t[i], t[(i + 1) % 3]) == key(*a, *b)) else {
+                return Err("a split wall-line edge was split twice".into());
+            };
+            let (u, w, apex) = (t[i], t[(i + 1) % 3], t[(i + 2) % 3]);
+            let mut chain = vec![u];
+            if u == *a {
+                chain.extend(points.iter().copied());
+            } else {
+                chain.extend(points.iter().rev().copied());
+            }
+            chain.push(w);
+            triangles[f] = [chain[0], chain[1], apex];
+            let mut pieces = vec![f];
+            for pair in chain[1..].windows(2) {
+                pieces.push(triangles.len());
+                triangles.push([pair[0], pair[1], apex]);
+                tags.push(tags[f]);
+            }
+            // another split edge of the same triangle (at a corner of the
+            // line) now lies on one of the pieces
+            for &g in &pieces[1..] {
+                let tg = triangles[g];
+                for i in 0..3 {
+                    if let Some(list) = on.get_mut(&key(tg[i], tg[(i + 1) % 3])) {
+                        for h in list.iter_mut() {
+                            if *h == f {
+                                *h = g;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The size field of a built scaffold: the grading's datum objects and
+/// regions and each shell's own sizes (its polygon and free edges, see
+/// [`ShellConfig::sizes`]); `None` when neither asks for anything.
+fn build_field(
+    b: &ScaffoldBuild,
+    surface: &mesh_geometry::ClosedSurface,
+    shells: &[ShellConfig],
+) -> Result<Option<mesh_algorithms::sizing::SizeField>, EngineError> {
+    use mesh_algorithms::sizing::{
+        Frame, Shape, SizeField, SizeSource, SourceKind, surface::WeightedSet,
+    };
+    let grading = b.grading.as_ref().map(|g| g.field(b)).transpose()?;
+    if shells.is_empty() {
+        return Ok(grading);
+    }
+    let invalid = |m: String| EngineError::new(ErrorCode::InvalidArguments, m);
+    let (lo, hi) = (surface.bounds().min(), surface.bounds().max());
+    let triangles: Vec<[usize; 3]> = surface
+        .facets()
+        .iter()
+        .map(|f| f.triangle.vertices)
+        .collect();
+    let mut min_size = grading.as_ref().map_or(b.min_size, |g| g.min_size());
+    let mut sources: Vec<SizeSource> = grading
+        .as_ref()
+        .map(|g| g.sources().to_vec())
+        .unwrap_or_default();
+    for s in shells {
+        let sizes = s.sizes(b, lo, hi)?;
+        if sizes.size >= b.max_size && sizes.edge_size >= b.max_size {
+            continue;
+        }
+        let polygon: Vec<mesh_core::geometry::Vec3> =
+            s.polygon.iter().map(|&p| vector(p)).collect();
+        let items = shell_surface::size_items(
+            &polygon,
+            sizes.size,
+            sizes.edge_size,
+            surface.vertices(),
+            &triangles,
+        )
+        .map_err(|e| invalid(format!("shell {}: {e}", s.name)))?;
+        let set = WeightedSet::new(items);
+        let size = set.smallest().unwrap_or(b.max_size);
+        min_size = min_size.min(size);
+        sources.push(SizeSource {
+            name: format!("shell:{}", s.name),
+            kind: SourceKind::Shell,
+            shape: Shape::Weighted(std::sync::Arc::new(set)),
+            frame: Frame::GLOBAL,
+            size,
+            distance: 0.0,
+            growth: None,
+        });
+    }
+    if sources.is_empty() {
+        return Ok(None);
+    }
+    SizeField::new(sources, min_size, b.max_size, 1.0 + b.rate)
+        .map(Some)
+        .map_err(|e| EngineError::new(ErrorCode::InvalidSizeField, format!("{e:?}")))
 }
 
 /// The largest sampled distance from the scaffold wall to the STL wall and
@@ -1867,6 +2093,160 @@ impl Partition {
         grading.field(build)?;
         build.grading = Some(grading);
         Ok(())
+    }
+
+    /// Add the zero-thickness shell `shell` (SHL-01): its name and
+    /// `<name>_back` must be free, the polygon planar, convex and
+    /// counter-clockwise about the `name` side, the sizes positive, and the
+    /// shell may not touch another (not supported yet).
+    pub fn add_shell(&mut self, shell: ShellConfig) -> Result<(), EngineError> {
+        let invalid = |m: String| EngineError::new(ErrorCode::InvalidArguments, m);
+        let name = shell.name.as_str();
+        if name.is_empty() || name.chars().any(|c| c.is_control() || c.is_whitespace()) {
+            return Err(invalid(
+                "a shell name must be nonempty, without spaces or control characters".into(),
+            ));
+        }
+        let sides = |n: &str| [n.to_string(), format!("{n}_back")];
+        for other in &self.shells {
+            if sides(&other.name).iter().any(|o| sides(name).contains(o)) {
+                return Err(invalid(format!(
+                    "shell {} exists (its sides are {} and {}_back); remove it first or pick another name",
+                    other.name, other.name, other.name
+                )));
+            }
+        }
+        let polygon: Vec<mesh_core::geometry::Vec3> =
+            shell.polygon.iter().map(|&p| vector(p)).collect();
+        shell_surface::check_polygon(&polygon)
+            .map_err(|e| invalid(format!("shell {name}: {e}")))?;
+        for (v, what) in [(shell.size, "size"), (shell.edge_size, "edge_size")] {
+            if v.is_some_and(|v| !(v.is_finite() && v > 0.0)) {
+                return Err(invalid(format!("shell {name}: {what} must be positive")));
+            }
+        }
+        for other in &self.shells {
+            let theirs: Vec<mesh_core::geometry::Vec3> =
+                other.polygon.iter().map(|&p| vector(p)).collect();
+            if shell_surface::polygons_touch(&polygon, &theirs).unwrap_or(false) {
+                return Err(invalid(format!(
+                    "shell {name} touches shell {}; shells that meet are not supported yet",
+                    other.name
+                )));
+            }
+        }
+        self.shells.push(shell);
+        Ok(())
+    }
+
+    /// Remove the shell `name`.
+    pub fn remove_shell(&mut self, name: &str) -> Result<(), EngineError> {
+        let before = self.shells.len();
+        self.shells.retain(|s| s.name != name);
+        if self.shells.len() == before {
+            let known: Vec<&str> = self.shells.iter().map(|s| s.name.as_str()).collect();
+            return Err(EngineError::new(
+                ErrorCode::InvalidArguments,
+                if known.is_empty() {
+                    format!("no shell {name}; the partition has no shells")
+                } else {
+                    format!("no shell {name}; the partition has {}", known.join(", "))
+                },
+            ));
+        }
+        Ok(())
+    }
+
+    /// Each shell with the sizes a build would use (the defaults filled in
+    /// when the partition has a Rust-built scaffold; `lo`, `hi` bound the
+    /// STL).
+    pub fn shell_sizes(
+        &self,
+        lo: mesh_core::geometry::Vec3,
+        hi: mesh_core::geometry::Vec3,
+    ) -> Result<Vec<Option<ShellSizes>>, EngineError> {
+        let build = self.volume_scaffold.as_ref().and_then(|s| s.build.as_ref());
+        self.shells
+            .iter()
+            .map(|s| build.map(|b| s.sizes(b, lo, hi)).transpose())
+            .collect()
+    }
+
+    /// The shells as `shell.list` shows them: name, sides, polygon and its
+    /// area, and the sizes; with the partition's STL (`stl`) the default
+    /// sizes are filled in as a build would choose them.
+    pub fn shell_listing(&self, stl: Option<&[u8]>) -> Result<Value, EngineError> {
+        let sizes = match stl {
+            Some(data) => {
+                if sha256(data) != self.source_sha256 {
+                    return Err(EngineError::new(
+                        ErrorCode::InvalidDomain,
+                        "the STL differs from the partition's source",
+                    ));
+                }
+                let surface = import_closed_stl(data, StlOptions::default())
+                    .map_err(|e| EngineError::new(ErrorCode::InvalidDomain, e))?;
+                self.shell_sizes(surface.bounds().min(), surface.bounds().max())?
+            }
+            None => vec![None; self.shells.len()],
+        };
+        let shells: Vec<Value> = self
+            .shells
+            .iter()
+            .zip(sizes)
+            .map(|(s, z)| {
+                let polygon: Vec<mesh_core::geometry::Vec3> =
+                    s.polygon.iter().map(|&p| vector(p)).collect();
+                let mut n = mesh_core::geometry::Vec3::ZERO;
+                for i in 0..polygon.len() {
+                    n = n
+                        + (polygon[i] - polygon[0])
+                            .cross(polygon[(i + 1) % polygon.len()] - polygon[0]);
+                }
+                let area = n.length() / 2.0;
+                let normal = if area > 0.0 { n / (2.0 * area) } else { n };
+                let (size, size_from, edge, edge_from) = match z {
+                    Some(z) => (
+                        json!(z.size),
+                        if z.size_set {
+                            "set"
+                        } else {
+                            "default: max_size or narrow width / 8"
+                        },
+                        json!(z.edge_size),
+                        if z.edge_size_set {
+                            "set"
+                        } else {
+                            "default: size / 2"
+                        },
+                    ),
+                    None => (
+                        json!(s.size),
+                        if s.size.is_some() {
+                            "set"
+                        } else {
+                            "default (give `surface` to see it)"
+                        },
+                        json!(s.edge_size),
+                        if s.edge_size.is_some() {
+                            "set"
+                        } else {
+                            "default (give `surface` to see it)"
+                        },
+                    ),
+                };
+                json!({
+                    "name": s.name,
+                    "sides": {"front": s.name, "back": format!("{}_back", s.name)},
+                    "polygon": s.polygon,
+                    "normal": [normal.x, normal.y, normal.z],
+                    "polygon_area": area,
+                    "size": size, "size_from": size_from,
+                    "edge_size": edge, "edge_size_from": edge_from,
+                })
+            })
+            .collect();
+        Ok(json!({ "shells": shells }))
     }
 
     /// Remove the source `name`; frames no source uses any more go too.
