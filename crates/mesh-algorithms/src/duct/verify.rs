@@ -97,6 +97,65 @@ fn warping(p: &[Vec3], ring: &[usize], area: Vec3) -> f64 {
     worst
 }
 
+/// A cell's shell as the solver sees it.
+pub(super) struct Shell {
+    pub open: bool,
+    pub volume: f64,
+    pub centre: Vec3,
+    pub pyramids_ok: bool,
+}
+
+impl Shell {
+    /// Closed, positive volume and every face pyramid on the centre positive
+    /// (the solver rules that need no neighbour).
+    pub fn valid(&self) -> bool {
+        !self.open && self.volume > 0.0 && self.pyramids_ok
+    }
+}
+
+/// The shell of a cell given by its outward face rings.
+pub(super) fn cell_shell(p: &[Vec3], rings: &[Vec<usize>]) -> Shell {
+    let geometry: Vec<(Vec3, Vec3)> = rings.iter().map(|r| fv_face(p, r)).collect();
+    shell(rings, &geometry)
+}
+
+fn shell(rings: &[Vec<usize>], geometry: &[(Vec3, Vec3)]) -> Shell {
+    // closed shell: every edge twice, area vectors summing to zero
+    let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
+    for r in rings {
+        for (i, &a) in r.iter().enumerate() {
+            let b = r[(i + 1) % r.len()];
+            *edges.entry((a.min(b), a.max(b))).or_default() += 1;
+        }
+    }
+    let sum = geometry.iter().fold(Vec3::ZERO, |s, g| s + g.0);
+    let total: f64 = geometry.iter().map(|g| g.0.length()).sum();
+    let open = edges.values().any(|&n| n != 2)
+        || sum.length().partial_cmp(&(1e-6 * total)) == Some(std::cmp::Ordering::Greater)
+        || !total.is_finite();
+    // volume and centre from pyramids on the mean of the face centres
+    let estimate = geometry.iter().fold(Vec3::ZERO, |s, g| s + g.1) / geometry.len().max(1) as f64;
+    let mut volume = 0.0_f64;
+    let mut moment = Vec3::ZERO;
+    for (area, centre) in geometry {
+        let v = area.dot(*centre - estimate) / 3.0;
+        volume += v;
+        moment = moment + (*centre * 0.75 + estimate * 0.25) * v;
+    }
+    let centre = if volume.abs() > 0.0 && volume.is_finite() {
+        moment / volume
+    } else {
+        estimate
+    };
+    let pyramids_ok = geometry.iter().all(|(area, c)| area.dot(*c - centre) > 0.0);
+    Shell {
+        open,
+        volume,
+        centre,
+        pyramids_ok,
+    }
+}
+
 /// The solver rules and each cell's volume as the solver takes it (the sum
 /// of its face pyramids).
 fn solver_rules_and_volumes(p: &[Vec3], cells: &[Cell]) -> (SolverRules, Vec<f64>) {
@@ -117,35 +176,12 @@ fn solver_rules_and_volumes(p: &[Vec3], cells: &[Cell]) -> (SolverRules, Vec<f64
         for (r, g) in rings.iter().zip(&geometry) {
             out.maximum_warping = out.maximum_warping.max(warping(p, r, g.0));
         }
-        // closed shell: every edge twice, area vectors summing to zero
-        let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
-        for r in &rings {
-            for (i, &a) in r.iter().enumerate() {
-                let b = r[(i + 1) % r.len()];
-                *edges.entry((a.min(b), a.max(b))).or_default() += 1;
-            }
-        }
-        let sum = geometry.iter().fold(Vec3::ZERO, |s, g| s + g.0);
-        let total: f64 = geometry.iter().map(|g| g.0.length()).sum();
-        let open = edges.values().any(|&n| n != 2)
-            || sum.length().partial_cmp(&(1e-6 * total)) == Some(std::cmp::Ordering::Greater)
-            || !total.is_finite();
-        // volume and centre from pyramids on the mean of the face centres
-        let estimate =
-            geometry.iter().fold(Vec3::ZERO, |s, g| s + g.1) / geometry.len().max(1) as f64;
-        let mut volume = 0.0;
-        let mut moment = Vec3::ZERO;
-        for (area, centre) in &geometry {
-            let v = area.dot(*centre - estimate) / 3.0;
-            volume += v;
-            moment = moment + (*centre * 0.75 + estimate * 0.25) * v;
-        }
-        let centre = if volume.abs() > 0.0 && volume.is_finite() {
-            moment / volume
-        } else {
-            estimate
-        };
-        let pyramids_ok = geometry.iter().all(|(area, c)| area.dot(*c - centre) > 0.0);
+        let Shell {
+            open,
+            volume,
+            centre,
+            pyramids_ok,
+        } = shell(&rings, &geometry);
         out.open_cells += usize::from(open);
         let nonpositive = volume.is_nan() || volume <= 0.0;
         out.nonpositive_volume += usize::from(nonpositive);

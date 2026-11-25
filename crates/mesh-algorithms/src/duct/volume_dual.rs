@@ -120,6 +120,8 @@ fn split_layers(front: &mut front::Front, cuts: &mut Subdivision) -> Result<(), 
 struct Corner {
     /// The three median-dual quadrilaterals towards the other vertices.
     faces: Vec<Vec<usize>>,
+    /// The scaffold vertex across each of `faces`.
+    towards: Vec<usize>,
     /// The tetrahedron faces through the vertex (sorted scaffold ids) with
     /// the quadrilateral of the corner piece on each, oriented outward.
     sides: Vec<([usize; 3], Vec<usize>)>,
@@ -313,6 +315,103 @@ fn split_reentrant(
         .map(|part| wall_inversions(p, cell, part, wall))
         .sum();
     if after < before { parts } else { vec![all] }
+}
+
+/// Splits a part that breaks the solver rules (verify::Shell::valid: closed,
+/// positive volume, every face pyramid on the centroid positive) into parts
+/// that keep them. Each corner piece is convex (the intersection of the
+/// half-spaces where its vertex's barycentric coordinate is the largest),
+/// so a single piece always passes. Parts grow greedily from the largest
+/// remaining piece over pieces that share a tetrahedron face with them,
+/// as long as the union still passes: the local split-and-keep fallback
+/// of production meshers (research/robust-polyhedral-meshing).
+fn split_invalid(
+    p: &[Vec3],
+    cell: &Dual,
+    part: Vec<usize>,
+    earlier: &[Vec<usize>],
+    split_quads: &HashMap<[usize; 4], usize>,
+) -> Vec<Vec<usize>> {
+    let valid = |group: &[usize]| verify::cell_shell(p, &part_faces(cell, group).0).valid();
+    let mut parts: Vec<Vec<usize>> = earlier.to_vec();
+    let touches = |a: usize, b: usize| {
+        cell.corners[a]
+            .sides
+            .iter()
+            .any(|(k, _)| cell.corners[b].sides.iter().any(|(o, _)| o == k))
+    };
+    // A solver takes one face between two cells, so the faces a part shares
+    // with each neighbouring cell must tile one disk: with an unsplit dual
+    // cell (the scaffold vertex across, `towards`), with a
+    // part of a dual cell split before (`split_quads`) and with each part of
+    // this cell made before it. A single piece always does: its three side
+    // quadrilaterals share its vertex, and its three dual quadrilaterals
+    // face three different vertices.
+    let simple = |group: &[usize], done: &[Vec<usize>]| {
+        let mut by_edge: HashMap<(bool, usize), Vec<&Vec<usize>>> = HashMap::new();
+        for &c in group {
+            let corner = &cell.corners[c];
+            for (f, &across) in corner.faces.iter().zip(&corner.towards) {
+                let key = match split_quads.get(&quad_key(f)) {
+                    Some(&owner) => (true, owner),
+                    None => (false, across),
+                };
+                by_edge.entry(key).or_default().push(f);
+            }
+        }
+        by_edge
+            .values()
+            .all(|rings| super::voronoi_core::one_loop(rings))
+            && done.iter().all(|other| {
+                let shared: Vec<&Vec<usize>> = group
+                    .iter()
+                    .flat_map(|&c| cell.corners[c].sides.iter())
+                    .filter(|(k, _)| {
+                        other
+                            .iter()
+                            .any(|&o| cell.corners[o].sides.iter().any(|(q, _)| q == k))
+                    })
+                    .map(|(_, quad)| quad)
+                    .collect();
+                super::voronoi_core::one_loop(&shared)
+            })
+    };
+    if valid(&part) && simple(&part, earlier) {
+        return vec![part];
+    }
+    let mut left = part;
+    left.sort_by(|&a, &b| {
+        cell.corners[b]
+            .volume
+            .total_cmp(&cell.corners[a].volume)
+            .then(a.cmp(&b))
+    });
+    while !left.is_empty() {
+        let mut group = vec![left.remove(0)];
+        loop {
+            let next = left.iter().position(|&c| {
+                group.iter().any(|&g| touches(g, c)) && {
+                    let mut trial = group.clone();
+                    trial.push(c);
+                    valid(&trial) && simple(&trial, &parts)
+                }
+            });
+            match next {
+                Some(i) => group.push(left.remove(i)),
+                None => break,
+            }
+        }
+        group.sort_unstable();
+        parts.push(group);
+    }
+    parts.split_off(earlier.len())
+}
+
+/// A quadrilateral's nodes, sorted: the same key from both sides.
+fn quad_key(f: &[usize]) -> [usize; 4] {
+    let mut k = [f[0], f[1], f[2], f[3]];
+    k.sort_unstable();
+    k
 }
 
 /// A point strictly inside a boundary cell that sees every face: a short
@@ -684,9 +783,11 @@ pub fn build_volume_dual(
             let g = cuts.face(p, [q[i], q[j], q[l]]);
             let face = [edge, f, centroid, g];
             dual[t[i]].corners[corners[i]].faces.push(face.to_vec());
+            dual[t[i]].corners[corners[i]].towards.push(t[j]);
             dual[t[j]].corners[corners[j]]
                 .faces
                 .push(face.into_iter().rev().collect());
+            dual[t[j]].corners[corners[j]].towards.push(t[i]);
         }
         // The three tetrahedron faces through each vertex bound its corner
         // piece. They become cell faces only where a dual cell is split.
@@ -732,6 +833,8 @@ pub fn build_volume_dual(
         .iter()
         .map(|c| shell_centroid(p, &c.element.faces()))
         .collect();
+    // Dual quadrilaterals of cells already split, by the part that owns them.
+    let mut split_quads: HashMap<[usize; 4], usize> = HashMap::new();
     for (id, cell) in dual.into_iter().enumerate() {
         let volume: f64 = cell.corners.iter().map(|c| c.volume).sum();
         if volume <= 0. {
@@ -740,7 +843,20 @@ pub fn build_volume_dual(
         let site = mapped[id];
         let owner_offset = front.cells.len();
         let wall = |nodes: &[usize; 3]| prisms.get(&sorted(*nodes)).map(|&c| prism_centres[c]);
-        let parts = split_reentrant(p, site, &cell, &wall);
+        let mut parts: Vec<Vec<usize>> = Vec::new();
+        for part in split_reentrant(p, site, &cell, &wall) {
+            let split = split_invalid(p, &cell, part, &parts, &split_quads);
+            parts.extend(split);
+        }
+        if parts.len() > 1 {
+            for (k, group) in parts.iter().enumerate() {
+                for &c in group {
+                    for f in &cell.corners[c].faces {
+                        split_quads.insert(quad_key(f), owner_offset + k);
+                    }
+                }
+            }
+        }
         for (part, group) in parts.iter().enumerate() {
             let (faces, planes, used) = part_faces(&cell, group);
             let part_volume: f64 = group.iter().map(|&c| cell.corners[c].volume).sum();

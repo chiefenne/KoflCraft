@@ -467,7 +467,8 @@ fn median_dual_core_stays_available_and_valid_on_the_elbow() {
     ];
     let report = work.run(&args)["report"].clone();
     assert_eq!(report["algorithm"], "volume_median_dual_v2");
-    assert_eq!(report["polyhedra"], 237);
+    // 237 before cells failing the solver rules were split into valid parts
+    assert_eq!(report["polyhedra"], 243);
     assert_eq!(report["prisms"], 6768);
     let evidence: Value =
         serde_json::from_slice(&fs::read(work.path().join("median/mesh-evidence.json")).unwrap())
