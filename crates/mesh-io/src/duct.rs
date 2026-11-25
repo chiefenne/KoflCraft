@@ -304,10 +304,13 @@ pub fn gmsh(mesh: &DuctMesh, version: GmshVersion, out: &mut dyn Write) -> io::R
         });
     }
     let mut model = Model::new(points);
-    for (tag, name) in [(1, "inlet"), (2, "outlet"), (3, "walls")] {
-        model.group(2, tag, name);
+    let used = used_patches(mesh);
+    for &tag in &used {
+        model.group(2, tag, &mesh.patches[tag - 1].0);
     }
-    model.group(3, 4, "fluid");
+    // the classic duct keeps physical groups 1 to 3 and fluid 4
+    let fluid = used.last().copied().unwrap_or(0).max(3) + 1;
+    model.group(3, fluid, "fluid");
     for (face, split) in mesh.boundary.iter().zip(&boundary_split) {
         match split {
             Some(tris) => {
@@ -329,11 +332,11 @@ pub fn gmsh(mesh: &DuctMesh, version: GmshVersion, out: &mut dyn Write) -> io::R
         let entity = c.region + 1;
         let parent_id = polyhedral.then_some(parent);
         match &c.element {
-            Element::Tet(n) => model.element_of(4, 4, entity, n, parent_id)?,
-            Element::Wedge(n) => model.element_of(6, 4, entity, n, parent_id)?,
+            Element::Tet(n) => model.element_of(4, fluid, entity, n, parent_id)?,
+            Element::Wedge(n) => model.element_of(6, fluid, entity, n, parent_id)?,
             Element::Polyhedron(p) if native(p) => {
                 for w in p.prism.iter().flatten() {
-                    model.element_of(6, 4, entity, w, parent_id)?;
+                    model.element_of(6, fluid, entity, w, parent_id)?;
                 }
             }
             Element::Polyhedron(p) => {
@@ -347,7 +350,7 @@ pub fn gmsh(mesh: &DuctMesh, version: GmshVersion, out: &mut dyn Write) -> io::R
                             for t in tris {
                                 model.element_of(
                                     4,
-                                    4,
+                                    fluid,
                                     entity,
                                     &[t[2], t[1], t[0], apex],
                                     parent_id,
@@ -358,7 +361,7 @@ pub fn gmsh(mesh: &DuctMesh, version: GmshVersion, out: &mut dyn Write) -> io::R
                             let mut nodes: Vec<usize> = face.iter().rev().copied().collect();
                             nodes.push(apex);
                             let kind = if face.len() == 3 { 4 } else { 7 };
-                            model.element_of(kind, 4, entity, &nodes, parent_id)?;
+                            model.element_of(kind, fluid, entity, &nodes, parent_id)?;
                         }
                     }
                 }
@@ -395,14 +398,43 @@ pub fn handoff(mesh: &DuctMesh) -> Result<HandoffMesh, HandoffError> {
         })
         .collect();
     let mut cells: Vec<CellFaces> = cells;
-    let boundary = merge_boundary(&mut cells, mesh);
+    let used = used_patches(mesh);
+    let mut boundary = merge_boundary(&mut cells, mesh);
+    for face in &mut boundary {
+        // patch id - 1 to the index among the patches in use
+        face.1 = used
+            .binary_search(&(face.1 + 1))
+            .map_err(|_| HandoffError(format!("boundary face on unknown patch {}", face.1 + 1)))?;
+    }
+    let names: Vec<&str> = used
+        .iter()
+        .map(|&t| mesh.patches[t - 1].0.as_str())
+        .collect();
+    let mut patches = patches_from_names(&names);
+    for (patch, &t) in patches.iter_mut().zip(&used) {
+        patch.role = crate::handoff::PatchRole::from_name(&mesh.patches[t - 1].1);
+    }
     HandoffMesh::from_cells(
         mesh.points.clone(),
         cells,
         vec!["fluid".to_string()],
         &boundary,
-        patches_from_names(&["inlet", "outlet", "walls"]),
+        patches,
     )
+}
+
+/// The patch ids that have boundary faces, ascending; every one must be
+/// named in `mesh.patches`.
+fn used_patches(mesh: &DuctMesh) -> Vec<usize> {
+    let mut used: Vec<usize> = mesh
+        .boundary
+        .iter()
+        .map(|f| f.patch)
+        .filter(|&p| p >= 1 && p <= mesh.patches.len())
+        .collect();
+    used.sort_unstable();
+    used.dedup();
+    used
 }
 
 /// Boundary faces of one cell on one patch, merged into one polygon where

@@ -49,6 +49,14 @@ Two rules keep thin parts meshable ([note](../research/thin-gaps.md)). The chord
 
 On the synthetic [cooling jacket](../test-fixtures/cooling-jacket/README.md) (24,732 facets) both caps score 1.000 and the next candidate, a block face, 0.57. On the Manifold surface the two best candidates are exactly the port caps of its hand-made port file. Run `cargo test --release --locked -p mesh-engine --test ports`.
 
+## Flush openings and named walls
+
+A patch map may name any number of wall patches, and at most one inlet and one outlet. Every patch keeps its name and role through the mesh: in the report (`patches`: id, name, role, layered, STL area, mesh area), in the Gmsh physical groups of `mesh.msh` and in the FoehnCraft hand-off. The remesher keeps the borders between patches as feature lines, so no wall triangle crosses one, and sizes flush borders like port rims (`rim_size`).
+
+An inlet or outlet whose rim turns by less than the feature angle (30°) everywhere sits flush in its wall, like a burner disc in a furnace wall. It cannot contract in its plane as a pipe-end cap does, so it grows wall layers like the walls around it; its faces are the wall faces of layer prisms, and its name and role stay. A duct may then have no cap at all. `inlet.vtu`, `outlet.vtu` and `walls.vtu` keep their meaning: the two caps and all layered patches. `mesh.setup_duct` sizes from the smallest inlet or outlet, flush or not.
+
+The [furnace fixture](../test-fixtures/furnace/README.md) is FoehnCraft's gallery furnace (example 259) with one tube: a burner disc and an outlet flush with their walls, and the patches `walls`, `front`, `tubes`, `burner` and `outlet`. Run `cargo test --release --locked -p mesh-cli --test workflow flush_openings`. With all seven tubes, 5 layers (first 2 mm, growth 1.2), wall sizes 0.042 to 0.125 m and rims of 0.03 m it has 640,528 cells (619,260 prisms) and passes the solver rules; FoehnCraft reads it as valid with a maximum non-orthogonality of 85.2°. At 0.12 m six core cells fail where a tube meets a side wall; the median dual core is fragile there.
+
 ## Fixture results
 
 | Case | Core tetrahedra | Core polyhedra | Wall prisms | Fluid volume | Inlet / outlet area |

@@ -122,11 +122,23 @@ how = "On the 90,894-facet Manifold surface the two best candidates are exactly 
 tests = [
   "crates/mesh-engine/tests/ports.rs::detection_recovers_the_hand_recorded_manifold_ports",
   "crates/mesh-engine/tests/ports.rs::detection_and_setup_on_the_cooling_jacket",
-  "crates/mesh-engine/tests/ports.rs::duct_input_refuses_maps_without_one_inlet_and_outlet",
+  "crates/mesh-engine/tests/ports.rs::duct_input_refuses_maps_with_two_inlets_or_other_roles",
   "crates/mesh-cli/tests/workflow.rs::generate_duct_reads_a_patch_map_like_a_port_file",
 ]
 commands = []
 gaps = "Planar pipe-end caps only (no open or curved ports, no more than two); inlet and outlet are a guess to confirm; the setup serves the polyhedral mode only (no star-shaped regions for bulk or layered); setup sizes are fixed fractions of the port radius, not of the wall gaps"
+
+[[feature]]
+id = "flush-openings"
+title = "Named wall patches and flush openings in the polyhedral duct (BC-01, BC-02)"
+requirements = ["BC-01", "BC-02"]
+grade = "partial"
+how = "The box furnace of FoehnCraft gallery 259 with one tube: its burner disc and outlet opening, flush with their walls, grow wall layers; walls, front, tubes, burner (inlet) and outlet keep their names and roles in the report, the Gmsh physical groups and the FoehnCraft VTU, every patch area within 1% (tube 3%) of the STL; with seven tubes 640,528 cells pass the solver rules and FoehnCraft reads the mesh as valid"
+tests = [
+  "crates/mesh-cli/tests/workflow.rs::flush_openings_grow_layers_and_every_patch_keeps_its_name",
+]
+commands = []
+gaps = "Polyhedral mode with a built scaffold only (bulk and layered take the classic three patches); the median dual core can still fail a few cells where a tube meets a wall (six at 0.12 m on the gallery furnace); six layer prisms per wall triangle make layer-heavy meshes; openings that are neither caps nor flush (partly flush rims) are treated as caps"
 
 [[feature]]
 id = "sweep"

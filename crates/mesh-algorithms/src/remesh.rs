@@ -84,6 +84,8 @@ pub struct Remeshed {
     pub triangles: Vec<[usize; 3]>,
     /// The source facet each kept triangle came from; `None` for new wall.
     pub source: Vec<Option<usize>>,
+    /// The group (see [`remesh_grouped`]) of every triangle.
+    pub group: Vec<usize>,
     pub stats: RemeshStats,
 }
 
@@ -820,7 +822,24 @@ pub fn remesh(
     keep: &[bool],
     opts: RemeshOptions,
 ) -> Result<Remeshed, String> {
-    if keep.len() != triangles.len() || triangles.iter().flatten().any(|&v| v >= vertices.len()) {
+    remesh_grouped(vertices, triangles, keep, &vec![0; triangles.len()], opts)
+}
+
+/// [`remesh`] with a group per source facet (the named wall patches): the
+/// edges where two remeshed groups meet are kept as feature lines whatever
+/// their angle, so every new triangle lies in one group, and the result
+/// gives the group of each triangle.
+pub fn remesh_grouped(
+    vertices: &[Vec3],
+    triangles: &[[usize; 3]],
+    keep: &[bool],
+    group: &[usize],
+    opts: RemeshOptions,
+) -> Result<Remeshed, String> {
+    if keep.len() != triangles.len()
+        || group.len() != triangles.len()
+        || triangles.iter().flatten().any(|&v| v >= vertices.len())
+    {
         return Err("invalid remesh input".into());
     }
     if !(opts.tolerance > 0.0
@@ -866,9 +885,19 @@ pub fn remesh(
                     reach: 0.0,
                 });
             }
-        } else if !keep[f] && e.angle > opts.feature_angle {
+        } else if !keep[f] && (e.angle > opts.feature_angle || group[f] != group[g]) {
             feature.insert(key(a, b));
             line_items.push(Primitive::Segment([vertices[a], vertices[b]]));
+            // a group border is a rim too: an opening flush with the wall
+            // keeps its outline (and area) as a kept cap would
+            let flush = group[f] != group[g] && e.angle <= opts.feature_angle;
+            if let (true, Some(h)) = (flush, opts.rim_size) {
+                sizes.push(Weighted {
+                    primitive: Primitive::Segment([vertices[a], vertices[b]]),
+                    size: h.clamp(opts.min_size, opts.max_size),
+                    reach: 0.0,
+                });
+            }
         }
     }
     let wall: Vec<Primitive> = triangles
@@ -1147,10 +1176,50 @@ pub fn remesh(
     }
     stats.min_edge = min_e;
     stats.max_edge = max_e;
+    // the group of a new triangle: that of the nearest source facet to its
+    // centroid (the group borders are feature lines, so no triangle crosses
+    // one)
+    let mut ids: Vec<usize> = group.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    let by_group: Vec<ClosestSet> = ids
+        .iter()
+        .map(|&g| {
+            ClosestSet::new(
+                triangles
+                    .iter()
+                    .enumerate()
+                    .filter(|&(f, _)| !keep[f] && group[f] == g)
+                    .map(|(_, t)| Primitive::Triangle(t.map(|v| vertices[v])))
+                    .collect(),
+            )
+        })
+        .collect();
+    let out_group = out_t
+        .iter()
+        .zip(&source)
+        .map(|(t, s)| match s {
+            Some(f) => group[*f],
+            None if ids.len() == 1 => ids[0],
+            None => {
+                let c = (out_v[t[0]] + out_v[t[1]] + out_v[t[2]]) / 3.0;
+                let mut best = (f64::INFINITY, ids[0]);
+                for (set, &g) in by_group.iter().zip(&ids) {
+                    if let Some((_, d)) = set.closest(c)
+                        && d < best.0
+                    {
+                        best = (d, g);
+                    }
+                }
+                best.1
+            }
+        })
+        .collect();
     Ok(Remeshed {
         vertices: out_v,
         triangles: out_t,
         source,
+        group: out_group,
         stats,
     })
 }
