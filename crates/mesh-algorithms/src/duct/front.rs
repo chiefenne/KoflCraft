@@ -19,7 +19,7 @@ pub(super) fn advance(
     surface: &ClosedSurface,
     patches: &[usize],
     labels: &[usize],
-    rims: &[Vec<Edge>; 2],
+    rims: &BTreeMap<usize, Vec<Edge>>,
     steps: &[f64],
     limit: Option<&[f64]>,
 ) -> Result<Front, String> {
@@ -35,7 +35,7 @@ pub(super) fn advance(
     let mut port_vertex = vec![false; original.len()];
     let mut normals = vec![Vec::<Vec3>::new(); original.len()];
     for (f, &patch) in surface.facets().iter().zip(patches) {
-        if patch != 3 {
+        if !is_wall(patch) {
             continue;
         }
         let ids = f.triangle.vertices;
@@ -75,7 +75,24 @@ pub(super) fn advance(
     // single-precision STL: a tilted cap's corners are coplanar only to the
     // rounding of f32 coordinates
     let port_tol = surface.bounds().extent().max_abs_component() * PORT_RELATIVE_TOLERANCE;
-    for (index, edges) in rims.iter().enumerate() {
+    let mut slip_rim = vec![false; original.len()];
+    let slip_inner = if steps.is_empty() {
+        Vec::new()
+    } else {
+        slip_patches(
+            surface,
+            patches,
+            port_tol,
+            &on_wall,
+            &mut direction,
+            &mut slip_rim,
+        )?
+    };
+    for (&id, edges) in rims {
+        if edges.is_empty() || is_slip(id) {
+            continue;
+        }
+        let index = id - 1;
         let ids = loop_vertices(edges)?;
         let center = mean(original, &ids);
         let mut caps = surface
@@ -123,7 +140,7 @@ pub(super) fn advance(
         // face offset. Scale to the least normal advance of its incident walls.
         let mut projection = vec![f64::INFINITY; original.len()];
         for (f, &patch) in surface.facets().iter().zip(patches) {
-            if patch != 3 {
+            if !is_wall(patch) {
                 continue;
             }
             for &v in &f.triangle.vertices {
@@ -140,11 +157,29 @@ pub(super) fn advance(
                 }
             }
         }
+        for (normal, inner_ids, faces) in &slip_inner {
+            spread_in_plane(*normal, inner_ids, faces, &mut direction);
+            for &v in inner_ids {
+                points[v] = original[v] + direction[v] * total;
+            }
+            let moved = |v: usize| original[v] + direction[v] * total;
+            let folded = faces
+                .iter()
+                .filter(|t| {
+                    let [a, b, c] = t.map(moved);
+                    (b - a).cross(c - a).dot(*normal) <= 0.0
+                })
+                .count();
+            if folded > 0 {
+                return Err(format!(
+                    "{folded} facets of a patch without layers fold where the layers meet it"
+                ));
+            }
+        }
     }
     let rim_patches: BTreeMap<_, _> = rims
         .iter()
-        .enumerate()
-        .flat_map(|(i, r)| r.iter().map(move |&edge| (edge, i + 1)))
+        .flat_map(|(&id, r)| r.iter().map(move |&edge| (edge, id)))
         .collect();
     let triangles: Vec<_> = surface
         .facets()
@@ -159,6 +194,7 @@ pub(super) fn advance(
         &direction,
         &on_wall,
         &port_vertex,
+        &slip_rim,
         steps,
         limit,
     )?;
@@ -178,7 +214,7 @@ pub(super) fn advance(
             }
         }
         for (i, f) in surface.facets().iter().enumerate() {
-            if patches[i] != 3 {
+            if !is_wall(patches[i]) {
                 continue;
             }
             let [a, b, c] = f.triangle.vertices;
@@ -191,7 +227,7 @@ pub(super) fn advance(
             if level == 0 {
                 boundary.push(BoundaryFace {
                     nodes: vec![a, b, c],
-                    patch: 3,
+                    patch: patches[i],
                     owner,
                 });
             }
@@ -215,6 +251,148 @@ pub(super) fn advance(
         scale,
     })
 }
+
+/// Plane normal, inner vertices and facets of a wall patch without layers.
+type SlipPatch = (Vec3, Vec<usize>, Vec<[usize; 3]>);
+
+/// Split the facets of the wall patches without layers into edge-connected
+/// planes, check that each is planar, turn the layer direction of their rim
+/// vertices into their plane (the layers of the walls around run straight
+/// into them) and return each plane with its inner vertices and facets.
+fn slip_patches(
+    surface: &ClosedSurface,
+    patches: &[usize],
+    port_tol: f64,
+    on_wall: &[bool],
+    direction: &mut [Vec3],
+    slip_rim: &mut [bool],
+) -> Result<Vec<SlipPatch>, String> {
+    let original = surface.vertices();
+    let facets = surface.facets();
+    let slip: Vec<usize> = (0..facets.len()).filter(|&f| is_slip(patches[f])).collect();
+    if slip.is_empty() {
+        return Ok(Vec::new());
+    }
+    // edge-connected components of the slip facets
+    let mut parent: BTreeMap<usize, usize> = slip.iter().map(|&f| (f, f)).collect();
+    fn root(parent: &mut BTreeMap<usize, usize>, mut f: usize) -> usize {
+        while parent[&f] != f {
+            let up = parent[&parent[&f]];
+            parent.insert(f, up);
+            f = up;
+        }
+        f
+    }
+    let mut by_edge = BTreeMap::<Edge, usize>::new();
+    for &f in &slip {
+        for (a, b) in edges(facets[f].triangle.vertices) {
+            if let Some(g) = by_edge.remove(&(b, a)) {
+                let (x, y) = (root(&mut parent, f), root(&mut parent, g));
+                parent.insert(x, y);
+            } else {
+                by_edge.insert((a, b), f);
+            }
+        }
+    }
+    let mut groups = BTreeMap::<usize, Vec<usize>>::new();
+    for &f in &slip {
+        let r = root(&mut parent, f);
+        groups.entry(r).or_default().push(f);
+    }
+    let mut result = Vec::new();
+    for faces in groups.into_values() {
+        let first = &facets[faces[0]];
+        let normal = first.plane.normal();
+        let origin = original[first.triangle.vertices[0]];
+        let name = patch_index(patches[faces[0]]);
+        let mut inner = Vec::new();
+        for &f in &faces {
+            let facet = &facets[f];
+            let flat = facet.plane.normal().dot(normal) >= 1.0 - PORT_NORMAL_SLACK
+                && facet
+                    .triangle
+                    .vertices
+                    .iter()
+                    .all(|&v| (original[v] - origin).dot(normal).abs() <= port_tol);
+            if !flat {
+                return Err(format!(
+                    "patch {name} has no layers, so each connected piece of it must be planar"
+                ));
+            }
+            for &v in &facet.triangle.vertices {
+                if on_wall[v] {
+                    if !slip_rim[v] {
+                        slip_rim[v] = true;
+                        direction[v] = direction[v] - normal * direction[v].dot(normal);
+                    }
+                } else {
+                    inner.push(v);
+                }
+            }
+        }
+        // Vertices on a border between two patches without layers stay put,
+        // so neither patch changes its area.
+        let mut owner = BTreeMap::<usize, usize>::new();
+        let mut pinned = std::collections::BTreeSet::new();
+        for &f in &faces {
+            for &v in &facets[f].triangle.vertices {
+                if *owner.entry(v).or_insert(patches[f]) != patches[f] {
+                    pinned.insert(v);
+                }
+            }
+        }
+        inner.retain(|v| !pinned.contains(v));
+        inner.sort_unstable();
+        inner.dedup();
+        let triangles = faces.iter().map(|&f| facets[f].triangle.vertices).collect();
+        result.push((normal, inner, triangles));
+    }
+    Ok(result)
+}
+
+/// Spread the in-plane layer offset of the rim of a patch without layers
+/// over its inner vertices (a harmonic field, by over-relaxed Gauss-Seidel
+/// sweeps), so its facets give way to the layers as a cap contracts.
+fn spread_in_plane(normal: Vec3, inner: &[usize], faces: &[[usize; 3]], direction: &mut [Vec3]) {
+    let mut neighbours = BTreeMap::<usize, Vec<usize>>::new();
+    for &t in faces {
+        for (a, b) in edges(t) {
+            neighbours.entry(a).or_default().push(b);
+            neighbours.entry(b).or_default().push(a);
+        }
+    }
+    for list in neighbours.values_mut() {
+        list.sort_unstable();
+        list.dedup();
+    }
+    for &v in inner {
+        direction[v] = Vec3::ZERO;
+    }
+    let largest = neighbours
+        .keys()
+        .map(|&v| direction[v].length())
+        .fold(0.0, f64::max);
+    for _ in 0..SPREAD_SWEEPS {
+        let mut change = 0.0_f64;
+        for &v in inner {
+            let list = &neighbours[&v];
+            let mean = list.iter().fold(Vec3::ZERO, |s, &u| s + direction[u]) / list.len() as f64;
+            let step = (mean - direction[v]) * SPREAD_RELAXATION;
+            direction[v] = direction[v] + step;
+            change = change.max(step.length());
+        }
+        if change <= SPREAD_TOLERANCE * largest {
+            break;
+        }
+    }
+    for &v in inner {
+        direction[v] = direction[v] - normal * direction[v].dot(normal);
+    }
+}
+
+const SPREAD_SWEEPS: usize = 20_000;
+const SPREAD_RELAXATION: f64 = 1.9;
+const SPREAD_TOLERANCE: f64 = 1e-9;
 
 /// Share of the local gap that the layers of one wall may fill.
 const GAP_SHARE: f64 = 0.3;
@@ -245,6 +423,7 @@ fn squeeze(
     direction: &[Vec3],
     on_wall: &[bool],
     port_vertex: &[bool],
+    slip_rim: &[bool],
     steps: &[f64],
     start: Option<&[f64]>,
 ) -> Result<Vec<f64>, String> {
@@ -256,13 +435,13 @@ fn squeeze(
     if steps.is_empty() {
         return Ok(scale);
     }
-    let free = |v: usize| on_wall[v] && !port_vertex[v];
+    let free = |v: usize| on_wall[v] && !port_vertex[v] && !slip_rim[v];
     let geometry = SurfaceGeometry::new(surface);
     let set = OrientedSet::new(&geometry);
     let wedge = 45f64.to_radians();
     let cap = 1.01 * total / GAP_SHARE;
     for (f, t) in triangles.iter().enumerate() {
-        if patches[f] != 3 {
+        if !is_wall(patches[f]) {
             continue;
         }
         let n = geometry.normals[f];
@@ -277,7 +456,7 @@ fn squeeze(
     }
     let mut neighbours = vec![Vec::new(); original.len()];
     for (f, t) in triangles.iter().enumerate() {
-        if patches[f] != 3 {
+        if !is_wall(patches[f]) {
             continue;
         }
         for (a, b) in edges(*t) {

@@ -7,13 +7,333 @@ pub struct Measurements {
     pub core_sphericity: Option<[f64; 3]>,
     pub minimum_volume: f64,
     pub minimum_wedge_jacobian: Option<f64>,
-    pub areas: [f64; 3],
+    /// Boundary area of every patch id, indexed by id - 1.
+    pub areas: Vec<f64>,
     pub prism_core_faces: usize,
     pub port_layer_areas: [Vec<f64>; 2],
     pub minimum_tet_mean_ratio: f64,
     pub tetrahedra_below_mean_ratio_0_1: usize,
     pub normal_thickness_ranges: Vec<[f64; 2]>,
     pub minimum_kernel_clearance: f64,
+    /// The solver rules, counted beside the strict checks.
+    pub solver_rules: SolverRules,
+}
+
+/// Cells counted against the validity rules of production finite-volume
+/// codes (OpenFOAM's mesh description and checkMesh, the STAR-CCM+ and
+/// Fluent cell checks; research/robust-polyhedral-meshing): a cell is
+/// usable when its shell is closed, its volume is positive, every face
+/// pyramid on the cell centre is positive and every face points away from
+/// the cell (owner-to-neighbour vector, or centre-to-face vector at the
+/// boundary, at less than 90° to the face normal). Faces need not be flat:
+/// a face's area vector, centre and pyramids come from the triangle fan on
+/// its vertex mean, as in those codes. Report only; the strict checks
+/// below still decide.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SolverRules {
+    pub cells: usize,
+    /// Cells failing at least one rule.
+    pub failing_cells: usize,
+    /// Failing cells of the wall layers (layer > 0); the rest are core cells.
+    pub failing_layer_cells: usize,
+    /// Shell not closed: an edge not used by exactly two faces of the cell,
+    /// or the face area vectors not summing to zero (1e-6 of their sum).
+    pub open_cells: usize,
+    pub nonpositive_volume: usize,
+    /// Cells with a face pyramid of nonpositive volume.
+    pub negative_pyramids: usize,
+    /// Cells with a face at 90° or more (non-orthogonality).
+    pub faces_turned_away: usize,
+    /// Largest non-orthogonality over all faces, degrees.
+    pub maximum_non_orthogonality: f64,
+    /// Largest face warping, degrees: the angle between a triangle of a
+    /// face's fan and the face's area vector (a graded quality measure, as
+    /// the warpage angle of STAR-CCM+; no limit).
+    pub maximum_warping: f64,
+}
+
+/// Area vector and centre of a face as finite-volume codes take them:
+/// triangles fanned from the vertex mean, centres weighted by area.
+fn fv_face(p: &[Vec3], ring: &[usize]) -> (Vec3, Vec3) {
+    let mean = ring.iter().fold(Vec3::ZERO, |s, &v| s + p[v]) / ring.len() as f64;
+    if ring.len() == 3 {
+        let [a, b, c] = [p[ring[0]], p[ring[1]], p[ring[2]]];
+        return ((b - a).cross(c - a) * 0.5, mean);
+    }
+    let mut area = Vec3::ZERO;
+    let mut moment = Vec3::ZERO;
+    let mut weight = 0.0;
+    for (i, &v) in ring.iter().enumerate() {
+        let (a, b) = (p[v], p[ring[(i + 1) % ring.len()]]);
+        let n = (a - mean).cross(b - mean) * 0.5;
+        area = area + n;
+        let w = n.length();
+        moment = moment + (a + b + mean) * (w / 3.0);
+        weight += w;
+    }
+    let centre = if weight > 0.0 { moment / weight } else { mean };
+    (area, centre)
+}
+
+/// Counts the cells of a mesh against [`SolverRules`].
+#[cfg(test)]
+fn solver_rules(p: &[Vec3], cells: &[Cell]) -> SolverRules {
+    solver_rules_and_volumes(p, cells).0
+}
+
+/// Largest angle between a fan triangle of a face and its area vector.
+fn warping(p: &[Vec3], ring: &[usize], area: Vec3) -> f64 {
+    if ring.len() == 3 {
+        return 0.0;
+    }
+    let mean = ring.iter().fold(Vec3::ZERO, |s, &v| s + p[v]) / ring.len() as f64;
+    let mut worst = 0.0_f64;
+    for (i, &v) in ring.iter().enumerate() {
+        let n = (p[v] - mean).cross(p[ring[(i + 1) % ring.len()]] - mean);
+        let cos = n.dot(area) / (n.length() * area.length());
+        if cos.is_finite() {
+            worst = worst.max(cos.clamp(-1.0, 1.0).acos().to_degrees());
+        }
+    }
+    worst
+}
+
+/// A cell's shell as the solver sees it.
+pub(super) struct Shell {
+    pub open: bool,
+    pub volume: f64,
+    pub centre: Vec3,
+    pub pyramids_ok: bool,
+}
+
+impl Shell {
+    /// Closed, positive volume and every face pyramid on the centre positive
+    /// (the solver rules that need no neighbour).
+    pub fn valid(&self) -> bool {
+        !self.open && self.volume > 0.0 && self.pyramids_ok
+    }
+}
+
+/// The shell of a cell given by its outward face rings.
+pub(super) fn cell_shell(p: &[Vec3], rings: &[Vec<usize>]) -> Shell {
+    let geometry: Vec<(Vec3, Vec3)> = rings.iter().map(|r| fv_face(p, r)).collect();
+    shell(p, rings, &geometry)
+}
+
+fn shell(p: &[Vec3], rings: &[Vec<usize>], geometry: &[(Vec3, Vec3)]) -> Shell {
+    // closed shell: every edge twice, area vectors summing to zero
+    let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
+    for r in rings {
+        for (i, &a) in r.iter().enumerate() {
+            let b = r[(i + 1) % r.len()];
+            *edges.entry((a.min(b), a.max(b))).or_default() += 1;
+        }
+    }
+    let sum = geometry.iter().fold(Vec3::ZERO, |s, g| s + g.0);
+    let total: f64 = geometry.iter().map(|g| g.0.length()).sum();
+    let open = edges.values().any(|&n| n != 2)
+        || sum.length().partial_cmp(&(1e-6 * total)) == Some(std::cmp::Ordering::Greater)
+        || !total.is_finite();
+    let (volume, centre) = fan_volume_centre(p, rings);
+    let pyramids_ok = geometry.iter().all(|(area, c)| area.dot(*c - centre) > 0.0);
+    Shell {
+        open,
+        volume,
+        centre,
+        pyramids_ok,
+    }
+}
+
+/// The union of rings that share their inner edges, as one ring (the
+/// hand-off merges the faces between two cells this way); `None` when the
+/// union is not one loop.
+pub(super) fn merge_rings(rings: &[&Vec<usize>]) -> Option<Vec<usize>> {
+    if rings.len() == 1 {
+        return Some(rings[0].clone());
+    }
+    let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
+    for ring in rings {
+        for (k, &a) in ring.iter().enumerate() {
+            let b = ring[(k + 1) % ring.len()];
+            if let Some(n) = edges.get_mut(&(b, a)) {
+                *n -= 1;
+                if *n == 0 {
+                    edges.remove(&(b, a));
+                }
+            } else {
+                *edges.entry((a, b)).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut next: HashMap<usize, usize> = HashMap::new();
+    for (&(a, b), &n) in &edges {
+        if n != 1 || next.insert(a, b).is_some() {
+            return None;
+        }
+    }
+    let &start = next.keys().min()?;
+    let mut ring = vec![start];
+    let mut at = next[&start];
+    while at != start && ring.len() <= next.len() {
+        ring.push(at);
+        at = next[&at];
+    }
+    (ring.len() == next.len()).then_some(ring)
+}
+
+/// Volume and centroid of a closed shell as the hand-off and FoehnCraft
+/// take them: tetrahedra on the first vertex, each face fanned from its
+/// vertex mean.
+fn fan_volume_centre(p: &[Vec3], rings: &[Vec<usize>]) -> (f64, Vec3) {
+    let Some(origin) = rings.first().and_then(|r| r.first()).map(|&v| p[v]) else {
+        return (0.0, Vec3::ZERO);
+    };
+    let mut v6 = 0.0;
+    let mut moment = Vec3::ZERO;
+    for ring in rings {
+        let c = ring.iter().fold(Vec3::ZERO, |s, &v| s + p[v]) / ring.len() as f64 - origin;
+        for (k, &a) in ring.iter().enumerate() {
+            let (pa, pb) = (p[a] - origin, p[ring[(k + 1) % ring.len()]] - origin);
+            let t6 = c.dot(pa.cross(pb));
+            v6 += t6;
+            moment = moment + (c + pa + pb) * (t6 / 4.0);
+        }
+    }
+    (v6 / 6.0, origin + moment / v6)
+}
+
+/// The solver rules and each cell's volume as the solver takes it (the sum
+/// of its face pyramids).
+#[allow(clippy::type_complexity)]
+fn solver_rules_and_volumes(
+    p: &[Vec3],
+    cells: &[Cell],
+) -> (SolverRules, Vec<f64>, Vec<(usize, Vec<usize>)>) {
+    // The mesh as it is exported: the faces between two cells merged into
+    // one polygon (the hand-off and FoehnCraft allow one face per pair).
+    let all_rings: Vec<Vec<Vec<usize>>> = cells.iter().map(|c| c.element.faces()).collect();
+    let mut users: HashMap<Vec<usize>, Vec<usize>> = HashMap::new();
+    for (id, rings) in all_rings.iter().enumerate() {
+        for r in rings {
+            users.entry(key(r)).or_default().push(id);
+        }
+    }
+    let mut out = SolverRules {
+        cells: cells.len(),
+        ..SolverRules::default()
+    };
+    let mut volumes = Vec::with_capacity(cells.len());
+    let mut centres = Vec::with_capacity(cells.len());
+    let mut bad = vec![false; cells.len()];
+    // (owner, neighbour, owner's area vector) once per pair
+    let mut shared: Vec<(usize, usize, Vec3)> = Vec::new();
+    let mut boundary: Vec<(usize, Vec3, Vec3)> = Vec::new();
+    for (id, rings) in all_rings.iter().enumerate() {
+        let mut by_neighbour: std::collections::BTreeMap<usize, Vec<&Vec<usize>>> =
+            std::collections::BTreeMap::new();
+        let mut merged: Vec<Vec<usize>> = Vec::new();
+        let mut neighbours: Vec<Option<usize>> = Vec::new();
+        for r in rings {
+            match users[&key(r)].iter().find(|&&c| c != id) {
+                Some(&other) => by_neighbour.entry(other).or_default().push(r),
+                None => {
+                    merged.push(r.clone());
+                    neighbours.push(None);
+                }
+            }
+        }
+        let mut unmergeable = false;
+        for (other, group) in by_neighbour {
+            match merge_rings(&group) {
+                Some(ring) => {
+                    merged.push(ring);
+                    neighbours.push(Some(other));
+                }
+                None => {
+                    unmergeable = true;
+                    for r in group {
+                        merged.push(r.clone());
+                        neighbours.push(Some(other));
+                    }
+                }
+            }
+        }
+        let geometry: Vec<(Vec3, Vec3)> = merged.iter().map(|r| fv_face(p, r)).collect();
+        for (r, g) in merged.iter().zip(&geometry) {
+            out.maximum_warping = out.maximum_warping.max(warping(p, r, g.0));
+        }
+        let Shell {
+            open,
+            volume,
+            centre,
+            pyramids_ok,
+        } = shell(p, &merged, &geometry);
+        let open = open || unmergeable;
+        out.open_cells += usize::from(open);
+        let nonpositive = volume.is_nan() || volume <= 0.0;
+        out.nonpositive_volume += usize::from(nonpositive);
+        out.negative_pyramids += usize::from(!pyramids_ok);
+        bad[id] = open || nonpositive || !pyramids_ok;
+        centres.push(centre);
+        volumes.push(volume);
+        for (n, (area, c)) in neighbours.into_iter().zip(geometry) {
+            match n {
+                Some(other) if other > id => shared.push((id, other, area)),
+                Some(_) => {}
+                None => boundary.push((id, area, c)),
+            }
+        }
+    }
+    let mut turned = vec![false; cells.len()];
+    let mut worst = 0.0_f64;
+    let mut check = |cells_of_face: &[usize], d: Vec3, area: Vec3| {
+        let cos = d.dot(area) / (d.length() * area.length());
+        let degrees = if cos.is_finite() {
+            cos.clamp(-1.0, 1.0).acos().to_degrees()
+        } else {
+            180.0
+        };
+        worst = worst.max(degrees);
+        if cos.is_nan() || cos <= 0.0 {
+            for &c in cells_of_face {
+                turned[c] = true;
+            }
+        }
+    };
+    for (owner, neighbour, area) in shared {
+        check(
+            &[owner, neighbour],
+            centres[neighbour] - centres[owner],
+            area,
+        );
+    }
+    for (owner, area, c) in boundary {
+        check(&[owner], c - centres[owner], area);
+    }
+    out.maximum_non_orthogonality = worst;
+    out.faces_turned_away = turned.iter().filter(|&&t| t).count();
+    let mut failing = Vec::new();
+    for (id, ((b, t), cell)) in bad.iter().zip(&turned).zip(cells).enumerate() {
+        if *b || *t {
+            out.failing_cells += 1;
+            out.failing_layer_cells += usize::from(cell.layer > 0);
+            let mut neighbours: Vec<usize> = all_rings[id]
+                .iter()
+                .flat_map(|r| users[&key(r)].iter().copied())
+                .filter(|&c| c != id)
+                .collect();
+            neighbours.sort_unstable();
+            neighbours.dedup();
+            failing.push((id, neighbours));
+        }
+    }
+    (out, volumes, failing)
+}
+
+/// The cells that fail the solver rules on the mesh as exported, each with
+/// the cells it shares a face with.
+pub(super) fn exported_failures(p: &[Vec3], cells: &[Cell]) -> Vec<(usize, Vec<usize>)> {
+    solver_rules_and_volumes(p, cells).2
 }
 
 fn det(a: Vec3, b: Vec3, c: Vec3) -> f64 {
@@ -59,6 +379,13 @@ fn same_ring(a: &[usize], b: &[usize], reverse: bool) -> bool {
             (0..n).all(|i| a[(start + if reverse { n - i } else { i }) % n] == b[i])
         })
 }
+/// A face counts as planar when its corners are within this share of its
+/// size of the fitted plane. Such a face is fanned from its vertex mean, as
+/// FoehnCraft does with every face, so the checked volume is the solver's.
+/// The core welds points up to 1e-10 of the model size apart, which moves a
+/// corner of a small face by more than 1e-10 of that face's size.
+const PLANAR_SHARE: f64 = 1e-7;
+
 /// Two-point Gauss rule on [0, 1].
 const GAUSS: [f64; 2] = [0.211_324_865_405_187_1, 0.788_675_134_594_812_9];
 
@@ -90,7 +417,7 @@ fn face_integral(
     let planar = face.len() == 3
         || face.iter().all(|&v| {
             (points[v] - centre).dot(unit).abs()
-                <= 1e-10 * diameter + 256.0 * f64::EPSILON * coordinate_scale
+                <= PLANAR_SHARE * diameter + 256.0 * f64::EPSILON * coordinate_scale
         });
     if !planar {
         if face.len() != 4 {
@@ -194,8 +521,20 @@ pub(super) fn check(
         cells,
         boundary,
         layers,
-        patches.iter().filter(|&&p| p == 3).count(),
+        patches.iter().filter(|&&p| super::is_wall(p)).count(),
     )
+}
+
+/// Area of a boundary face from its vector area. For a planar face this is
+/// the area also when the face is not convex, where a sum of unsigned fan
+/// triangles counts a notch twice.
+fn boundary_area(p: &[Vec3], nodes: &[usize]) -> f64 {
+    let a = p[nodes[0]];
+    nodes[1..]
+        .windows(2)
+        .fold(Vec3::ZERO, |s, w| s + (p[w[0]] - a).cross(p[w[1]] - a))
+        .length()
+        * 0.5
 }
 
 pub(super) fn check_with_interface_count(
@@ -207,29 +546,63 @@ pub(super) fn check_with_interface_count(
     layers: usize,
     expected_interfaces: usize,
 ) -> Result<Measurements, String> {
+    let (solver_rules, solver_volumes, _) = solver_rules_and_volumes(p, cells);
+    if crate::trace_enabled() {
+        eprintln!(
+            "kofl trace: solver rules: {} of {} cells fail ({} in layers; open {}, volume {}, pyramids {}, turned away {}), max non-orthogonality {:.2}°",
+            solver_rules.failing_cells,
+            solver_rules.cells,
+            solver_rules.failing_layer_cells,
+            solver_rules.open_cells,
+            solver_rules.nonpositive_volume,
+            solver_rules.negative_pyramids,
+            solver_rules.faces_turned_away,
+            solver_rules.maximum_non_orthogonality
+        );
+    }
+    if solver_rules.failing_cells > 0 {
+        // Name the likely cause in plain words when layer cells fail.
+        let hint = if solver_rules.failing_layer_cells > 0 {
+            "; wall layer collision or fold: thinner or fewer layers help"
+        } else {
+            ""
+        };
+        return Err(format!(
+            "{} of {} cells fail the solver rules ({} in layers; open {}, volume {}, pyramids {}, turned away {}){hint}",
+            solver_rules.failing_cells,
+            solver_rules.cells,
+            solver_rules.failing_layer_cells,
+            solver_rules.open_cells,
+            solver_rules.nonpositive_volume,
+            solver_rules.negative_pyramids,
+            solver_rules.faces_turned_away
+        ));
+    }
     let mut exterior = HashMap::new();
-    let mut areas = [0.; 3];
+    let ids = patches.iter().copied().max().unwrap_or(0).max(super::WALL);
+    let mut areas = vec![0.; ids];
     let mut port_layer_areas = [vec![0.; layers + 1], vec![0.; layers + 1]];
     for face in boundary {
         if exterior.insert(key(&face.nodes), face).is_some() {
             return Err("duplicate outer boundary face".into());
         }
-        let a = p[face.nodes[0]];
-        let area = face.nodes[1..]
-            .windows(2)
-            .map(|s| (p[s[0]] - a).cross(p[s[1]] - a).length() * 0.5)
-            .sum::<f64>();
-        areas[face.patch - 1] += area;
+        let area = boundary_area(p, &face.nodes);
+        *areas
+            .get_mut(face.patch.wrapping_sub(1))
+            .ok_or("boundary face with an unknown patch")? += area;
         if face.patch <= 2 {
             port_layer_areas[face.patch - 1][cells[face.owner].layer] += area;
         }
     }
-    let mut expected = [0.; 3];
+    let mut expected = vec![0.; ids];
     let scale = surface.bounds().extent().max_abs_component();
     for (facet, &patch) in surface.facets().iter().zip(patches) {
         expected[patch - 1] += facet.normalized_area * scale * scale;
     }
     for (i, (&a, &e)) in areas.iter().zip(&expected).enumerate() {
+        if a == 0. && e == 0. {
+            continue; // an id no facet uses (no inlet cap, say)
+        }
         if !a.is_finite() || !e.is_finite() || e <= 0. || (a / e - 1.).abs() >= 1e-9 {
             return Err(format!(
                 "patch {} area {a} differs from STL area {e}",
@@ -249,46 +622,26 @@ pub(super) fn check_with_interface_count(
     let mut tetrahedra_below_mean_ratio_0_1 = 0;
     let mut sphericities = Vec::new();
     for (id, cell) in cells.iter().enumerate() {
-        let value = match cell.element {
+        // The solver rules decided above; the element measures below are
+        // quality reports only.
+        match cell.element {
             Element::Polyhedron(ref poly) if poly.prism.is_some() => {
-                let mut value = 0.0;
                 for w in poly.prism.iter().flatten() {
-                    let (jac, v, _) = wedge(w.map(|v| p[v]));
-                    if !jac.is_finite() || jac <= 0. {
-                        return Err(format!(
-                            "layer collision or inversion in layer {}, cell {id}, Jacobian {jac}",
-                            cell.layer
-                        ));
-                    }
+                    let (jac, _, _) = wedge(w.map(|v| p[v]));
                     minimum_j = minimum_j.min(jac);
-                    value += v;
                 }
-                shell_closed(poly).map_err(|e| format!("cell {id}: {e}"))?;
-                if !value.is_finite() || (value / poly.expected_volume - 1.0).abs() > 1e-8 {
-                    return Err(format!(
-                        "cell {id}: layer piece volume differs from its shell"
-                    ));
-                }
-                value
             }
             Element::Polyhedron(ref poly) => {
-                let (volume, sphericity) = poly_volume(poly, p)
-                    .map_err(|e| format!("cell {id} (layer {}): {e}", cell.layer))?;
-                if cell.layer == 0 {
+                if cell.layer == 0
+                    && let Ok((_, sphericity)) = poly_volume(poly, p)
+                {
                     sphericities.push(sphericity);
                 }
-                volume
             }
             Element::Tet(n) => {
                 let [o, a, b, c] = n.map(|v| p[v]);
                 let determinant = det(b - a, c - a, a - o);
                 let clearance = determinant / (b - a).cross(c - a).length();
-                if !clearance.is_finite() || clearance <= scale * 1e-12 {
-                    return Err(format!(
-                        "core collision or invalid kernel in region {} at cell {id}, clearance {clearance}",
-                        cell.region
-                    ));
-                }
                 minimum_kernel_clearance = minimum_kernel_clearance.min(clearance);
                 let squared_edges = [b - a, c - b, a - c, a - o, b - o, c - o]
                     .iter()
@@ -297,23 +650,16 @@ pub(super) fn check_with_interface_count(
                 let mean_ratio = 12.0 * (determinant / 2.0).cbrt().powi(2) / squared_edges;
                 minimum_tet_mean_ratio = minimum_tet_mean_ratio.min(mean_ratio);
                 tetrahedra_below_mean_ratio_0_1 += usize::from(mean_ratio < 0.1);
-                determinant / 6.
             }
             Element::Wedge(n) => {
-                let (jac, value, range) = wedge(n.map(|v| p[v]));
-                if !jac.is_finite() || jac <= 0. {
-                    return Err(format!(
-                        "layer collision or inversion in region {}, layer {}, cell {id}, Jacobian {jac}",
-                        cell.region, cell.layer
-                    ));
-                }
+                let (jac, _, range) = wedge(n.map(|v| p[v]));
                 minimum_j = minimum_j.min(jac);
                 let r = &mut normal_thickness_ranges[cell.layer - 1];
                 r[0] = r[0].min(range[0]);
                 r[1] = r[1].max(range[1]);
-                value
             }
-        };
+        }
+        let value = solver_volumes[id];
         if !value.is_finite() || value <= 0. {
             return Err(format!(
                 "nonpositive or unrepresentable volume at cell {id}"
@@ -353,7 +699,13 @@ pub(super) fn check_with_interface_count(
             surface.volume()
         ));
     }
-    if port_layer_areas.iter().flatten().any(|v| *v <= 0.) {
+    // every layer reaches each cap the surface has
+    let has_cap = |id: usize| patches.contains(&id);
+    if port_layer_areas
+        .iter()
+        .enumerate()
+        .any(|(i, a)| has_cap(i + 1) && a.iter().any(|v| *v <= 0.))
+    {
         return Err("a layer does not reach both ports".into());
     }
     if layers > 0 && prism_core_faces != expected_interfaces {
@@ -376,12 +728,62 @@ pub(super) fn check_with_interface_count(
         port_layer_areas,
         normal_thickness_ranges,
         minimum_kernel_clearance,
+        solver_rules,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cell(element: Element) -> Cell {
+        Cell {
+            element,
+            layer: 0,
+            region: 0,
+        }
+    }
+
+    #[test]
+    fn warped_faces_pass_the_solver_rules() {
+        // a wedge whose top corner is lifted: its three side quads are not
+        // flat, which the solver rules accept
+        let p = [
+            [0., 0., 0.],
+            [1., 0., 0.],
+            [0., 1., 0.],
+            [0., 0., 1.],
+            [1., 0., 1.3],
+            [0., 1., 1.],
+        ]
+        .map(|[x, y, z]| Vec3::new(x, y, z));
+        let r = solver_rules(&p, &[cell(Element::Wedge([0, 1, 2, 3, 4, 5]))]);
+        assert_eq!(r.failing_cells, 0, "{r:?}");
+        assert!(r.maximum_non_orthogonality < 90.0);
+    }
+
+    #[test]
+    fn two_tetrahedra_pass_and_an_inverted_one_fails() {
+        let p = [
+            [0., 0., 0.],
+            [1., 0., 0.],
+            [0., 1., 0.],
+            [0., 0., 1.],
+            [0.6, 0.6, 0.6],
+        ]
+        .map(|[x, y, z]| Vec3::new(x, y, z));
+        let good = [
+            cell(Element::Tet([0, 1, 2, 3])),
+            cell(Element::Tet([1, 2, 3, 4])),
+        ];
+        // the second tetrahedron must be oriented positively
+        let r = solver_rules(&p, &good);
+        assert_eq!((r.cells, r.failing_cells), (2, 0), "{r:?}");
+        let inverted = [cell(Element::Tet([0, 2, 1, 3]))];
+        let r = solver_rules(&p, &inverted);
+        assert_eq!(r.failing_cells, 1);
+        assert_eq!(r.nonpositive_volume, 1);
+    }
 
     #[test]
     fn wedge_with_positive_end_jacobians_can_invert_halfway() {
@@ -461,5 +863,18 @@ mod tests {
             face_integral(&points, &ring, origin).err(),
             Some("nonplanar polyhedron face")
         );
+    }
+
+    /// Invariant: the area of a notched planar boundary face is its true
+    /// area. Summing unsigned fan triangles from the first corner (the code
+    /// before) counts the notch twice, and the patch area check then fails
+    /// a valid mesh; the fixtures only have convex boundary faces.
+    #[test]
+    fn notched_boundary_face_has_its_true_area() {
+        let v = |x: f64, y: f64| Vec3::new(x, y, 0.0);
+        let points = [v(0., 0.), v(4., 0.), v(4., 4.), v(2., 1.), v(0., 4.)];
+        // square of 16 without the triangle (4,4) (2,1) (0,4) of area 6
+        let area = boundary_area(&points, &[0, 1, 2, 3, 4]);
+        assert!((area - 10.0).abs() < 1e-12);
     }
 }

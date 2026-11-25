@@ -41,12 +41,18 @@ jobs:
         run: cargo xtask status --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      # nextest runs the tests of every test binary side by side (cargo test
+      # runs one binary after the other), so the long mesh tests overlap.
       - name: Tests (fast run skips the ignored long mesh tests)
         run: |
           if [ "$FULL" = "true" ]; then
-            cargo test --release --locked --workspace --all-targets -- --include-ignored
+            cargo nextest run --release --locked --workspace --all-targets --no-fail-fast --run-ignored all
           else
-            cargo test --release --locked --workspace --all-targets
+            cargo nextest run --release --locked --workspace --all-targets --no-fail-fast
           fi
 
   acceptance:

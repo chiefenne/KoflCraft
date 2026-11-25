@@ -10,6 +10,7 @@ mod verify;
 mod volume_dual;
 mod voronoi_core;
 mod wall_seeds;
+mod yield_layers;
 pub use volume_dual::{Scaffold, build_volume_dual};
 pub use voronoi_core::{
     DEFAULT_LLOYD_ITERATIONS, VoronoiOptions, VoronoiStats, WallJoin, build_voronoi_core,
@@ -21,6 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub use polyhedral::Polyhedron;
 pub use verify::Measurements;
+pub use yield_layers::{YieldPlane, extrude as extrude_yielding, shorten as shorten_yielding};
 
 pub struct Region {
     pub kernel: Vec3,
@@ -67,7 +69,8 @@ pub struct Cell {
 
 pub struct BoundaryFace {
     pub nodes: Vec<usize>,
-    /// 1 inlet, 2 outlet, 3 walls.
+    /// 1 inlet, 2 outlet (port caps), 3 and above: wall layers (see
+    /// [`is_wall`]).
     pub patch: usize,
     pub owner: usize,
 }
@@ -76,8 +79,50 @@ pub struct DuctMesh {
     pub cells: Vec<Cell>,
     pub boundary: Vec<BoundaryFace>,
     pub measurements: Measurements,
+    /// Name and role (`inlet`, `outlet` or `wall`) of every patch id,
+    /// indexed by id - 1; the builders set [`classic_patches`].
+    pub patches: Vec<(String, String)>,
+}
+
+/// The patches of a duct with an inlet cap, an outlet cap and one wall.
+pub fn classic_patches() -> Vec<(String, String)> {
+    [("inlet", "inlet"), ("outlet", "outlet"), ("walls", "wall")]
+        .map(|(n, r)| (n.to_string(), r.to_string()))
+        .to_vec()
 }
 type Edge = (usize, usize);
+
+/// The patch id of the first wall patch. Ids 1 and 2 are the inlet and
+/// outlet caps, which contract in their planes; every id from 3 up is a
+/// patch the wall layers grow from (walls, and openings flush with a wall),
+/// each a named boundary of its own.
+pub const WALL: usize = 3;
+
+/// Added to the id of a wall patch that grows no layers (`no_layers` in
+/// the partition). Such a patch must be planar: where layered walls meet
+/// it, their layers run straight into it, sliding along its plane, and its
+/// own facets move in its plane to make room (as an inlet cap contracts).
+pub const SLIP: usize = 1 << 16;
+
+/// Whether a patch id grows wall layers (3 and above, below [`SLIP`]).
+pub fn is_wall(patch: usize) -> bool {
+    (WALL..SLIP).contains(&patch)
+}
+
+/// Whether a patch id is a wall patch without layers (see [`SLIP`]).
+pub fn is_slip(patch: usize) -> bool {
+    patch >= SLIP
+}
+
+/// Whether a patch id is an inlet or outlet cap (1 or 2).
+pub fn is_cap(patch: usize) -> bool {
+    patch < WALL
+}
+
+/// The patch id without the [`SLIP`] mark: the index of its name.
+pub fn patch_index(patch: usize) -> usize {
+    if is_slip(patch) { patch - SLIP } else { patch }
+}
 
 fn edges([a, b, c]: [usize; 3]) -> [Edge; 3] {
     [(a, b), (b, c), (c, a)]
@@ -145,7 +190,7 @@ pub fn build(
     thicknesses: &[f64],
 ) -> Result<DuctMesh, String> {
     let facets = surface.facets();
-    if patches.len() != facets.len() || patches.iter().any(|p| !(1..=3).contains(p)) {
+    if patches.len() != facets.len() || patches.contains(&0) {
         return Err("expected a patch on every STL facet".into());
     }
     let labels = region_labels(facets.len(), regions)?;
@@ -155,7 +200,7 @@ pub fn build(
         .map_err(|e| format!("input STL: {e}"))?;
     let mut pending = BTreeMap::new();
     let mut seams = BTreeMap::<(usize, usize), Vec<Edge>>::new();
-    let mut rims: [Vec<Edge>; 2] = Default::default();
+    let mut rims = BTreeMap::<usize, Vec<Edge>>::new();
     for (i, f) in facets.iter().enumerate() {
         for (a, b) in edges(f.triangle.vertices) {
             if let Some(j) = pending.remove(&(b, a)) {
@@ -168,15 +213,21 @@ pub fn build(
                     };
                     seams.entry(pair).or_default().push(edge);
                 }
-                if patches[i] != patches[j] {
-                    let (port, edge) = if patches[i] == 3 {
+                if patches[i] != patches[j]
+                    && !(is_wall(patches[i]) && is_wall(patches[j]))
+                    && !(is_slip(patches[i]) && is_slip(patches[j]))
+                {
+                    let (port, edge) = if is_wall(patches[i]) {
                         (patches[j], (a, b))
-                    } else if patches[j] == 3 {
+                    } else if is_wall(patches[j]) {
                         (patches[i], (b, a))
                     } else {
-                        return Err("inlet and outlet share an edge".into());
+                        return Err(
+                            "two patches without layers (inlet, outlet or no_layers) share an edge"
+                                .into(),
+                        );
                     };
-                    rims[port - 1].push(edge); // wall winding
+                    rims.entry(port).or_default().push(edge); // wall winding
                 }
             } else {
                 pending.insert((a, b), i);
@@ -201,7 +252,7 @@ pub fn build(
             layer: 0,
             region: labels[i],
         });
-        if patches[i] != 3 || thicknesses.is_empty() {
+        if !is_wall(patches[i]) || thicknesses.is_empty() {
             front.boundary.push(BoundaryFace {
                 nodes: vec![a, b, c],
                 patch: patches[i],
@@ -252,6 +303,7 @@ pub fn build(
         cells: front.cells,
         boundary: front.boundary,
         measurements,
+        patches: classic_patches(),
     })
 }
 

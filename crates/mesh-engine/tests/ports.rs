@@ -95,10 +95,11 @@ fn detection_and_setup_on_the_cooling_jacket() {
     assert_eq!(v2["volume_scaffold"]["build"]["max_size"], 1.92);
 }
 
-/// Keep: a patch map that is not one inlet, one outlet and walls is refused
-/// by the duct input, with the reason.
+/// Keep: a patch map with two inlets, or a role other than inlet, outlet
+/// and wall, is refused by the duct input, with the reason. (A map with no
+/// inlet or outlet cap is fine: flush openings grow layers.)
 #[test]
-fn duct_input_refuses_maps_without_one_inlet_and_outlet() {
+fn duct_input_refuses_maps_with_two_inlets_or_other_roles() {
     let s = PatchSurface::import(JACKET, None).unwrap();
     let d = s.detect_ports(PortOptions::default()).unwrap();
     let mut map = s.port_map(&d, 0, 1).unwrap();
@@ -108,7 +109,7 @@ fn duct_input_refuses_maps_without_one_inlet_and_outlet() {
         .err()
         .unwrap();
     assert!(
-        e.message.contains("exactly one inlet and one outlet"),
+        e.message.contains("at most one inlet and one outlet"),
         "{}",
         e.message
     );

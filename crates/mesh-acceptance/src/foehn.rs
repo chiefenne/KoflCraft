@@ -41,7 +41,8 @@ pub fn find() -> RunResult<Option<(PathBuf, String)>> {
 /// How the file relates to KoflCraft's face-based mesh.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    /// `foehncraft.vtu` or `polyMesh`: the same cells and faces.
+    /// `foehncraft.vtu`, `foehncraft.vtkhdf` or `polyMesh`: the same cells
+    /// and faces.
     Faces,
     /// Gmsh MSH: a tetrahedral subdivision; only volume, areas and names.
     Subdivision,

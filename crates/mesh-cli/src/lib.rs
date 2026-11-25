@@ -24,16 +24,18 @@ const USAGE: &str = "Usage: kofl [--journal FILE] [--check] COMMAND
   kofl info
   kofl inspect CONFIG.json
   kofl generate CONFIG.json ARTIFACT.json
-  kofl generate-duct SURFACE.stl PATCHES.json PARTITION.json bulk|layered|polyhedral NEW_OUTPUT_DIR
-  kofl generate-sweep CONFIG.json NEW_OUTPUT_DIR
-  kofl generate-channel CONFIG.json NEW_OUTPUT_DIR
+  kofl generate-duct SURFACE.stl PATCHES.json PARTITION.json bulk|layered|polyhedral NEW_OUTPUT_DIR [--handoff vtu|vtkhdf]
+  kofl generate-sweep CONFIG.json NEW_OUTPUT_DIR [--handoff vtu|vtkhdf]
+  kofl generate-channel CONFIG.json NEW_OUTPUT_DIR [--handoff vtu|vtkhdf]
   kofl inspect-stl SURFACE.stl CONFIG.json [--patches PATCHES.json]
   kofl generate-stl SURFACE.stl CONFIG.json ARTIFACT.json [--patches PATCHES.json]
   kofl check ARTIFACT.json
   kofl report ARTIFACT.json
-  kofl export ARTIFACT.json vtu|gmsh|gmsh-2.2|foehncraft OUTPUT
+  kofl export ARTIFACT.json vtu|gmsh|gmsh-2.2|foehncraft|foehncraft-vtkhdf OUTPUT
   kofl export ARTIFACT.json openfoam NEW_OUTPUT_DIR
 
+A bundle hands its mesh to FoehnCraft as the blocked binary
+foehncraft.vtkhdf; `--handoff vtu` writes foehncraft.vtu instead.
 `--check` prints the estimate of a build command (`mesh.estimate`:
 cells, memory, output, files) instead of running it.
 Boundary patches are defined with the `patch.*` tools through
@@ -166,7 +168,20 @@ fn parse(args: &[OsString]) -> Result<Request, Diagnostic> {
         return Err(usage());
     };
     let rest = &args[1..];
-    Ok(match (command, rest) {
+    // `--handoff vtu|vtkhdf` after the arguments of a bundle generator
+    let (rest, handoff) = match rest {
+        [head @ .., flag, format]
+            if flag == "--handoff"
+                && matches!(
+                    command,
+                    "generate-sweep" | "generate-channel" | "generate-duct"
+                ) =>
+        {
+            (head, Some(text(format)?))
+        }
+        _ => (rest, None),
+    };
+    let mut request = match (command, rest) {
         ("commands", []) => Request::Text(format!(
             "{}\n",
             serde_json::to_string_pretty(&mesh_tools::catalogue()).unwrap_or_default()
@@ -242,5 +257,9 @@ fn parse(args: &[OsString]) -> Result<Request, Diagnostic> {
             json!({ "artifact": text(artifact)?, "format": text(format)?, "output": text(output)? }),
         ),
         _ => return Err(usage()),
-    })
+    };
+    if let (Some(format), Request::Classic(_, input)) = (handoff, &mut request) {
+        input["handoff"] = json!(format);
+    }
+    Ok(request)
 }

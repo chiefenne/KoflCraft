@@ -6,7 +6,8 @@ This review applies to the versions selected in [Cargo.lock](../Cargo.lock). Reg
 |---|---|---|
 | `serde` | 1.0.229 for typed configuration and evidence | [serde-rs/serde](https://github.com/serde-rs/serde) |
 | `serde_json` | 1.0.154 for JSON and binary64 round trips | [serde-rs/json](https://github.com/serde-rs/json) |
-| `sha2` | 0.11.1 for SHA-256 artifact and evidence digests | [RustCrypto/hashes](https://github.com/RustCrypto/hashes) |
+| `sha2` | 0.11.1 for SHA-256 artifact, source and config digests | [RustCrypto/hashes](https://github.com/RustCrypto/hashes) |
+| `blake3` | 1.8.7 for the BLAKE3 hash of every file written (`mesh-evidence.json` 1.1, tool results' `files`). Added 2026-11-24 by the maintainer's decision (SHA-256 of a 5 GB mesh took 17 s without SHA instructions). It is CC0-1.0 OR Apache-2.0 (OR Apache-2.0 WITH LLVM-exception); its new dependencies `constant_time_eq` (CC0-1.0 OR MIT-0 OR Apache-2.0), `arrayvec`, and the build-time `cc`, `find-msvc-tools`, `shlex` (MIT OR Apache-2.0) were checked in each crate's `Cargo.toml` | [BLAKE3-team/BLAKE3](https://github.com/BLAKE3-team/BLAKE3) |
 | `cap-std` | 4.0.3 for directory-scoped filesystem access | [Bytecode Alliance cap-std](https://github.com/bytecodealliance/cap-std) |
 | `toml` | 1.2.1, in `xtask`, to read `docs/features.toml` (AG-17), and in `mesh-mcp`, to read the `--policy` file (AG-15). Added 2026-11-22 by the maintainer's decision; it and its new dependencies `toml_datetime`, `toml_parser`, `toml_writer`, `serde_spanned`, `indexmap`, `hashbrown`, `equivalent` are MIT OR Apache-2.0, `winnow` is MIT (checked in each crate's `Cargo.toml`) | [toml-rs/toml](https://github.com/toml-rs/toml) |
 

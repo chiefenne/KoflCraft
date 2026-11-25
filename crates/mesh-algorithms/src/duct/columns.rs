@@ -52,6 +52,108 @@ pub(super) struct Columns {
     pub absorbed_columns: usize,
 }
 
+/// A corner is straight when its triangle is below this share of the square
+/// of its longest edge.
+const STRAIGHT_CORNER: f64 = 1e-9;
+
+/// Triangles of a simple planar polygon, as positions in the ring and in
+/// the ring's winding (ear clipping). A wall polygon need not be convex: a
+/// core cell with merged pieces can leave a notch, and a fan from one corner
+/// then has a triangle of the wrong sign. Straight corners are left out
+/// first and put back by splitting the triangle on their edge, so no
+/// triangle is flat while the polygon has area. Among the free ears the
+/// roundest is cut first.
+pub(super) fn ears(ring: &[Vec3]) -> Vec<[usize; 3]> {
+    let n = ring.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    let normal = (0..n).fold(Vec3::ZERO, |s, i| {
+        s + (ring[i] - ring[0]).cross(ring[(i + 1) % n] - ring[0])
+    });
+    let length = normal.length();
+    if length.is_nan() || length <= 0.0 {
+        // no area: any triangulation is flat
+        return (1..n - 1).map(|i| [0, i, i + 1]).collect();
+    }
+    let normal = normal / length;
+    // twice the signed area, and its share of the longest squared edge
+    let corner = |a: usize, b: usize, c: usize| -> (f64, f64) {
+        let (u, v, w) = (ring[b] - ring[a], ring[c] - ring[b], ring[a] - ring[c]);
+        let area = u.cross(v).dot(normal);
+        let longest = u.dot(u).max(v.dot(v)).max(w.dot(w));
+        (area, if longest > 0.0 { area / longest } else { 0.0 })
+    };
+    let mut live: Vec<usize> = (0..n).collect();
+    let mut straight: Vec<usize> = Vec::new();
+    loop {
+        let m = live.len();
+        let found = (m > 3)
+            .then(|| {
+                (0..m).find(|&j| {
+                    corner(live[(j + m - 1) % m], live[j], live[(j + 1) % m])
+                        .1
+                        .abs()
+                        <= STRAIGHT_CORNER
+                })
+            })
+            .flatten();
+        match found {
+            Some(j) => straight.push(live.remove(j)),
+            None => break,
+        }
+    }
+    let mut out: Vec<[usize; 3]> = Vec::with_capacity(n - 2);
+    while live.len() > 3 {
+        let m = live.len();
+        let mut best: Option<(bool, f64, usize)> = None;
+        for j in 0..m {
+            let (a, b, c) = (live[(j + m - 1) % m], live[j], live[(j + 1) % m]);
+            let (area, quality) = corner(a, b, c);
+            let free = area > 0.0
+                && !live.iter().any(|&v| {
+                    v != a
+                        && v != b
+                        && v != c
+                        && corner(a, b, v).0 >= 0.0
+                        && corner(b, c, v).0 >= 0.0
+                        && corner(c, a, v).0 >= 0.0
+                });
+            if best.is_none_or(|(f, q, _)| (free, quality) > (f, q)) {
+                best = Some((free, quality, j));
+            }
+        }
+        let Some((_, _, j)) = best else { break };
+        out.push([live[(j + m - 1) % m], live[j], live[(j + 1) % m]]);
+        live.remove(j);
+    }
+    if let [a, b, c] = live[..] {
+        out.push([a, b, c]);
+    }
+    // a straight corner m between ring neighbours a and b splits the
+    // triangle on the edge a b; the last one taken out goes back first
+    let mut present = vec![true; n];
+    for &m in &straight {
+        present[m] = false;
+    }
+    for &m in straight.iter().rev() {
+        let a = (1..n).map(|k| (m + n - k) % n).find(|&v| present[v]);
+        let b = (1..n).map(|k| (m + k) % n).find(|&v| present[v]);
+        let (Some(a), Some(b)) = (a, b) else { continue };
+        let hit = out.iter().enumerate().find_map(|(t, tri)| {
+            (0..3)
+                .find(|&e| tri[e] == a && tri[(e + 1) % 3] == b)
+                .map(|e| (t, tri[(e + 2) % 3]))
+        });
+        if let Some((t, x)) = hit {
+            out[t] = [a, m, x];
+            out.push([m, b, x]);
+        }
+        present[m] = true;
+    }
+    out
+}
+
 /// A side edge of a column on the innermost surface: its directed ring edge,
 /// the wall triangle it lies in and the column across it (none at a port).
 type Side = (usize, usize, usize, Option<usize>);
@@ -135,6 +237,7 @@ pub(super) fn coplanar(
 pub(super) fn build(
     points: &mut Vec<Vec3>,
     tris: &[[usize; 3]],
+    patches: &[usize],
     wall: &[usize],
     coarse: &[Cell],
     old_boundary: Vec<BoundaryFace>,
@@ -462,8 +565,9 @@ pub(super) fn build(
             *centre.entry((x, k)).or_insert_with(|| {
                 let (mut v, mut m) = (0.0, Vec3::ZERO);
                 for ring in columns[x].iter().flat_map(|&u| &units[u].rings) {
-                    for i in 1..ring.len() - 1 {
-                        let w = [ring[0], ring[i + 1], ring[i]];
+                    let flat: Vec<Vec3> = ring.iter().map(|&g| points[g]).collect();
+                    for [a, b, c] in ears(&flat) {
+                        let w = [ring[a], ring[c], ring[b]];
                         let n = [
                             img(w[0], k),
                             img(w[1], k),
@@ -584,14 +688,15 @@ pub(super) fn build(
                 if level == 0 {
                     boundary.push(BoundaryFace {
                         nodes: bottom.clone(),
-                        patch: 3,
+                        patch: patches[units[col[0]].bi],
                         owner: id,
                     });
                 }
                 faces.push(bottom);
                 faces.push(top);
-                for i in 1..ring.len() - 1 {
-                    let (a, b, c) = (ring[0], ring[i], ring[i + 1]);
+                let flat: Vec<Vec3> = ring.iter().map(|&g| points[g]).collect();
+                for [a, b, c] in ears(&flat) {
+                    let (a, b, c) = (ring[a], ring[b], ring[c]);
                     wedges.push([
                         img(a, level),
                         img(c, level),
@@ -669,7 +774,62 @@ pub(super) fn build(
 
 #[cfg(test)]
 mod tests {
-    use super::one_chain;
+    use super::{ears, one_chain};
+    use mesh_core::geometry::Vec3;
+
+    fn signed(ring: &[Vec3], t: [usize; 3]) -> f64 {
+        (ring[t[1]] - ring[t[0]]).cross(ring[t[2]] - ring[t[0]]).z * 0.5
+    }
+
+    /// Invariant: the triangles of a wall polygon all have positive area and
+    /// add up to the polygon, also when it has a notch, a speck next to a
+    /// corner and straight corners. A fan from the first corner (the code
+    /// before) gives a negative triangle on each of these rings, which the
+    /// layer check reports as an inverted sub-wedge; the fixtures only have
+    /// convex wall polygons, so no other test sees it.
+    #[test]
+    fn ears_of_notched_and_straight_rings_are_positive() {
+        let v = |x: f64, y: f64| Vec3::new(x, y, 0.0);
+        let rings = [
+            // notch seen from the first corner
+            vec![v(0., 0.), v(4., 0.), v(4., 4.), v(2., 1.), v(0., 4.)],
+            // speck of 1e-5 next to a corner
+            vec![
+                v(0., 0.),
+                v(3., 0.),
+                v(3., 3.),
+                v(1e-5, 3.),
+                v(1e-5, 1e-5),
+                v(0., 1e-5),
+            ],
+            // straight corners, two of them on one edge, one at the start
+            vec![
+                v(1., 0.),
+                v(2., 0.),
+                v(3., 0.),
+                v(4., 0.),
+                v(4., 2.),
+                v(2., 2.),
+                v(0., 2.),
+                v(0., 0.),
+            ],
+        ];
+        for ring in &rings {
+            let n = ring.len();
+            let area: f64 = (1..n - 1).map(|i| signed(ring, [0, i, i + 1])).sum();
+            let triangles = ears(ring);
+            assert_eq!(triangles.len(), n - 2);
+            let mut sum = 0.0;
+            for t in triangles {
+                let a = signed(ring, t);
+                assert!(a > 0.0, "triangle {t:?} has area {a}");
+                sum += a;
+            }
+            assert!((sum - area).abs() < 1e-12 * area);
+        }
+        // the old fan is negative somewhere on the notched ring
+        assert!((1..4).any(|i| signed(&rings[0], [0, i, i + 1]) < 0.0));
+    }
 
     /// Keep: two columns may touch in one open chain of edges only, since
     /// FoehnCraft allows one face per cell pair and the hand-off merges a

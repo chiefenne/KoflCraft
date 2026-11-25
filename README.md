@@ -8,6 +8,15 @@
   An open-source polyhedral mesh generator for CFD and multi-physics simulations, written in Rust. The companion mesher of <a href="https://github.com/chiefenne/Foehncraft">Foehncraft</a>.
 </p>
 
+<p align="center">
+  <a href="docs/gallery.md"><img src="assets/readme/tour.webp" width="880" alt="A slideshow of KoflCraft's Manifold mesh, three slides that change every four seconds, pictured with MurmelCraft: the Manifold duct coloured by patch; the Manifold cut in half and coloured by cell type, polyhedra in the core and prisms along the walls; the non-orthogonality of the cells on a flat cut, in the light theme"></a>
+</p>
+
+<sub>KoflCraft's Manifold mesh pictured with <a href="https://github.com/chiefenne/MurmelCraft">MurmelCraft</a>:
+229,615 cells, Voronoi polyhedra in the core with prism layers at the
+walls. The slides are also [still images with captions](docs/gallery.md);
+how they were made is in [tools/readme-tour](tools/readme-tour/README.md).</sub>
+
 ---
 
 > **Status: milestone M1 done (clipped Voronoi polyhedra in a box, validated,
@@ -17,6 +26,7 @@
 > ports exist as prototypes. The milestone plan and every decision are in
 > [docs/requirements.md](docs/requirements.md).
 
+[![CI](https://github.com/chiefenne/KoflCraft/actions/workflows/m1.yml/badge.svg)](https://github.com/chiefenne/KoflCraft/actions/workflows/m1.yml)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](Cargo.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -70,6 +80,7 @@ cargo m1 --require-gmsh
 | STL input | [docs/m2-stl.md](docs/m2-stl.md) |
 | Block and pipe meshes with wall layers | [docs/analytic-development.md](docs/analytic-development.md) |
 | Nonconvex ducts with exposed prism layers | [docs/nonconvex-duct.md](docs/nonconvex-duct.md) |
+| Colour maps shared with FoehnCraft and MurmelCraft | [docs/colour-maps.md](docs/colour-maps.md) |
 | Rules for agents and contributors | [AGENTS.md](AGENTS.md), [docs/pitfalls.md](docs/pitfalls.md) |
 
 ## How it is built

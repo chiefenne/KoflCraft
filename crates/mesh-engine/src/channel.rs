@@ -8,6 +8,7 @@ use mesh_io::channel::{MULTIBLOCK, write_gmsh, write_patch, write_volume};
 use mesh_quality::{MeshMetrics, RELATIVE_CONSERVATION_TOLERANCE, validate_mesh};
 use serde::{Deserialize, Serialize};
 
+use crate::handoff::HandoffFormat;
 use crate::{EngineError, ErrorCode, MeshDirectory, SCHEMA_VERSION};
 
 #[derive(Deserialize, Serialize)]
@@ -113,6 +114,7 @@ pub fn generate_channel(
     config: &ChannelConfig,
     dir: &MeshDirectory,
     name: &OsStr,
+    handoff_format: HandoffFormat,
 ) -> Result<ChannelReport, EngineError> {
     if config.schema_version != SCHEMA_VERSION {
         return Err(EngineError::new(
@@ -144,33 +146,41 @@ pub fn generate_channel(
         inlet: check_port(&channel, &metrics, ChannelPatch::Inlet)?,
         outlet: check_port(&channel, &metrics, ChannelPatch::Outlet)?,
     };
-    let mut volume = Vec::new();
-    let mut msh = Vec::new();
-    let [mut inlet, mut outlet, mut walls] = std::array::from_fn(|_| Vec::new());
-    let io = |e| EngineError::new(ErrorCode::ExportFailed, e);
-    write_volume(&channel, &mut volume).map_err(io)?;
-    write_gmsh(&channel, mesh_io::GmshVersion::V4_1, &mut msh).map_err(io)?;
-    for (patch, out) in [
-        (ChannelPatch::Inlet, &mut inlet),
-        (ChannelPatch::Outlet, &mut outlet),
-        (ChannelPatch::Walls, &mut walls),
-    ] {
-        write_patch(&channel, patch, out).map_err(io)?;
-    }
     let handoff = mesh_io::channel::handoff(&channel).map_err(crate::handoff::export_error)?;
-    let foehn = crate::handoff::foehncraft_vtu(&handoff, &[])?;
-    let mut files: Vec<(&str, &[u8])> = vec![
-        ("volume.vtu", &volume),
-        ("inlet.vtu", &inlet),
-        ("outlet.vtu", &outlet),
-        ("walls.vtu", &walls),
-        ("channel.vtm", MULTIBLOCK),
-        ("channel.msh", &msh),
-        (crate::handoff::FOEHNCRAFT_VTU, &foehn),
-    ];
-    let evidence = crate::handoff::evidence(&handoff, "straight_channel", &files)?;
-    files.push((crate::handoff::MESH_EVIDENCE, &evidence));
-    dir.write_bundle(name, &files)
+    // each file goes to disk as it is written, hashed on the way
+    let fail = crate::handoff::stream_error;
+    let mut bundle = dir
+        .bundle(name)
         .map_err(|e| EngineError::new(ErrorCode::IoError, e))?;
+    bundle
+        .stream("volume.vtu", |w| write_volume(&channel, w))
+        .map_err(fail)?;
+    for (patch, file) in [
+        (ChannelPatch::Inlet, "inlet.vtu"),
+        (ChannelPatch::Outlet, "outlet.vtu"),
+        (ChannelPatch::Walls, "walls.vtu"),
+    ] {
+        bundle
+            .stream(file, |w| write_patch(&channel, patch, w))
+            .map_err(fail)?;
+    }
+    bundle
+        .stream("channel.vtm", |w| w.write_all(MULTIBLOCK))
+        .map_err(fail)?;
+    bundle
+        .stream("channel.msh", |w| {
+            write_gmsh(&channel, mesh_io::GmshVersion::V4_1, w)
+        })
+        .map_err(fail)?;
+    bundle
+        .stream(handoff_format.file_name(), |w| {
+            handoff_format.write(&handoff, &[], w)
+        })
+        .map_err(fail)?;
+    let evidence = crate::handoff::evidence(&handoff, "straight_channel", bundle.files())?;
+    bundle
+        .stream(crate::handoff::MESH_EVIDENCE, |w| w.write_all(&evidence))
+        .map_err(fail)?;
+    bundle.finish();
     Ok(report)
 }

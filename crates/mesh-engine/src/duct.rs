@@ -1,5 +1,6 @@
 //! Mesh an annotated STL using a validated, explicitly supplied partition.
 mod scaffold;
+use crate::handoff::HandoffFormat;
 use crate::{
     EngineError, ErrorCode, MeshDirectory,
     artifact::{digest, require_schema, sha256, vector},
@@ -24,6 +25,15 @@ pub struct Partition {
     pub first_thickness: f64,
     pub growth: f64,
     pub layers: usize,
+    /// Names of wall patches that grow no layers (planar patches only): the
+    /// layers of the walls around run straight into them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub no_layers: Vec<String>,
+    /// Names of planar wall patches whose layers yield: they keep their
+    /// layers, and every wall that crosses them (at a right angle) runs its
+    /// own layers straight through down to them, with no mitre.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers_yield: Vec<String>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -125,10 +135,14 @@ const MAX_SCAFFOLD_POINTS: usize = 2_000_000;
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CoreKind {
-    /// Clipped Voronoi diagram restricted to the scaffold, Lloyd-relaxed (M4).
-    #[default]
+    /// Clipped Voronoi diagram restricted to the scaffold, Lloyd-relaxed
+    /// (M4). On hold since the solver rules decide (2026-11-25): its
+    /// wall-join cells can break them.
     Voronoi,
-    /// Vertex-centred median dual of the scaffold (M1b).
+    /// Vertex-centred median dual of the scaffold (M1b), cells that break
+    /// the solver rules split into valid parts. The default, as the dual of
+    /// a tet mesh is in production polyhedral meshers.
+    #[default]
     MedianDual,
 }
 
@@ -242,6 +256,7 @@ pub enum Mode {
     Polyhedral,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn generate(
     data: &[u8],
     patch_map: &PatchMap,
@@ -250,10 +265,11 @@ pub fn generate(
     scaffold_data: Option<&[u8]>,
     dir: &MeshDirectory,
     name: &OsStr,
+    handoff_format: HandoffFormat,
 ) -> Result<Value, EngineError> {
     let invalid = |s: &str| EngineError::new(ErrorCode::InvalidDomain, s);
     let start = Instant::now();
-    let (surface, patches) = prepare(data, patch_map, plan)?;
+    let (surface, patches, names) = prepare(data, patch_map, plan)?;
     let source_digest = sha256(data);
     let mut steps = Vec::new();
     if matches!(mode, Mode::Layered | Mode::Polyhedral) {
@@ -289,6 +305,49 @@ pub fn generate(
             step *= plan.growth;
         }
     }
+    // Walls whose layers yield: build on a domain with their planes moved
+    // in by the layer height, then extrude the slab back out.
+    let full_source = surface.clone();
+    let mut yielding_ids: Vec<usize> = Vec::new();
+    let mut yield_planes = Vec::new();
+    let surface = if plan.layers_yield.is_empty() {
+        surface
+    } else {
+        let core_ok = matches!(mode, Mode::Polyhedral)
+            && plan
+                .volume_scaffold
+                .as_ref()
+                .is_some_and(|s| s.build.is_some() && matches!(s.core, CoreKind::MedianDual));
+        if !core_ok || scaffold_data.is_some() {
+            return Err(invalid(
+                "layers_yield needs the polyhedral mode with a built scaffold and the median dual core",
+            ));
+        }
+        yielding_ids = (1..=names.len())
+            .filter(|&id| plan.layers_yield.contains(&names[id - 1].0))
+            .collect();
+        // flush openings inside a yielding wall yield with it
+        let geometry = SurfaceGeometry::new(&surface);
+        for id in duct::WALL..=names.len() {
+            if names[id - 1].1 != "wall"
+                && geometry.edges.iter().any(|e| {
+                    let [f, g] = e.facets;
+                    let (a, b) = (duct::patch_index(patches[f]), duct::patch_index(patches[g]));
+                    (a == id && yielding_ids.contains(&b)) || (b == id && yielding_ids.contains(&a))
+                })
+            {
+                yielding_ids.push(id);
+            }
+        }
+        let yielding: Vec<bool> = patches
+            .iter()
+            .map(|&p| duct::is_slip(p) && yielding_ids.contains(&duct::patch_index(p)))
+            .collect();
+        let (short, planes) = duct::shorten_yielding(&surface, &yielding, steps.iter().sum())
+            .map_err(|e| invalid(&e))?;
+        yield_planes = planes;
+        short
+    };
     let regions: Vec<_> = plan
         .regions
         .iter()
@@ -301,10 +360,10 @@ pub fn generate(
     let mut scaffold_volume = None;
     let mut scaffold_report: Option<Value> = None;
     let mut voronoi: Option<duct::VoronoiStats> = None;
-    let mut source_areas = [0.; 3];
+    let mut source_areas = vec![0.; names.len()];
     let scale = surface.bounds().extent().max_abs_component();
     for (f, &tag) in surface.facets().iter().zip(&patches) {
-        source_areas[tag - 1] += f.normalized_area * scale * scale;
+        source_areas[duct::patch_index(tag) - 1] += f.normalized_area * scale * scale;
     }
     let mesh = if let (Mode::Polyhedral, Some(spec)) = (mode, &plan.volume_scaffold) {
         let limit = spec.max_relative_geometry_error;
@@ -373,31 +432,35 @@ pub fn generate(
                 }
             }
         };
+        let mut mesh = mesh;
+        unmark_slip(&mut mesh, names.len());
         scaffold_volume = Some(shell.volume());
         if (shell.volume() / surface.volume() - 1.).abs() > limit
             || source_areas
                 .iter()
-                .zip(mesh.measurements.areas)
-                .any(|(&a, b)| (b / a - 1.).abs() > limit)
+                .zip(&mesh.measurements.areas)
+                .any(|(&a, &b)| a > 0. && (b / a - 1.).abs() > limit)
         {
             return Err(invalid(
                 "remeshed volume or patch areas exceed configured STL error limit",
             ));
         }
-        for tag in 1..=2 {
-            let f = surface
+        for tag in 1..duct::WALL {
+            let Some((f, _)) = surface
                 .facets()
                 .iter()
                 .zip(&patches)
                 .find(|(_, p)| **p == tag)
-                .unwrap()
-                .0;
+            else {
+                continue; // no cap: the opening is flush and layered
+            };
             let origin = surface.vertices()[f.triangle.vertices[0]];
             let normal = f.plane.normal();
+            let id = tag.to_string();
             for face in shell
                 .facets()
                 .iter()
-                .filter(|f| f.triangle.patch.0 == tag - 1)
+                .filter(|f| shell.patch_names()[f.triangle.patch.0] == id)
             {
                 // f32 STL: a tilted cap is planar to the coordinate rounding
                 if face.plane.normal().dot(normal) < 1. - 1e-6
@@ -413,13 +476,61 @@ pub fn generate(
                 }
             }
         }
+        if !yield_planes.is_empty() {
+            let shell_patches: Vec<usize> = shell
+                .facets()
+                .iter()
+                .map(|f| {
+                    shell.patch_names()[f.triangle.patch.0]
+                        .parse::<usize>()
+                        .map(duct::patch_index)
+                        .unwrap_or(0)
+                })
+                .collect();
+            let full = duct::extrude_yielding(
+                &mut mesh,
+                &shell,
+                &shell_patches,
+                &yield_planes,
+                &yielding_ids,
+                &steps,
+            )
+            .map_err(validated)?;
+            scaffold_volume = Some(full.volume());
+        }
         mesh
     } else if matches!(mode, Mode::Polyhedral) {
         duct::build_polyhedral(&surface, &patches, &regions, &steps).map_err(validated)?
     } else {
         duct::build(&surface, &patches, &regions, &steps).map_err(validated)?
     };
+    let mut mesh = mesh;
+    mesh.patches = names.clone();
+    unmark_slip(&mut mesh, names.len());
+    let unlayered: Vec<usize> = patches
+        .iter()
+        .filter(|&&p| duct::is_slip(p))
+        .map(|&p| duct::patch_index(p))
+        .filter(|id| !yielding_ids.contains(id))
+        .collect();
+    // the report names the areas of the full STL, also when yielding walls
+    // were built on a shortened domain
+    let mut source_areas = vec![0.; names.len()];
+    for (f, &tag) in full_source.facets().iter().zip(&patches) {
+        source_areas[duct::patch_index(tag) - 1] += f.normalized_area * scale * scale;
+    }
     let m = &mesh.measurements;
+    let walls_of = |a: &[f64]| a.iter().skip(duct::WALL - 1).sum::<f64>();
+    let patch_list: Vec<Value> = names
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| source_areas[i] > 0.)
+        .map(|(i, (name, role))| {
+            json!({"id": i + 1, "name": name, "role": role,
+                   "layered": duct::is_wall(i + 1) && !unlayered.contains(&(i + 1)),
+                   "stl_area": source_areas[i], "area": m.areas.get(i).copied().unwrap_or(0.)})
+        })
+        .collect();
     let mut tetrahedra = 0;
     let mut prisms = 0;
     let mut polyhedra = 0;
@@ -444,7 +555,8 @@ pub fn generate(
         "regions": if scaffold_volume.is_some(){1}else{regions.len()},
         "scaffold_volume": scaffold_volume,
         "scaffold": scaffold_report,
-        "stl_patch_areas": {"inlet":source_areas[0],"outlet":source_areas[1],"walls":source_areas[2]},
+        "stl_patch_areas": {"inlet":source_areas[0],"outlet":source_areas[1],"walls":walls_of(&source_areas)},
+        "patches": patch_list,
         "source_facets": surface.facets().len(),
         "tetrahedra": tetrahedra,
         "polyhedra": polyhedra,
@@ -452,48 +564,61 @@ pub fn generate(
         "polyhedron_face_range": (polyhedra > 0).then_some(face_range),
         "prism_core_faces":m.prism_core_faces,
         "prisms": prisms,
-        "source_volume": surface.volume(),
+        "source_volume": full_source.volume(),
         "volume": m.volume,
         "minimum_cell_volume": m.minimum_volume,
         "minimum_tet_mean_ratio": (tetrahedra > 0).then_some(m.minimum_tet_mean_ratio),
         "tetrahedra_below_mean_ratio_0_1": m.tetrahedra_below_mean_ratio_0_1,
         "minimum_wedge_jacobian": m.minimum_wedge_jacobian,
         "minimum_kernel_clearance": m.minimum_kernel_clearance,
-        "patch_areas": {"inlet": m.areas[0], "outlet": m.areas[1], "walls": m.areas[2]},
+        "patch_areas": {"inlet": m.areas[0], "outlet": m.areas[1], "walls": walls_of(&m.areas)},
         "port_areas_by_layer": {"inlet": m.port_layer_areas[0], "outlet": m.port_layer_areas[1]},
         "thicknesses": steps,
         "normal_thickness_ranges": m.normal_thickness_ranges,
         "voronoi_core": voronoi.as_ref().map(voronoi_json),
         "generation_seconds": start.elapsed().as_secs_f64()
     });
-    let mut volume = Vec::new();
-    let mut gmsh = Vec::new();
-    let mut faces: [Vec<u8>; 3] = Default::default();
-    let io = |e| EngineError::new(ErrorCode::ExportFailed, e);
-    mesh_io::duct::volume(&mesh, &mut volume).map_err(io)?;
-    mesh_io::duct::gmsh(&mesh, mesh_io::GmshVersion::V4_1, &mut gmsh).map_err(io)?;
-    for (i, out) in faces.iter_mut().enumerate() {
-        mesh_io::duct::patch(&mesh, i + 1, out).map_err(io)?;
-    }
     let report_json = serde_json::to_vec_pretty(&report)
         .map_err(|e| EngineError::new(ErrorCode::SerializationFailed, e))?;
     let handoff = mesh_io::duct::handoff(&mesh).map_err(crate::handoff::export_error)?;
-    let foehn = crate::handoff::foehncraft_vtu(&handoff, &[])?;
-    let mut files: Vec<(&str, &[u8])> = vec![
-        ("volume.vtu", &volume),
-        ("mesh.msh", &gmsh),
-        ("mesh.vtm", mesh_io::channel::MULTIBLOCK),
-        ("inlet.vtu", &faces[0]),
-        ("outlet.vtu", &faces[1]),
-        ("walls.vtu", &faces[2]),
-        ("report.json", &report_json),
-        (crate::handoff::FOEHNCRAFT_VTU, &foehn),
-    ];
     let generator = report["algorithm"].as_str().unwrap_or("duct").to_string();
-    let evidence = crate::handoff::evidence(&handoff, &generator, &files)?;
-    files.push((crate::handoff::MESH_EVIDENCE, &evidence));
-    dir.write_bundle(name, &files)
+    // each file goes to disk as it is written, hashed on the way
+    let fail = crate::handoff::stream_error;
+    let mut bundle = dir
+        .bundle(name)
         .map_err(|e| EngineError::new(ErrorCode::IoError, e))?;
+    bundle
+        .stream("volume.vtu", |w| mesh_io::duct::volume(&mesh, w))
+        .map_err(fail)?;
+    bundle
+        .stream("mesh.msh", |w| {
+            mesh_io::duct::gmsh(&mesh, mesh_io::GmshVersion::V4_1, w)
+        })
+        .map_err(fail)?;
+    bundle
+        .stream("mesh.vtm", |w| w.write_all(mesh_io::channel::MULTIBLOCK))
+        .map_err(fail)?;
+    for (i, file) in ["inlet.vtu", "outlet.vtu", "walls.vtu"]
+        .into_iter()
+        .enumerate()
+    {
+        bundle
+            .stream(file, |w| mesh_io::duct::patch(&mesh, i + 1, w))
+            .map_err(fail)?;
+    }
+    bundle
+        .stream("report.json", |w| w.write_all(&report_json))
+        .map_err(fail)?;
+    bundle
+        .stream(handoff_format.file_name(), |w| {
+            handoff_format.write(&handoff, &[], w)
+        })
+        .map_err(fail)?;
+    let evidence = crate::handoff::evidence(&handoff, &generator, bundle.files())?;
+    bundle
+        .stream(crate::handoff::MESH_EVIDENCE, |w| w.write_all(&evidence))
+        .map_err(fail)?;
+    bundle.finish();
     Ok(report)
 }
 
@@ -503,7 +628,7 @@ fn prepare(
     data: &[u8],
     patch_map: &PatchMap,
     plan: &Partition,
-) -> Result<(mesh_geometry::ClosedSurface, Vec<usize>), EngineError> {
+) -> Result<(mesh_geometry::ClosedSurface, Vec<usize>, Patches), EngineError> {
     let invalid = |s: &str| EngineError::new(ErrorCode::InvalidDomain, s);
     require_schema(plan.schema_version)?;
     if sha256(data) != plan.source_sha256 {
@@ -511,15 +636,77 @@ fn prepare(
             "patch map or partition digest differs from input STL",
         ));
     }
-    surface_tags(data, patch_map)
+    let (surface, mut patches, names) = surface_tags(data, patch_map)?;
+    if let Some(name) = plan
+        .layers_yield
+        .iter()
+        .find(|n| plan.no_layers.contains(n))
+    {
+        return Err(invalid(&format!(
+            "patch {name:?} is listed under both no_layers and layers_yield"
+        )));
+    }
+    for name in plan.no_layers.iter().chain(&plan.layers_yield) {
+        let ids: Vec<usize> = (1..=names.len())
+            .filter(|&id| names[id - 1].0 == *name && duct::is_wall(id))
+            .collect();
+        if ids.is_empty() && !names.iter().any(|(n, _)| n == name) {
+            return Err(invalid(&format!(
+                "no_layers or layers_yield names an unknown patch {name:?}"
+            )));
+        }
+        for p in patches.iter_mut().filter(|p| ids.contains(p)) {
+            *p += duct::SLIP;
+        }
+    }
+    // A flush opening in a wall without layers has none either.
+    if !plan.no_layers.is_empty() || !plan.layers_yield.is_empty() {
+        let geometry = SurfaceGeometry::new(&surface);
+        for id in duct::WALL..=names.len() {
+            if names[id - 1].1 == "wall" || !patches.contains(&id) {
+                continue;
+            }
+            let inside = geometry.edges.iter().any(|e| {
+                let [f, g] = e.facets;
+                (patches[f] == id && duct::is_slip(patches[g]))
+                    || (patches[g] == id && duct::is_slip(patches[f]))
+            });
+            if inside {
+                for p in patches.iter_mut().filter(|p| **p == id) {
+                    *p += duct::SLIP;
+                }
+            }
+        }
+    }
+    Ok((surface, patches, names))
 }
 
-/// The surface and per-facet patch ids (1 inlet, 2 outlet, 3 wall) of a
-/// checked STL and patch map.
+/// Drop the [`duct::SLIP`] mark of the patches without layers from the
+/// boundary faces and the measured areas of a built mesh with `n` patches.
+fn unmark_slip(mesh: &mut duct::DuctMesh, n: usize) {
+    for face in &mut mesh.boundary {
+        face.patch = duct::patch_index(face.patch);
+    }
+    let areas = &mut mesh.measurements.areas;
+    for i in duct::SLIP..areas.len() {
+        areas[i - duct::SLIP] += areas[i];
+    }
+    areas.truncate(n.max(duct::WALL));
+}
+
+/// Name and role of every patch id, indexed by id - 1.
+type Patches = Vec<(String, String)>;
+
+/// The surface, per-facet patch ids and patch names of a checked STL and
+/// patch map: 1 the inlet cap, 2 the outlet cap, 3 and up the patches that
+/// grow wall layers ([`duct::is_wall`]). An inlet or outlet whose rim is
+/// flush with the wall around it (every rim edge turns by less than the
+/// feature angle) cannot contract in its plane; it grows layers like the
+/// wall and keeps its name and role.
 fn surface_tags(
     data: &[u8],
     patch_map: &PatchMap,
-) -> Result<(mesh_geometry::ClosedSurface, Vec<usize>), EngineError> {
+) -> Result<(mesh_geometry::ClosedSurface, Vec<usize>, Patches), EngineError> {
     let invalid = |s: &str| EngineError::new(ErrorCode::InvalidDomain, s);
     let source_digest = sha256(data);
     let (map_digest, facet_count) = match patch_map {
@@ -545,14 +732,34 @@ fn surface_tags(
     if surface.facets().len() != facet_count {
         return Err(invalid("expected a matching facet count"));
     }
-    let patches = match patch_map {
-        PatchMap::Ports(p) => port_tags(p, facet_count)?,
+    let (mut patches, mut names) = match patch_map {
+        PatchMap::Ports(p) => (port_tags(p, facet_count)?, duct::classic_patches()),
         PatchMap::Map(m) => map_tags(m)?,
     };
-    if !patches.contains(&1) || !patches.contains(&2) || !patches.contains(&3) {
-        return Err(invalid("expected distinct inlet, outlet and wall patches"));
+    let geometry = SurfaceGeometry::new(&surface);
+    let limit = default_feature_angle().to_radians();
+    for cap in 1..duct::WALL {
+        let mut rim = 0;
+        let mut flush = true;
+        for e in &geometry.edges {
+            let [f, g] = e.facets;
+            if (patches[f] == cap) != (patches[g] == cap) {
+                rim += 1;
+                flush &= e.angle < limit;
+            }
+        }
+        if rim > 0 && flush {
+            names.push(names[cap - 1].clone());
+            let id = names.len();
+            for p in patches.iter_mut().filter(|p| **p == cap) {
+                *p = id;
+            }
+        }
     }
-    Ok((surface, patches))
+    if !patches.iter().any(|&p| duct::is_wall(p)) {
+        return Err(invalid("expected a wall patch"));
+    }
+    Ok((surface, patches, names))
 }
 
 /// What `setup` may change; lengths in model units.
@@ -593,15 +800,25 @@ pub fn setup(
     if !k.is_finite() || k <= 0.0 {
         return Err(invalid("size_factor must be positive"));
     }
-    let (surface, patches) = surface_tags(data, patch_map)?;
+    let (surface, patches, names) = surface_tags(data, patch_map)?;
     let scale = surface.bounds().extent().max_abs_component();
-    let mut areas = [0.0; 2];
+    // the openings: the inlet and outlet caps, or flush openings
+    let mut areas = vec![0.; names.len()];
     for (f, &tag) in surface.facets().iter().zip(&patches) {
-        if tag < 3 {
-            areas[tag - 1] += f.normalized_area * scale * scale;
-        }
+        areas[tag - 1] += f.normalized_area * scale * scale;
     }
-    let r = (areas[0].min(areas[1]) / std::f64::consts::PI).sqrt();
+    let smallest = names
+        .iter()
+        .zip(&areas)
+        .filter(|((_, role), a)| role != "wall" && **a > 0.)
+        .map(|(_, &a)| a)
+        .fold(f64::INFINITY, f64::min);
+    if !smallest.is_finite() {
+        return Err(invalid(
+            "setup sizes the mesh from the smallest inlet or outlet; the map has none",
+        ));
+    }
+    let r = (smallest / std::f64::consts::PI).sqrt();
     let h = r * k;
     let layers = options.layers.unwrap_or(3);
     let first_thickness = options.first_thickness.unwrap_or(h / 312.5);
@@ -652,6 +869,8 @@ pub fn setup(
         first_thickness: round(first_thickness),
         growth,
         layers,
+        no_layers: Vec::new(),
+        layers_yield: Vec::new(),
     };
     Ok((plan, r))
 }
@@ -668,7 +887,11 @@ pub fn stl_facet_error(surface: &mesh_geometry::ClosedSurface, patches: &[usize]
     let mut items: Vec<(f64, f64)> = Vec::new();
     for e in &g.edges {
         let [f, k] = e.facets;
-        if patches[f] != 3 || patches[k] != 3 || e.angle >= limit || e.angle < 1e-3 {
+        if duct::is_cap(patches[f])
+            || duct::is_cap(patches[k])
+            || e.angle >= limit
+            || e.angle < 1e-3
+        {
             continue;
         }
         let [a, b] = e.vertices;
@@ -719,10 +942,10 @@ fn port_tags(map: &PortFile, facet_count: usize) -> Result<Vec<usize>, EngineErr
     Ok(patches)
 }
 
-/// Patch ids (1 inlet, 2 outlet, 3 wall) of a patch map: exactly one patch
-/// with role inlet, one with role outlet, every other patch a wall. The
-/// duct mesh names them `inlet`, `outlet` and `walls`.
-fn map_tags(map: &crate::patches::PatchMap) -> Result<Vec<usize>, EngineError> {
+/// Patch ids and names of a patch map: the patch with role inlet is 1 and
+/// the one with role outlet 2 (at most one of each), and the wall patches
+/// get 3, 4, ... in map order. Ids without a patch keep a placeholder name.
+fn map_tags(map: &crate::patches::PatchMap) -> Result<(Vec<usize>, Patches), EngineError> {
     use crate::patches::PatchRole;
     let bad = |s: String| EngineError::new(ErrorCode::InvalidPatchMap, s);
     if map.format != crate::patches::PATCH_MAP_FORMAT
@@ -735,19 +958,26 @@ fn map_tags(map: &crate::patches::PatchMap) -> Result<Vec<usize>, EngineError> {
             crate::patches::PATCH_MAP_FORMAT_VERSION
         )));
     }
+    let mut names = duct::classic_patches();
+    names.truncate(duct::WALL - 1);
     let mut tag = Vec::with_capacity(map.patches.len());
     let (mut inlets, mut outlets) = (0, 0);
     for p in &map.patches {
         tag.push(match p.role {
             PatchRole::Inlet => {
                 inlets += 1;
+                names[0] = (p.name.clone(), "inlet".into());
                 1
             }
             PatchRole::Outlet => {
                 outlets += 1;
+                names[1] = (p.name.clone(), "outlet".into());
                 2
             }
-            PatchRole::Wall => 3,
+            PatchRole::Wall => {
+                names.push((p.name.clone(), "wall".into()));
+                names.len()
+            }
             other => {
                 return Err(bad(format!(
                     "a duct takes inlet, outlet and wall patches; {} has role {other:?}",
@@ -756,12 +986,13 @@ fn map_tags(map: &crate::patches::PatchMap) -> Result<Vec<usize>, EngineError> {
             }
         });
     }
-    if inlets != 1 || outlets != 1 {
+    if inlets > 1 || outlets > 1 {
         return Err(bad(format!(
-            "a duct needs exactly one inlet and one outlet patch, the map has {inlets} and {outlets}"
+            "a duct takes at most one inlet and one outlet patch, the map has {inlets} and {outlets}"
         )));
     }
-    map.facet_patch
+    let ids = map
+        .facet_patch
         .iter()
         .enumerate()
         .map(|(f, &p)| {
@@ -772,7 +1003,8 @@ fn map_tags(map: &crate::patches::PatchMap) -> Result<Vec<usize>, EngineError> {
                 ))
             })
         })
-        .collect()
+        .collect::<Result<_, _>>()?;
+    Ok((ids, names))
 }
 
 /// The number of cells `generate` builds (AG-15), counted from the inputs:
@@ -789,7 +1021,7 @@ pub fn cell_count(
     scaffold_data: Option<&[u8]>,
 ) -> Result<usize, EngineError> {
     let invalid = |s: &str| EngineError::new(ErrorCode::InvalidDomain, s);
-    let (surface, patches) = prepare(data, patch_map, plan)?;
+    let (surface, patches, _) = prepare(data, patch_map, plan)?;
     let layers = if matches!(mode, Mode::Bulk) {
         0
     } else {
@@ -802,7 +1034,11 @@ pub fn cell_count(
     }
     if let (Mode::Polyhedral, Some(config)) = (mode, &plan.volume_scaffold) {
         let (scaffold, _) = load_scaffold(&surface, &patches, config, scaffold_data)?;
-        let walls = scaffold.boundary.iter().filter(|(_, p)| *p == 3).count();
+        let walls = scaffold
+            .boundary
+            .iter()
+            .filter(|(_, p)| duct::is_wall(*p))
+            .count();
         // median dual: six subprisms per wall triangle and layer; Voronoi
         // core: one wedge (or split-cap polyhedron) per wall triangle and
         // layer, one cell per site (the scaffold nodes the tetrahedra use).
@@ -855,7 +1091,7 @@ pub fn cell_count(
         .values()
         .filter(|r| r.len() == 2 && r[0] != r[1])
         .count();
-    let walls = patches.iter().filter(|&&p| p == 3).count();
+    let walls = patches.iter().filter(|&&p| duct::is_wall(p)).count();
     surface
         .facets()
         .len()
@@ -913,11 +1149,12 @@ fn load_scaffold(
                 .iter()
                 .map(|f| f.triangle.vertices)
                 .collect();
-            let keep: Vec<bool> = patches.iter().map(|&p| p != 3).collect();
-            let wall = remesh::remesh(
+            let keep: Vec<bool> = patches.iter().map(|&p| duct::is_cap(p)).collect();
+            let wall = remesh::remesh_grouped(
                 surface.vertices(),
                 &triangles,
                 &keep,
+                patches,
                 remesh::RemeshOptions {
                     tolerance: b.tolerance,
                     min_size: b.min_size,
@@ -950,11 +1187,7 @@ fn load_scaffold(
                     w.thickness_clamped
                 );
             }
-            let tags: Vec<usize> = wall
-                .source
-                .iter()
-                .map(|s| s.map_or(3, |f| patches[f]))
-                .collect();
+            let tags: Vec<usize> = wall.group.clone();
             let (scaffold, st) = scaffold_build::build(
                 &wall.vertices,
                 &wall.triangles,
@@ -972,7 +1205,7 @@ fn load_scaffold(
                 scaffold,
                 Some(json!({
                     "settings": b,
-                    "wall_triangles": tags.iter().filter(|&&t| t == 3).count(),
+                    "wall_triangles": tags.iter().filter(|&&t| duct::is_wall(t)).count(),
                     "feature_edges": w.feature_edges,
                     "feature_corners": w.corners,
                     "wall_edge_range": [w.min_edge, w.max_edge],
@@ -1012,13 +1245,13 @@ fn wall_deviation(
         .facets()
         .iter()
         .zip(patches)
-        .filter(|(_, p)| **p == 3)
+        .filter(|(_, p)| !duct::is_cap(**p))
         .map(|(f, _)| f.triangle.vertices.map(|v| surface.vertices()[v]))
         .collect();
     let wall: Vec<[mesh_core::geometry::Vec3; 3]> = scaffold
         .boundary
         .iter()
-        .filter(|(_, p)| *p == 3)
+        .filter(|(_, p)| !duct::is_cap(*p))
         .map(|(t, _)| t.map(|v| scaffold.points[v]))
         .collect();
     let one_way = |from: &[[mesh_core::geometry::Vec3; 3]],

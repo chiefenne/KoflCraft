@@ -174,6 +174,12 @@ struct Sites<'a> {
     points: &'a [Vec3],
     tree: KdTree,
     near: Vec<Vec<(f64, usize)>>,
+    /// For a wall seed, the scaffold vertices whose balls it lies on: two
+    /// seeds on the ball of one vertex are equidistant from it by
+    /// construction. Empty when no ties are declared.
+    balls: &'a [Option<[usize; 3]>],
+    /// The lowest seed on the ball of each scaffold vertex.
+    ball_site: HashMap<usize, u32>,
 }
 
 impl<'a> Sites<'a> {
@@ -181,7 +187,13 @@ impl<'a> Sites<'a> {
         let tree = KdTree::new(points);
         let k = INITIAL_NEIGHBOURS.min(points.len().saturating_sub(1));
         let near = (0..points.len()).map(|i| tree.nearest(i, k)).collect();
-        Self { points, tree, near }
+        Self {
+            points,
+            tree,
+            near,
+            balls: &[],
+            ball_site: HashMap::new(),
+        }
     }
 
     /// The part of tetrahedron `t` in the Voronoi cell of site `s`.
@@ -245,15 +257,23 @@ impl<'a> Sites<'a> {
             corners: dom.tets[t],
             sites: self.points,
             tol: dom.tol,
+            stand_in: &|node, k| {
+                let on_ball = self
+                    .balls
+                    .get(k as usize)
+                    .copied()
+                    .flatten()
+                    .is_some_and(|c| c.contains(&node));
+                if on_ball {
+                    self.ball_site.get(&node).copied().unwrap_or(k)
+                } else {
+                    k
+                }
+            },
         };
-        let mut c = SymConvex::tet(&frame);
+        let mut c = SymConvex::tet(&frame, s as u32);
         let site = self.points[s];
-        let radius = |c: &SymConvex| {
-            c.pts
-                .iter()
-                .map(|&p| (p - site).length())
-                .fold(0.0, f64::max)
-        };
+        let radius = |c: &SymConvex| c.reach.iter().copied().fold(0.0, f64::max);
         let mut r = radius(&c);
         let others = self.points.len() - 1;
         let mut owned: Option<Vec<(f64, usize)>> = None;
@@ -583,6 +603,9 @@ pub fn build_voronoi_core(
     steps: &[f64],
     options: VoronoiOptions,
 ) -> Result<(DuctMesh, ClosedSurface, VoronoiStats), String> {
+    if scaffold.boundary.iter().any(|b| is_slip(b.1)) {
+        return Err("patches without layers (no_layers) need the median dual core".into());
+    }
     let mut seeds = None;
     let mut added = 0;
     for round in 0..=SITE_ROUNDS {
@@ -688,7 +711,7 @@ fn build(
 
     // Layer nodes of every surface vertex, level by level (0 is the wall).
     let facets = surface.facets();
-    let wall: Vec<usize> = (0..facets.len()).filter(|&i| patches[i] == 3).collect();
+    let wall: Vec<usize> = (0..facets.len()).filter(|&i| is_wall(patches[i])).collect();
     let mut stack = vec![vec![usize::MAX; surface.vertices().len()]; layers + 1];
     for (v, s0) in stack[0].iter_mut().enumerate() {
         *s0 = v;
@@ -733,7 +756,7 @@ fn build(
                 layers > 0
                     && by_edge[&(u.min(v), u.max(v))].iter().any(|&o| {
                         o != bi
-                            && (patches[o] != 3
+                            && (patches[o] != patches[bi]
                                 || !super::columns::coplanar(
                                     &front.points,
                                     &tris,
@@ -753,6 +776,8 @@ fn build(
     // seed's cell cuts the wall in exactly its triangle. A wall vertex with
     // a ball has no site of its own, and no free site may enter a ball.
     let mut seed_sites: Vec<(Vec3, f64)> = Vec::new();
+    // Seeds never move, so their coordinates identify them in every round.
+    let mut seed_balls: HashMap<[u64; 3], [usize; 3]> = HashMap::new();
     let mut balls: Vec<(Vec3, f64)> = Vec::new();
     let mut seeded_vertex = vec![false; surface.vertices().len()];
     if layers > 0 && options.wall_join == WallJoin::Columns {
@@ -771,7 +796,7 @@ fn build(
             for k in 0..3 {
                 let (u, v) = (t[k], t[(k + 1) % 3]);
                 for &o in &by_edge[&(u.min(v), u.max(v))] {
-                    if o == bi || patches[o] != 3 {
+                    if o == bi || !is_wall(patches[o]) {
                         continue;
                     }
                     let apex = tris[o].into_iter().find(|&x| x != u && x != v).unwrap_or(u);
@@ -807,6 +832,15 @@ fn build(
             if found.radius[i] > 0.0 {
                 seeded_vertex[v] = true;
                 balls.push((inner[i], found.radius[i]));
+            }
+        }
+        // scaffold vertex at each wall vertex of the innermost surface
+        let node_at: HashMap<usize, usize> =
+            mapped.iter().enumerate().map(|(n, &p)| (p, n)).collect();
+        for (seed, corners) in found.seeds.iter().zip(&found.corners) {
+            let nodes = corners.map(|c| node_at.get(&stack[layers][wall_vertices[c]]).copied());
+            if let [Some(a), Some(b), Some(c)] = nodes {
+                seed_balls.insert([seed.0.x, seed.0.y, seed.0.z].map(f64::to_bits), [a, b, c]);
             }
         }
         seed_sites = found.seeds;
@@ -978,7 +1012,17 @@ fn build(
     // one pass over the whole diagram (single linkage), so a face is the
     // same ring for the two pieces on its sides: it collapses for both or
     // for neither.
-    let s = Sites::new(&sites);
+    let site_balls: Vec<Option<[usize; 3]>> = sites
+        .iter()
+        .map(|p| seed_balls.get(&[p.x, p.y, p.z].map(f64::to_bits)).copied())
+        .collect();
+    let mut s = Sites::new(&sites);
+    s.balls = &site_balls;
+    for (k, nodes) in site_balls.iter().enumerate() {
+        for &node in nodes.iter().flatten() {
+            s.ball_site.entry(node).or_insert(k as u32);
+        }
+    }
     let weld_tol = scale * 1e-10;
     let mut named: HashMap<Key, usize> = HashMap::new();
     let mut raw_points: Vec<Vec3> = Vec::new();
@@ -1216,7 +1260,7 @@ fn build(
                     && across(p.tet, k).is_none()
                     && let Some(&bi) =
                         boundary_index.get(&local_face(&scaffold.tetrahedra[p.tet], k))
-                    && scaffold.boundary[bi].1 == 3
+                    && is_wall(scaffold.boundary[bi].1)
                 {
                     let (n, c) = super::convex::ring_plane(points, ring);
                     out.push((n / n.length(), c, bi));
@@ -1233,7 +1277,7 @@ fn build(
     };
     // centroid of the innermost layer prism over each wall triangle
     let wall_rank: HashMap<usize, usize> = (0..scaffold.boundary.len())
-        .filter(|&bi| scaffold.boundary[bi].1 == 3)
+        .filter(|&bi| is_wall(scaffold.boundary[bi].1))
         .enumerate()
         .map(|(r, bi)| (bi, r))
         .collect();
@@ -1278,7 +1322,7 @@ fn build(
                             if walls
                                 && let Some(&bi) =
                                     boundary_index.get(&local_face(&scaffold.tetrahedra[p.tet], k))
-                                && scaffold.boundary[bi].1 == 3
+                                && is_wall(scaffold.boundary[bi].1)
                             {
                                 by.entry((true, bi)).or_default().push(ring);
                             }
@@ -1350,7 +1394,7 @@ fn build(
                         && across(pieces[i].tet, k).is_none()
                         && let Some(&bi) =
                             boundary_index.get(&local_face(&scaffold.tetrahedra[pieces[i].tet], k))
-                        && scaffold.boundary[bi].1 == 3
+                        && is_wall(scaffold.boundary[bi].1)
                     {
                         let (n, c) = super::convex::ring_plane(points, ring);
                         let area = n.length();
@@ -1863,7 +1907,7 @@ fn build(
     let old_boundary = std::mem::take(&mut front.boundary);
     let mut rim: HashMap<(usize, usize), usize> = HashMap::new();
     for (i, f) in facets.iter().enumerate() {
-        if patches[i] == 3 {
+        if is_wall(patches[i]) {
             continue;
         }
         let [a, b, c] = f.triangle.vertices;
@@ -2007,6 +2051,7 @@ fn build(
         let built = super::columns::build(
             points,
             &tris,
+            &patches,
             &wall,
             &coarse,
             old_boundary,
@@ -2096,6 +2141,7 @@ fn build(
             cells,
             boundary,
             measurements,
+            patches: classic_patches(),
         },
         surface,
         stats,

@@ -1,4 +1,5 @@
 //! Generate the analytic block and straight-pipe development cases, in millimetres.
+use crate::handoff::HandoffFormat;
 use crate::{EngineError, ErrorCode, MeshDirectory, SCHEMA_VERSION};
 use mesh_algorithms::sweep::{Axis, Profile, Sizing, build};
 use mesh_io::sweep as export;
@@ -41,6 +42,7 @@ pub fn generate(
     dir: &MeshDirectory,
     name: &OsStr,
     cell_budget: usize,
+    handoff_format: HandoffFormat,
 ) -> Result<Value, EngineError> {
     if config.schema_version != SCHEMA_VERSION {
         return Err(EngineError::new(
@@ -108,10 +110,6 @@ pub fn generate(
     });
     let points = mesh.vertices(axis);
     let io = |e| EngineError::new(ErrorCode::ExportFailed, e);
-    let mut vtu = Vec::new();
-    export::volume(&mesh, &points, &mut vtu).map_err(io)?;
-    let mut gmsh = Vec::new();
-    export::gmsh(&mesh, &points, mesh_io::GmshVersion::V4_1, &mut gmsh).map_err(io)?;
     let [inlet, outlet, walls] = export::patches(&mesh, &points).map_err(io)?;
     let multiblock = if profile.blind() {
         export::BLIND_MULTIBLOCK
@@ -120,24 +118,47 @@ pub fn generate(
     };
     let json = serde_json::to_vec_pretty(&report)
         .map_err(|e| EngineError::new(ErrorCode::SerializationFailed, e))?;
-    let mut files: Vec<(&str, &[u8])> = vec![
-        ("mesh.vtm", multiblock),
-        ("volume.vtu", &vtu),
-        ("mesh.msh", &gmsh),
-        ("inlet.vtu", &inlet),
-        ("walls.vtu", &walls),
-        ("report.json", &json),
-    ];
-    if !profile.blind() {
-        files.push(("outlet.vtu", &outlet));
-    }
     let handoff = export::handoff(&mesh, &points).map_err(crate::handoff::export_error)?;
-    let foehn = crate::handoff::foehncraft_vtu(&handoff, &[])?;
-    files.push((crate::handoff::FOEHNCRAFT_VTU, &foehn));
-    let evidence = crate::handoff::evidence(&handoff, "sweep", &files)?;
-    files.push((crate::handoff::MESH_EVIDENCE, &evidence));
-    dir.write_bundle(name, &files)
+    // each file goes to disk as it is written, hashed on the way
+    let fail = crate::handoff::stream_error;
+    let mut bundle = dir
+        .bundle(name)
         .map_err(|e| EngineError::new(ErrorCode::IoError, e))?;
+    bundle
+        .stream("mesh.vtm", |w| w.write_all(multiblock))
+        .map_err(fail)?;
+    bundle
+        .stream("volume.vtu", |w| export::volume(&mesh, &points, w))
+        .map_err(fail)?;
+    bundle
+        .stream("mesh.msh", |w| {
+            export::gmsh(&mesh, &points, mesh_io::GmshVersion::V4_1, w)
+        })
+        .map_err(fail)?;
+    bundle
+        .stream("inlet.vtu", |w| w.write_all(&inlet))
+        .map_err(fail)?;
+    bundle
+        .stream("walls.vtu", |w| w.write_all(&walls))
+        .map_err(fail)?;
+    bundle
+        .stream("report.json", |w| w.write_all(&json))
+        .map_err(fail)?;
+    if !profile.blind() {
+        bundle
+            .stream("outlet.vtu", |w| w.write_all(&outlet))
+            .map_err(fail)?;
+    }
+    bundle
+        .stream(handoff_format.file_name(), |w| {
+            handoff_format.write(&handoff, &[], w)
+        })
+        .map_err(fail)?;
+    let evidence = crate::handoff::evidence(&handoff, "sweep", bundle.files())?;
+    bundle
+        .stream(crate::handoff::MESH_EVIDENCE, |w| w.write_all(&evidence))
+        .map_err(fail)?;
+    bundle.finish();
     Ok(report)
 }
 

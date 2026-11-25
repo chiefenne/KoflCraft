@@ -40,9 +40,8 @@ pub struct EstimateInput {
 /// `cells_basis` of a count that is exact.
 const EXACT: &str = "exact";
 /// `cells_basis` of a polyhedral duct with a volume scaffold.
-const SPLIT_BASIS: &str = "exact before cells are split or added at reentrant wall edges, \
-    which needs the built layers (Voronoi core: none on the elbow fixture, 14 on Manifold; \
-    median dual: 10 and 3)";
+const SPLIT_BASIS: &str = "exact before cells are split at reentrant wall edges or where they \
+    break the solver rules, which needs the built layers (median dual: 11 on the elbow fixture)";
 
 /// `cells_basis` of a Voronoi core with wall columns.
 const COLUMN_BASIS: &str = "approximate: the wall-layer columns follow the built Voronoi core, \
@@ -106,6 +105,10 @@ pub(crate) fn cells(
                 i.mode,
                 scaffold.as_deref(),
             )?
+        }
+        "block.grid" => {
+            let i: crate::block::GridInput = decode(input)?;
+            mesh_engine::block::cell_count(&crate::block::topology(ctx, &i.topology)?)?
         }
         "journal.replay" => {
             let (n, b) = replay_cells(input, ctx)?;

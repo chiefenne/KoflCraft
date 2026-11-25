@@ -230,6 +230,7 @@ pub(crate) fn output_schema(name: &str) -> Value {
             let duct = object_schema(json!({
                 "schema_version":version,"algorithm":string,"mode":{"enum":["bulk","layered","polyhedral"]},
                 "source_sha256":digest,"config_sha256":digest,"regions":count,"source_facets":count,"scaffold_volume":{"type":["number","null"]},"stl_patch_areas":object_schema(json!({"inlet":number,"outlet":number,"walls":number})),
+                "patches":{"type":"array","items":object_schema(json!({"id":count,"name":string,"role":{"enum":["inlet","outlet","wall"]},"layered":{"type":"boolean"},"stl_area":number,"area":number}))},
                 "tetrahedra":count,"polyhedra":count,"core_sphericity":{"anyOf":[object_schema(json!({"minimum":number,"p05":number,"median":number})),{"type":"null"}]},"polyhedron_face_range":{"type":["array","null"], "items":count,"minItems":2,"maxItems":2},"prism_core_faces":count,"prisms":count,"source_volume":number,"volume":number,
                 "minimum_cell_volume":number,"minimum_tet_mean_ratio":{"type":["number","null"]},"tetrahedra_below_mean_ratio_0_1":count,
                 "minimum_wedge_jacobian":{"type":["number","null"]},"minimum_kernel_clearance":{"type":["number","null"]},
@@ -309,7 +310,7 @@ pub(crate) fn output_schema(name: &str) -> Value {
         }
         "export_mesh" => object_schema(json!({
             "schema_version": version, "output": string, "format": string,
-            "files": { "type": "array", "items": object_schema(json!({ "path": string, "sha256": digest })) }
+            "files": { "type": "array", "items": object_schema(json!({ "path": string, "blake3": digest })) }
         })),
         _ => json!({ "type": "object" }),
     }
@@ -396,7 +397,7 @@ pub(crate) fn patch_result() -> Value {
     object_schema(json!({
         "format": {"const": "koflcraft.patch-result"}, "format_version": string,
         "output": string,
-        "files": { "type": "array", "items": object_schema(json!({ "path": string, "sha256": digest })) },
+        "files": { "type": "array", "items": object_schema(json!({ "path": string, "blake3": digest })) },
         "change": object_schema(json!({
             "facets_changed": {"type": "integer", "minimum": 0}, "created": names(), "removed": names()
         })),
@@ -478,7 +479,7 @@ pub(crate) fn bc_skeleton() -> Value {
     object_schema(json!({
         "format": {"const": "koflcraft.bc-skeleton"}, "format_version": string,
         "case_format": string, "mesh": string, "output": string,
-        "files": { "type": "array", "items": object_schema(json!({ "path": string, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"} })) },
+        "files": { "type": "array", "items": object_schema(json!({ "path": string, "blake3": {"type": "string", "pattern": "^[a-f0-9]{64}$"} })) },
         "patches": {"type": "array", "items": patch},
         "needs_role": names()
     }))
@@ -490,7 +491,7 @@ pub(crate) fn duct_setup_result() -> Value {
     object_schema(json!({
         "format": {"const": "koflcraft.duct-setup"}, "format_version": string,
         "output": string,
-        "files": { "type": "array", "items": object_schema(json!({ "path": string, "sha256": {"type": "string"} })) },
+        "files": { "type": "array", "items": object_schema(json!({ "path": string, "blake3": {"type": "string"} })) },
         "port_radius": number, "size_factor": number,
         "partition": {"type": "object"}, "note": string
     }))
@@ -530,4 +531,216 @@ pub(crate) fn object_schema(properties: Value) -> Value {
         "required": required,
         "properties": properties
     })
+}
+
+/// The input of `block.template` (BS-03).
+pub(crate) fn block_template() -> Value {
+    let positive = json!({"type": "number", "exclusiveMinimum": 0});
+    let count = json!({"type": "integer", "minimum": 1});
+    let channel = input(
+        json!({"template": {"const": "channel"}, "length": positive, "width": positive,
+               "height": positive, "cells": {"type": "array", "items": count, "minItems": 3, "maxItems": 3},
+               "wall_spacing": positive}),
+        &["wall_spacing"],
+    );
+    let pipe = input(
+        json!({"template": {"const": "pipe_ogrid"}, "radius": positive, "length": positive,
+               "core_fraction": {"type": "number", "exclusiveMinimum": 0.1, "exclusiveMaximum": 0.9},
+               "core_cells": count, "radial_cells": count, "axial_cells": count,
+               "wall_spacing": positive}),
+        &["core_fraction", "wall_spacing"],
+    );
+    let elbow = input(
+        json!({"template": {"const": "elbow"}, "radius": positive, "bend_radius": positive,
+               "angle": {"type": "number", "exclusiveMinimum": 0, "maximum": 180},
+               "inlet_length": {"type": "number", "minimum": 0},
+               "outlet_length": {"type": "number", "minimum": 0},
+               "core_fraction": {"type": "number", "exclusiveMinimum": 0.1, "exclusiveMaximum": 0.9},
+               "core_cells": count, "radial_cells": count, "axial_cells": count,
+               "wall_spacing": positive}),
+        &[
+            "inlet_length",
+            "outlet_length",
+            "core_fraction",
+            "wall_spacing",
+        ],
+    );
+    let airfoil = input(
+        json!({"template": {"const": "airfoil_cgrid"},
+               "naca": {"type": "string", "pattern": "^[0-9]{4}$"},
+               "coordinates": {"type": "string"},
+               "chord": positive, "span": positive, "farfield": positive, "wake_length": positive,
+               "surface_cells": {"type": "integer", "minimum": 2}, "normal_cells": count,
+               "wake_cells": count, "span_cells": count, "wall_spacing": positive,
+               "leading_edge_spacing": positive, "trailing_edge_spacing": positive}),
+        &[
+            "naca",
+            "coordinates",
+            "chord",
+            "span_cells",
+            "leading_edge_spacing",
+            "trailing_edge_spacing",
+        ],
+    );
+    let naca = json!({"type": "string", "pattern": "^[0-9]{4}$"});
+    let main_section = input(
+        json!({"naca": naca, "coordinates": {"type": "string"}}),
+        &["naca", "coordinates"],
+    );
+    let element = input(
+        json!({"naca": naca, "coordinates": {"type": "string"},
+               "chord": positive,
+               "deflection": {"type": "number", "minimum": -80, "maximum": 80,
+                              "description": "Degrees: slat nose down, flap trailing edge down"},
+               "gap": positive,
+               "overlap": {"type": "number", "exclusiveMaximum": 0,
+                           "description": "Over the main chord; negative: the elements follow each other along x"}}),
+        &["naca", "coordinates"],
+    );
+    let multi = input(
+        json!({"template": {"const": "multi_element_airfoil"},
+               "main": main_section, "slat": element, "flap": element,
+               "chord": positive, "span": positive, "farfield": positive, "wake_length": positive,
+               "surface_cells": {"type": "integer", "minimum": 8}, "normal_cells": count,
+               "wake_cells": count, "span_cells": count, "thickness_cells": count,
+               "gap_cells": count, "upstream_cells": count, "wall_spacing": positive,
+               "trailing_edge_thickness": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.05}}),
+        &[
+            "slat",
+            "flap",
+            "chord",
+            "span_cells",
+            "thickness_cells",
+            "gap_cells",
+            "upstream_cells",
+            "trailing_edge_thickness",
+        ],
+    );
+    json!({"oneOf": [channel, pipe, elbow, airfoil, multi]})
+}
+
+/// The volume algorithm of `block.grid` (BS-09).
+pub(crate) fn block_algorithm() -> Value {
+    let tfi = input(json!({"kind": {"const": "tfi"}}), &[]);
+    let elliptic = input(
+        json!({"kind": {"const": "elliptic"}, "wall_orthogonality": {"type": "boolean"},
+               "wall_sliding": {"type": "boolean"},
+               "max_iterations": {"type": "integer", "minimum": 1}}),
+        &["wall_orthogonality", "wall_sliding", "max_iterations"],
+    );
+    json!({"oneOf": [tfi, elliptic]})
+}
+
+/// A block edge by its two vertex indices.
+fn block_edge() -> Value {
+    json!({"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 2, "maxItems": 2,
+           "description": "The edge's two vertex indices; laws and spline points run from the first to the second"})
+}
+
+/// An edge law of the topology file (BS-06).
+pub(crate) fn block_distribution() -> Value {
+    let positive = json!({"type": "number", "exclusiveMinimum": 0});
+    json!({"oneOf": [
+        input(json!({"law": {"const": "uniform"}}), &[]),
+        input(json!({"law": {"const": "geometric"}, "first": positive, "last": positive}), &["first", "last"]),
+        input(json!({"law": {"const": "tanh"}, "first": positive, "last": positive}), &[]),
+    ]})
+}
+
+/// An edge curve of the topology file.
+pub(crate) fn block_curve() -> Value {
+    json!({"oneOf": [
+        input(json!({"kind": {"const": "line"}}), &[]),
+        input(json!({"kind": {"const": "arc"}, "through": point()}), &[]),
+        input(json!({"kind": {"const": "spline"}, "through": {"type": "array", "items": point(), "minItems": 1}}), &[]),
+    ]})
+}
+
+pub(crate) fn block_set_count() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "edge": block_edge(),
+               "cells": {"type": "integer", "minimum": 1}}),
+        &[],
+    )
+}
+
+pub(crate) fn block_set_distribution() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "edge": block_edge(),
+               "distribution": block_distribution()}),
+        &[],
+    )
+}
+
+pub(crate) fn block_set_edge_curve() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "edge": block_edge(), "curve": block_curve()}),
+        &[],
+    )
+}
+
+pub(crate) fn block_move_vertex() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "vertex": {"type": "integer", "minimum": 0},
+               "to": point(), "by": point()}),
+        &["to", "by"],
+    )
+}
+
+pub(crate) fn block_set_patch() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "name": {"type": "string"},
+               "rename": name(), "role": role()}),
+        &["rename", "role"],
+    )
+}
+
+pub(crate) fn block_edit_result() -> Value {
+    json!({"type": "object", "description": "`koflcraft.block-result` with the written file, its check and the `change` (blocks, edges, vertices, patches, reference_removed)"})
+}
+
+fn index() -> Value {
+    json!({"type": "integer", "minimum": 0})
+}
+
+pub(crate) fn block_add_vertex() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "point": point()}),
+        &[],
+    )
+}
+
+pub(crate) fn block_remove_vertex() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "vertex": index()}),
+        &[],
+    )
+}
+
+pub(crate) fn block_add_block() -> Value {
+    let count = json!({"type": "integer", "minimum": 1});
+    input(
+        json!({"topology": path(), "output": path(),
+               "vertices": {"type": "array", "items": index(), "minItems": 8, "maxItems": 8,
+                            "description": "Corners in the local frame: (0,0,0) (1,0,0) (1,1,0) (0,1,0), then the same at k = 1; right-handed"},
+               "cells": {"type": "array", "items": count, "minItems": 3, "maxItems": 3},
+               "domain": {"type": "string"}, "patch": name(), "role": role()}),
+        &["domain", "patch", "role"],
+    )
+}
+
+pub(crate) fn block_remove_block() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "block": index(), "patch": name(), "role": role()}),
+        &["patch", "role"],
+    )
+}
+
+pub(crate) fn block_split_block() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "block": index(),
+               "axis": {"type": "integer", "minimum": 0, "maximum": 2},
+               "at": {"type": "integer", "minimum": 1, "description": "Split after this many cells along the axis"}}),
+        &[],
+    )
 }

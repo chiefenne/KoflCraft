@@ -1,0 +1,1 @@
+- Colour maps shared with FoehnCraft and MurmelCraft: `docs/colour-maps.md` sets Rainbow Desaturated (ParaView's eight control points) as the map of every picture, Inferno as the second, and holds the shared table that `tests/colour_maps.rs` checks.

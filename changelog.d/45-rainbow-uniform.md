@@ -1,0 +1,1 @@
+- `docs/colour-maps.md` names Rainbow Uniform (Colin Ware) as the map of signed values centred on zero, as in MurmelCraft and FoehnCraft.
