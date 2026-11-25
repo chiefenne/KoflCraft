@@ -13,3 +13,6 @@ mesh-io.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+
+[dev-dependencies]
+toml.workspace = true

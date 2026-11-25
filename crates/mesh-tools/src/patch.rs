@@ -342,3 +342,90 @@ pub(crate) fn detect_ports(input: Value, ctx: &Context) -> Run {
     });
     Ok(result)
 }
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProposeInput {
+    pub surface: String,
+    pub output: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feature_angle_deg: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plane_angle_deg: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fit_tolerance: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_walls: Option<bool>,
+}
+
+/// Split a bare closed STL into the faces an engineer names (BC-03):
+/// openings, box sides and walls, each with its primitive and evidence.
+pub(crate) fn propose(input: Value, ctx: &Context) -> Run {
+    use mesh_engine::proposals::ProposalOptions;
+    let i: ProposeInput = decode(input)?;
+    let s = surface(ctx, &i.surface)?;
+    let d = ProposalOptions::default();
+    let proposal = s.propose_patches(ProposalOptions {
+        feature_angle_deg: i.feature_angle_deg.unwrap_or(d.feature_angle_deg),
+        plane_angle_deg: i.plane_angle_deg.unwrap_or(d.plane_angle_deg),
+        fit_tolerance: i.fit_tolerance.unwrap_or(d.fit_tolerance),
+        merge_walls: i.merge_walls.unwrap_or(d.merge_walls),
+    })?;
+    let created = proposal
+        .map
+        .patches
+        .iter()
+        .map(|p| p.name.clone())
+        .collect();
+    let change = patches::Change {
+        facets_changed: s.facet_count(),
+        created,
+        removed: Vec::new(),
+    };
+    let mut result = write(ctx, &s, &i.output, (proposal.map.clone(), change))?;
+    let next = if proposal.needs_role.is_empty() {
+        "Every patch has a role. Rename patches with patch.rename, then write the FoehnCraft skeleton with bc.skeleton.".to_string()
+    } else {
+        format!(
+            "Give {} a role with patch.set_role (an opening is usually an inlet or an outlet; a box side a wall, a symmetry plane or a far field), then write the FoehnCraft skeleton with bc.skeleton.",
+            proposal.needs_role.join(", ")
+        )
+    };
+    result["proposal"] = json!({
+        "feature_angle_deg": proposal.feature_angle_deg,
+        "regions": proposal.regions,
+        "needs_role": proposal.needs_role,
+        "next": next,
+    });
+    Ok(result)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkeletonInput {
+    pub surface: String,
+    pub patches: String,
+    pub output: String,
+    /// The mesh file the case reads (default `foehncraft.vtu`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<String>,
+}
+
+/// Write the FoehnCraft boundary-condition skeleton of a patch map (BC-05).
+pub(crate) fn bc_skeleton(input: Value, ctx: &Context) -> Run {
+    let i: SkeletonInput = decode(input)?;
+    let s = surface(ctx, &i.surface)?;
+    let map: PatchMap = json_file(ctx, &i.patches)?;
+    let mesh = i.mesh.unwrap_or_else(|| "foehncraft.vtu".to_string());
+    let k = s.bc_skeleton(&map, &mesh)?;
+    let bytes = k.text.as_bytes();
+    let (dir, name) = ctx.target(&i.output)?;
+    dir.write_new(&name, bytes)
+        .map_err(|e| Diagnostic::new("io_error", e).with_path(&i.output))?;
+    let mut result = json!(k);
+    result["format_version"] = json!(crate::FORMAT_VERSION);
+    result["output"] = json!(i.output);
+    result["files"] =
+        json!([{ "path": i.output, "sha256": crate::journal::hex(&sha2::Sha256::digest(bytes)) }]);
+    Ok(result)
+}

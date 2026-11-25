@@ -429,6 +429,61 @@ pub(crate) fn patch_detect_ports() -> Value {
     schema
 }
 
+/// `patch.propose`: a patch result plus the classified regions.
+pub(crate) fn patch_propose() -> Value {
+    let mut schema = patch_result();
+    let number = json!({ "type": "number" });
+    let count = json!({ "type": "integer", "minimum": 0 });
+    let mut region = object_schema(json!({
+        "id": count, "patch": name(), "kind": {"enum": ["plane", "cylinder", "sphere", "freeform"]},
+        "suggestion": {"enum": ["opening", "box_side", "wall"]},
+        "facets": count, "area": number, "centre": point(), "normal": point(), "axis": point(),
+        "axis_point": point(), "radius": number, "length": number, "fit_error": number,
+        "box_side": {"enum": ["xmin", "xmax", "ymin", "ymax", "zmin", "zmax"]},
+        "opening_score": number,
+        "bounds": {"type": "array", "items": point(), "minItems": 2, "maxItems": 2},
+        "neighbours": {"type": "array", "items": count}
+    }));
+    region["required"] = json!([
+        "id",
+        "patch",
+        "kind",
+        "suggestion",
+        "facets",
+        "area",
+        "centre",
+        "fit_error",
+        "bounds",
+        "neighbours"
+    ]);
+    schema["properties"]["proposal"] = object_schema(json!({
+        "feature_angle_deg": number,
+        "regions": {"type": "array", "items": region},
+        "needs_role": names(), "next": {"type": "string"}
+    }));
+    schema["required"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("proposal"));
+    schema
+}
+
+/// `bc.skeleton`: the written case skeleton and what it leaves open.
+pub(crate) fn bc_skeleton() -> Value {
+    let string = json!({ "type": "string" });
+    let patch = object_schema(json!({
+        "name": name(), "role": role(), "foehncraft_type": {"type": ["string", "null"]},
+        "todo": {"type": "array", "items": string}
+    }));
+    object_schema(json!({
+        "format": {"const": "koflcraft.bc-skeleton"}, "format_version": string,
+        "case_format": string, "mesh": string, "output": string,
+        "files": { "type": "array", "items": object_schema(json!({ "path": string, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"} })) },
+        "patches": {"type": "array", "items": patch},
+        "needs_role": names()
+    }))
+}
+
 pub(crate) fn duct_setup_result() -> Value {
     let number = json!({ "type": "number" });
     let string = json!({ "type": "string" });

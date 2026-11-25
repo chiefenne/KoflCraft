@@ -453,3 +453,94 @@ fn patch_tools_define_a_boundary_that_meshes_and_replays() {
         let _ = std::fs::remove_dir_all(d);
     }
 }
+
+/// Keep rule (SW-18). Invariant (BC-03, BC-05, AG-13): an agent goes from a
+/// bare STL to a FoehnCraft boundary skeleton with registry calls only:
+/// `patch.propose` names the six box sides and asks for their roles,
+/// `patch.set_role` and `patch.merge` decide, `bc.skeleton` writes a case
+/// whose types follow the roles, and the session replays. A missing
+/// registry entry, a skeleton that ignores the roles or a nondeterministic
+/// proposal breaks it; the engine tests do not go through the command line.
+#[test]
+fn propose_roles_and_skeleton_through_the_registry() {
+    let rec = fresh("propose");
+    let stl = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test-fixtures/unit-box.stl"
+    );
+    let journal = rec.join("j.jsonl");
+    let j = journal.to_str().unwrap();
+    let calls = [
+        (
+            "patch.propose",
+            serde_json::json!({"surface": stl, "output": "p0.json"}),
+        ),
+        (
+            "patch.set_role",
+            serde_json::json!({"surface": stl, "patches": "p0.json", "output": "p1.json",
+                "name": "xmin", "role": "inlet"}),
+        ),
+        (
+            "patch.set_role",
+            serde_json::json!({"surface": stl, "patches": "p1.json", "output": "p2.json",
+                "name": "xmax", "role": "outlet"}),
+        ),
+        (
+            "patch.merge",
+            serde_json::json!({"surface": stl, "patches": "p2.json", "output": "p3.json",
+                "merge": ["ymin", "ymax", "zmin"], "name": "walls", "role": "wall"}),
+        ),
+        (
+            "bc.skeleton",
+            serde_json::json!({"surface": stl, "patches": "p3.json", "output": "case.toml"}),
+        ),
+    ];
+    let mut results = Vec::new();
+    for (k, (id, input)) in calls.iter().enumerate() {
+        let file = rec.join(format!("in{k}.json"));
+        std::fs::write(&file, input.to_string()).unwrap();
+        let (ok, envelope) = kofl_in(
+            &rec,
+            &[
+                "--journal",
+                j,
+                "call",
+                id,
+                "--input",
+                file.to_str().unwrap(),
+            ],
+        );
+        assert!(ok, "{id}: {envelope:#}");
+        results.push(envelope);
+    }
+    let proposal = &results[0]["result"]["proposal"];
+    assert_eq!(
+        proposal["needs_role"],
+        serde_json::json!(["xmin", "xmax", "ymin", "ymax", "zmin", "zmax"])
+    );
+    assert_eq!(proposal["regions"].as_array().unwrap().len(), 6);
+    let skeleton = &results[4]["result"];
+    assert_eq!(skeleton["needs_role"], serde_json::json!(["zmax"]));
+    let case = std::fs::read_to_string(rec.join("case.toml")).unwrap();
+    for (name, kind) in [
+        ("xmin", "velocity-inlet"),
+        ("xmax", "static-pressure-outlet"),
+        ("walls", "wall"),
+    ] {
+        let block = case.split(&format!("[boundary.{name}]\n")).nth(1).unwrap();
+        assert!(
+            block.starts_with(&format!("type = \"{kind}\"")),
+            "{name}: {case}"
+        );
+    }
+    assert!(case.contains("[boundary.zmax]\n# TODO type"));
+
+    let again = fresh("propose-again");
+    let (ok, envelope) = kofl_in(&again, &["run", "--script", j]);
+    assert!(ok, "{envelope:#}");
+    assert_eq!(envelope["result"]["replayed"], 5);
+    assert_eq!(envelope["result"]["different"], 0);
+    for d in [rec, again] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
