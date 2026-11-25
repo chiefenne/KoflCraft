@@ -12,6 +12,7 @@ mod block;
 pub mod context;
 pub mod diag;
 mod estimate;
+mod grading;
 pub mod journal;
 mod markdown;
 mod mesh;
@@ -424,6 +425,53 @@ pub static TOOLS: &[Tool] = &[
         },
         output_schema: out!("generate_channel"),
         run: mesh::channel,
+    },
+    Tool {
+        id: "grading.add",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Add a named size source to a duct partition (GRD-02, GRD-03): a datum object (`kind: datum`: point, segment, plane, box, slab, sphere, cylinder or cone with a `size` within `distance`, growing away at the build's rate) or a coordinate region (`kind: region`: box, slab or cylinder with a `size` inside), optionally in a new `frame`. The wall and the core follow min(own sizes, sources); the build report gives each source's achieved cell sizes.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: || {
+            let field = schemas::size_field();
+            let sources = &field["properties"]["sources"]["items"]["oneOf"];
+            schemas::input(
+                json!({"partition": schemas::path(), "output": schemas::path(),
+                       "source": {"oneOf": [sources[0], sources[1]]},
+                       "frame": field["properties"]["frames"]["items"]}),
+                &["frame"],
+            )
+        },
+        output_schema: schemas::grading_result,
+        run: grading::add,
+    },
+    Tool {
+        id: "grading.remove",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Remove the size source `name` from a duct partition; frames no source uses any more go too.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: || {
+            schemas::input(
+                json!({"partition": schemas::path(), "output": schemas::path(), "name": {"type": "string"}}),
+                &[],
+            )
+        },
+        output_schema: schemas::grading_result,
+        run: grading::remove,
+    },
+    Tool {
+        id: "grading.list",
+        version: 1,
+        action: Action::Read,
+        summary: "List the size sources and frames of a duct partition.",
+        legacy_name: None,
+        outputs: &[],
+        input_schema: || schemas::input(json!({"partition": schemas::path()}), &[]),
+        output_schema: schemas::grading_listing,
+        run: grading::list,
     },
     Tool {
         id: "mesh.setup_duct",

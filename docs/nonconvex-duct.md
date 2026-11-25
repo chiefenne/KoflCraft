@@ -95,6 +95,21 @@ With `volume_scaffold.build` the scaffold is made from the STL and needs no Gmsh
 
 The report's `scaffold` object names the source (`rust_remesh_delaunay_v1` or `file`), the build statistics and the measured `wall_deviation` both ways; `max_wall_deviation` fails the run when either exceeds it, for a file scaffold too. [Design note and benchmark](../research/m4-rust-scaffold.md) · [Remesher](../crates/mesh-algorithms/src/remesh.rs) · [Tetrahedralization](../crates/mesh-algorithms/src/scaffold.rs)
 
+## Local sizes: datum objects and coordinate regions
+
+`volume_scaffold.build.grading` refines the mesh where you say, without touching the rest (GRD-02, GRD-03). A **datum object** (`kind: datum`: point, segment, plane, box, slab, sphere, cylinder or cone) holds `size` within `distance` of it and grows away from it at the build's `rate`; a **coordinate region** (`kind: region`: box, slab or cylinder) holds `size` inside it. Shapes may be given in a named frame. Both the wall remesh and the interior refinement follow the smaller of their own size and the grading, so a datum that touches the wall refines the wall there too. The sources are those of the STL size field ([m2-stl](m2-stl.md)); the surface-derived kinds (curvature, gap, feature edges) are refused here because the duct sizes its wall itself (chord tolerance, `thickness`).
+
+The simplest way is the grading tools, which read a partition and write a new one:
+
+```sh
+echo '{"partition": "partition.json", "output": "graded.json",
+       "source": {"kind": "datum", "name": "probe", "size": 0.25, "distance": 1,
+                  "shape": {"type": "sphere", "centre": [0, 0, 12], "radius": 1}}}' > add.json
+kofl call grading.add --input add.json          # grading.list, grading.remove by name
+```
+
+The build report has a `grading` object: for each source, the core cells (no prisms) whose centroid lies in its zone where it sets the size, and their achieved cbrt(volume) quantiles, next to the median of all other core cells. On a round pipe (r = 5) a sphere datum of size 0.25 gives cells of median 0.27 and a box region of size 0.3 gives 0.33, against 0.52 elsewhere ([test](../crates/mesh-engine/tests/grading_duct.rs)). Sizes are cell sizes: the median cbrt(volume) of the cells in a zone lands within about 15 % of `size`.
+
 ## Scaffold from a file
 
 Supply a Gmsh MSH 2.2 ASCII file containing only linear tetrahedra (physical volume 4) and outward-oriented boundary triangles (physical surfaces 1 inlet, 2 outlet and 3 walls). The size and distribution of the scaffold vertices control polyhedral spacing. Reference it in the partition JSON with `volume_scaffold.file`, `volume_scaffold.sha256` and `volume_scaffold.max_relative_geometry_error`. The CLI resolves the filename relative to the partition. The geometry error limit applies separately to total fluid volume and each patch area. Port planes and orientations are checked against the source STL. Existing configurations without a scaffold retain the regional fan construction under the algorithm name `stl_partitioned_dual_v1`. Gmsh optimization can change node positions and counts between preparations; the checked-in elbow scaffold pins the input for reproducible output. [Elbow sizing](../test-fixtures/elbow/prepare-scaffold.geo)

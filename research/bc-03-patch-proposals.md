@@ -73,10 +73,11 @@ The classical alternative, feature-angle splitting alone (`patch.split`),
 gives the same regions on these surfaces but names them `<patch>_1…`
 without saying which is an opening, a box side or a cylinder.
 
-## Choices made without a card (open to change)
+## Choices
 
-- Box sides get no role (could also be wall by default). A wrong silent
-  wall on a symmetry plane or a far field is worse than one more question.
+- Box sides get no role. Decided by the maintainer on a card on 2026-11-25
+  ("no role, ask the engineer"): a wrong silent wall on a symmetry plane or
+  a far field is worse than one more question.
 - Openings get no role; the inlet/outlet guess stays in
   `patch.detect_ports`.
 - Skeleton format: FoehnCraft case format 0.7, `[mesh] file` defaults to

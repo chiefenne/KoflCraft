@@ -81,7 +81,7 @@ impl WallJoinKind {
 }
 
 /// The settings of a scaffold built in Rust (lengths in model units).
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ScaffoldBuild {
     /// Largest distance of a wall facet from the STL (chord tolerance).
@@ -101,6 +101,44 @@ pub struct ScaffoldBuild {
     /// Wall spacing from the local thickness of gaps and thin walls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thickness: Option<ThicknessBuild>,
+    /// Local sizes from datum objects and coordinate regions (GRD-02,
+    /// GRD-03): wall and interior spacing follow min(own sizes, grading).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grading: Option<Grading>,
+}
+
+/// Datum objects and coordinate regions of a duct build, the `sources` and
+/// `frames` of an STL size field (kinds `datum` and `region` only). The
+/// field's growth limit is the build's `rate` and its largest size the
+/// build's `max_size`.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Grading {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frames: Vec<crate::sizing::FrameConfig>,
+    pub sources: Vec<crate::sizing::SourceConfig>,
+}
+
+impl Grading {
+    /// The size field of the sources within the build's limits.
+    pub fn field(
+        &self,
+        build: &ScaffoldBuild,
+    ) -> Result<mesh_algorithms::sizing::SizeField, EngineError> {
+        let config = crate::sizing::SizeFieldConfig {
+            min_size: self
+                .sources
+                .iter()
+                .filter_map(|s| s.size())
+                .fold(build.min_size, f64::min),
+            max_size: build.max_size,
+            gradation: 1.0 + build.rate,
+            relaxation_iterations: None,
+            frames: self.frames.clone(),
+            sources: self.sources.clone(),
+        };
+        config.explicit_field()
+    }
 }
 
 /// Wall spacing = local thickness / `across`, not below `min_size` (which
@@ -359,6 +397,7 @@ pub fn generate(
     let validated = |e: String| EngineError::new(ErrorCode::ValidationFailed, e);
     let mut scaffold_volume = None;
     let mut scaffold_report: Option<Value> = None;
+    let mut grading_field = None;
     let mut voronoi: Option<duct::VoronoiStats> = None;
     let mut source_areas = vec![0.; names.len()];
     let scale = surface.bounds().extent().max_abs_component();
@@ -383,6 +422,10 @@ pub fn generate(
                 )));
             }
         }
+        grading_field = match &spec.build {
+            Some(b) => b.grading.as_ref().map(|g| g.field(b)).transpose()?,
+            None => None,
+        };
         scaffold_report = Some(json!({
             "source": if built.is_some() {"rust_remesh_delaunay_v1"} else {"file"},
             "build": built,
@@ -546,8 +589,12 @@ pub fn generate(
             }
         }
     }
+    let grading = grading_field
+        .as_ref()
+        .map(|field| grading_evidence(field, &mesh));
     let report = json!({
         "schema_version": 1,
+        "grading": grading,
         "algorithm": if voronoi.is_some() {"volume_clipped_voronoi_cvt_v1"} else if scaffold_volume.is_some() {"volume_median_dual_v2"} else if polyhedra > 0 {"stl_partitioned_dual_v1"} else {"stl_partitioned_star_v1"},
         "mode": mode,
         "source_sha256": source_digest,
@@ -859,6 +906,7 @@ pub fn setup(
                     min_size: round(h / 154.0),
                     wedge_angle: default_wedge_angle(),
                 }),
+                grading: None,
             }),
             max_relative_geometry_error: 0.002,
             max_wall_deviation: Some(round(1.5 * tolerance)),
@@ -1143,6 +1191,7 @@ fn load_scaffold(
             {
                 return Err(invalid("invalid scaffold build settings"));
             }
+            let field = b.grading.as_ref().map(|g| g.field(b)).transpose()?;
             let start = Instant::now();
             let triangles: Vec<[usize; 3]> = surface
                 .facets()
@@ -1169,6 +1218,7 @@ fn load_scaffold(
                         wedge_angle: t.wedge_angle.to_radians(),
                     }),
                 },
+                field.as_ref(),
             )
             .map_err(validated)?;
             let remesh_seconds = start.elapsed().as_secs_f64();
@@ -1188,7 +1238,7 @@ fn load_scaffold(
                 );
             }
             let tags: Vec<usize> = wall.group.clone();
-            let (scaffold, st) = scaffold_build::build(
+            let (scaffold, st) = scaffold_build::build_graded(
                 &wall.vertices,
                 &wall.triangles,
                 &tags,
@@ -1198,6 +1248,7 @@ fn load_scaffold(
                     max_points: MAX_SCAFFOLD_POINTS,
                     ..Default::default()
                 },
+                field.as_ref(),
             )
             .map_err(validated)?;
             let w = wall.stats;
@@ -1308,4 +1359,150 @@ fn voronoi_json(v: &duct::VoronoiStats) -> Value {
         o.extend(e);
     }
     out
+}
+
+/// GRD-08 for the duct path: per grading source, the core cells (no prism)
+/// whose centroid lies in its zone (within its distance; inside a region)
+/// where it sets the size, and their achieved cbrt(volume); with the median
+/// of the other core cells for contrast.
+fn grading_evidence(field: &mesh_algorithms::sizing::SizeField, mesh: &duct::DuctMesh) -> Value {
+    let Ok(h) = mesh_io::duct::handoff(mesh) else {
+        return json!({"error": "the mesh has no hand-off form; sizes not measured"});
+    };
+    let cells = h.cell_volumes();
+    let core: Vec<(f64, mesh_core::geometry::Vec3)> = if cells.len() == mesh.cells.len() {
+        cells
+            .into_iter()
+            .zip(&mesh.cells)
+            .filter(|(_, c)| !matches!(c.element, duct::Element::Wedge(_)))
+            .map(|(m, _)| m)
+            .collect()
+    } else {
+        cells
+    };
+    let quantiles = |mut v: Vec<f64>| {
+        if v.is_empty() {
+            return Value::Null;
+        }
+        v.sort_by(f64::total_cmp);
+        let q = |p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
+        json!({"min": v[0], "p10": q(0.1), "median": q(0.5), "p90": q(0.9), "max": v[v.len() - 1]})
+    };
+    let mut claimed = vec![false; core.len()];
+    let sources: Vec<Value> = field
+        .sources()
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let mut sizes = Vec::new();
+            for (k, &(v, c)) in core.iter().enumerate() {
+                let near = field.source_distance(i, c) <= s.distance;
+                let governs = field.source_size(i, c) <= field.size(c) * (1.0 + 1e-9);
+                if near && governs {
+                    sizes.push(v.max(0.0).cbrt());
+                    claimed[k] = true;
+                }
+            }
+            json!({
+                "name": s.name, "kind": s.kind.name(), "target_size": s.size,
+                "cells": sizes.len(), "achieved": quantiles(sizes),
+            })
+        })
+        .collect();
+    let others = core
+        .iter()
+        .zip(&claimed)
+        .filter(|(_, c)| !**c)
+        .map(|(&(v, _), _)| v.max(0.0).cbrt())
+        .collect();
+    json!({
+        "method": "datum_region_size_field_on_scaffold_v1",
+        "size_measure": "cbrt(cell volume), core cells only",
+        "sources": sources,
+        "other_core_cells": quantiles(others),
+    })
+}
+
+impl Partition {
+    fn build_mut(&mut self) -> Result<&mut ScaffoldBuild, EngineError> {
+        self.volume_scaffold
+            .as_mut()
+            .and_then(|s| s.build.as_mut())
+            .ok_or_else(|| {
+                EngineError::new(
+                    ErrorCode::InvalidArguments,
+                    "grading needs a partition with a scaffold built in Rust (`volume_scaffold.build`, as mesh.setup_duct writes it)",
+                )
+            })
+    }
+
+    /// The grading sources of the build, by name (GRD-08).
+    pub fn grading(&self) -> Option<&Grading> {
+        self.volume_scaffold
+            .as_ref()
+            .and_then(|s| s.build.as_ref())
+            .and_then(|b| b.grading.as_ref())
+    }
+
+    /// Add a datum or region source (and a frame it names, when new); the
+    /// name must be free and the field must build.
+    pub fn add_grading(
+        &mut self,
+        source: crate::sizing::SourceConfig,
+        frame: Option<crate::sizing::FrameConfig>,
+    ) -> Result<(), EngineError> {
+        let invalid = |m: String| EngineError::new(ErrorCode::InvalidSizeField, m);
+        let build = self.build_mut()?;
+        let mut grading = build.grading.clone().unwrap_or_default();
+        if grading.sources.iter().any(|s| s.name() == source.name()) {
+            return Err(invalid(format!(
+                "a grading source {} exists; remove it first or pick another name",
+                source.name()
+            )));
+        }
+        if let Some(f) = frame {
+            match grading.frames.iter().find(|g| g.name == f.name) {
+                Some(g) if *g != f => {
+                    return Err(invalid(format!("frame {} exists with other axes", f.name)));
+                }
+                Some(_) => {}
+                None => grading.frames.push(f),
+            }
+        }
+        grading.sources.push(source);
+        grading.field(build)?;
+        build.grading = Some(grading);
+        Ok(())
+    }
+
+    /// Remove the source `name`; frames no source uses any more go too.
+    pub fn remove_grading(&mut self, name: &str) -> Result<(), EngineError> {
+        let build = self.build_mut()?;
+        let Some(mut grading) = build.grading.clone() else {
+            return Err(EngineError::new(
+                ErrorCode::InvalidArguments,
+                "the partition has no grading",
+            ));
+        };
+        let before = grading.sources.len();
+        grading.sources.retain(|s| s.name() != name);
+        if grading.sources.len() == before {
+            let known: Vec<&str> = grading.sources.iter().map(|s| s.name()).collect();
+            return Err(EngineError::new(
+                ErrorCode::InvalidArguments,
+                format!(
+                    "no grading source {name}; the partition has {}",
+                    known.join(", ")
+                ),
+            ));
+        }
+        let used: Vec<String> = grading
+            .sources
+            .iter()
+            .filter_map(|s| s.frame().map(str::to_string))
+            .collect();
+        grading.frames.retain(|f| used.contains(&f.name));
+        build.grading = (!grading.sources.is_empty()).then_some(grading);
+        Ok(())
+    }
 }

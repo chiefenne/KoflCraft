@@ -182,6 +182,20 @@ commands = []
 gaps = "Regions are split at feature edges only: a plane blended into a cylinder without a crease stays one freeform region; no cones or tori; openings are planar caps only (round ones, or caps of any section bounded by one wall); which opening is the inlet and what a box side is stays the engineer's call; the skeleton is not yet read by `foehn case check` in CI"
 
 [[feature]]
+id = "duct-grading"
+title = "Datum objects and coordinate regions on the nonconvex duct path (GRD-02, GRD-03, GRD-08)"
+requirements = ["GRD-02", "GRD-03", "GRD-08"]
+grade = "partial"
+how = "On a round CAD pipe (r = 5) a sphere datum of size 0.25 and a box region of size 0.3 give core cells of median cbrt(V) within 25 % of their sizes (measured 0.27 and 0.33) against 0.52 for the other core cells; the build report lists each source with its cells and achieved sizes; derived (convex-surface) sources are refused with the reason; grading.add/list/remove add a source with its frame, refuse a repeated name, drop the frame with its last source, and replay from the journal"
+tests = [
+  "crates/mesh-engine/tests/grading_duct.rs::datum_and_region_refine_the_duct_core",
+  "crates/mesh-engine/tests/grading_duct.rs::derived_sources_are_refused_on_the_duct_path",
+  "crates/mesh-cli/tests/kofl.rs::grading_tools_add_list_and_remove_sources",
+]
+commands = []
+gaps = "Polyhedral mode with a Rust-built scaffold only (not a scaffold file, not bulk or layered); no STL surface or closed-body datum yet; the zones' cells are counted where the grading sets the size, which near a wall can also be the wall's own size; not run on the jacket, furnace or Manifold"
+
+[[feature]]
 id = "sweep"
 title = "Swept block and pipe with prism layers"
 requirements = ["BL-01", "BL-03"]

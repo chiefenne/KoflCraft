@@ -798,3 +798,115 @@ fn propose_roles_and_skeleton_through_the_registry() {
         let _ = std::fs::remove_dir_all(d);
     }
 }
+
+/// Keep rule (SW-18). Invariant (GRD-08, AG-13): an agent adds, lists and
+/// removes the size sources of a duct partition by name through the
+/// registry; a frame comes with the source that names it and goes with it;
+/// a second source of the same name and a convex-only (derived) source are
+/// refused; the session replays. The engine test builds the graded mesh;
+/// only this test runs the tools.
+#[test]
+fn grading_tools_add_list_and_remove_sources() {
+    let rec = fresh("grading");
+    let stl = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test-fixtures/cooling-jacket/cooling-jacket.stl"
+    );
+    let journal = rec.join("j.jsonl");
+    let j = journal.to_str().unwrap();
+    let call = |k: &str, id: &str, input: Value| {
+        let file = rec.join(format!("in-{k}.json"));
+        std::fs::write(&file, input.to_string()).unwrap();
+        kofl_in(
+            &rec,
+            &[
+                "--journal",
+                j,
+                "call",
+                id,
+                "--input",
+                file.to_str().unwrap(),
+            ],
+        )
+    };
+    let steps = [
+        (
+            "patch.detect_ports",
+            serde_json::json!({"surface": stl, "output": "ports.json"}),
+        ),
+        (
+            "mesh.setup_duct",
+            serde_json::json!({"surface": stl, "patches": "ports.json", "output": "p0.json"}),
+        ),
+        (
+            "grading.add",
+            serde_json::json!({"partition": "p0.json", "output": "p1.json",
+            "source": {"kind": "datum", "name": "probe", "size": 0.2, "distance": 1.0,
+                       "shape": {"type": "sphere", "centre": [60, 0, 0], "radius": 0.5}}}),
+        ),
+        (
+            "grading.add",
+            serde_json::json!({"partition": "p1.json", "output": "p2.json",
+            "frame": {"name": "tilted", "origin": [0, 0, 0], "x_axis": [1, 1, 0], "y_axis": [-1, 1, 0]},
+            "source": {"kind": "region", "name": "wake", "size": 0.3, "frame": "tilted",
+                       "shape": {"type": "slab", "axis": "z", "min": -2, "max": 2}}}),
+        ),
+        (
+            "grading.remove",
+            serde_json::json!({"partition": "p2.json", "output": "p3.json", "name": "wake"}),
+        ),
+        ("grading.list", serde_json::json!({"partition": "p3.json"})),
+    ];
+    let mut results = Vec::new();
+    for (k, (id, input)) in steps.into_iter().enumerate() {
+        let (ok, e) = call(&k.to_string(), id, input);
+        assert!(ok, "{id}: {e:#}");
+        results.push(e);
+    }
+    let names = |v: &Value| -> Vec<String> {
+        v["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(names(&results[3]["result"]["grading"]), ["probe", "wake"]);
+    assert_eq!(
+        results[3]["result"]["grading"]["frames"][0]["name"],
+        "tilted"
+    );
+    assert_eq!(names(&results[5]["result"]), ["probe"]);
+    assert_eq!(results[5]["result"]["frames"], serde_json::json!([]));
+
+    let (ok, e) = call(
+        "dup",
+        "grading.add",
+        serde_json::json!({"partition": "p3.json", "output": "p9.json",
+        "source": {"kind": "datum", "name": "probe", "size": 0.2,
+                   "shape": {"type": "point", "point": [0, 0, 0]}}}),
+    );
+    assert!(!ok);
+    assert!(
+        e["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("exists"),
+        "{e}"
+    );
+    let (ok, e) = call(
+        "gap",
+        "grading.add",
+        serde_json::json!({"partition": "p3.json", "output": "p9.json",
+        "source": {"kind": "gap", "name": "g", "cells_across": 3}}),
+    );
+    assert!(!ok, "{e}");
+
+    let again = fresh("grading-again");
+    let (ok, envelope) = kofl_in(&again, &["run", "--script", j]);
+    assert!(ok, "{envelope:#}");
+    assert_eq!(envelope["result"]["different"], 0);
+    for d in [rec, again] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
