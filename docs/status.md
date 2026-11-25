@@ -117,7 +117,7 @@ The verification grade of every feature (AG-17), how it was checked and what is 
 - `nonconvex_manifold_preserves_volume_and_exposes_each_port_layer` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
 - `median_dual_core_stays_available_and_valid_on_the_elbow` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
 - `voronoi_core_wall_joins_against_the_solver_rules` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
-- `columns_wall_join_on_the_manifold_is_rejected_by_the_solver_rules` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
+- `columns_wall_join_is_valid_on_the_manifold` in [crates/mesh-cli/tests/workflow.rs](../crates/mesh-cli/tests/workflow.rs)
 - `contact_chains` in [crates/mesh-algorithms/src/duct/columns.rs](../crates/mesh-algorithms/src/duct/columns.rs)
 - `ears_of_notched_and_straight_rings_are_positive` in [crates/mesh-algorithms/src/duct/columns.rs](../crates/mesh-algorithms/src/duct/columns.rs)
 - `notched_boundary_face_has_its_true_area` in [crates/mesh-algorithms/src/duct/verify.rs](../crates/mesh-algorithms/src/duct/verify.rs)

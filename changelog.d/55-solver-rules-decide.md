@@ -7,3 +7,9 @@ cells merged into one polygon and the cell centroid taken exactly from the
 fan-triangulated shell, as the hand-off and FoehnCraft take them. Cells are
 split against that same view. The elbow median dual splits one cell
 (238 polyhedra); the Voronoi columns join passes there again.
+
+Cells that still fail on the exported mesh (against a neighbour) are split
+again into halves by volume until the mesh passes. The cooling jacket
+(1.19 million cells) now builds with 0 failing cells and the export finds 0
+faces turned away. When layer cells fail, the message says that the wall
+layers collide or fold.
