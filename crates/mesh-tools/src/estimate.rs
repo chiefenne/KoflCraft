@@ -40,9 +40,8 @@ pub struct EstimateInput {
 /// `cells_basis` of a count that is exact.
 const EXACT: &str = "exact";
 /// `cells_basis` of a polyhedral duct with a volume scaffold.
-const SPLIT_BASIS: &str = "exact before cells are split or added at reentrant wall edges, \
-    which needs the built layers (Voronoi core: none on the elbow fixture, 14 on Manifold; \
-    median dual: 10 and 3)";
+const SPLIT_BASIS: &str = "exact before cells are split at reentrant wall edges or where they \
+    break the solver rules, which needs the built layers (median dual: 16 on the elbow fixture)";
 
 /// `cells_basis` of a Voronoi core with wall columns.
 const COLUMN_BASIS: &str = "approximate: the wall-layer columns follow the built Voronoi core, \

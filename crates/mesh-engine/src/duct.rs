@@ -126,10 +126,14 @@ const MAX_SCAFFOLD_POINTS: usize = 2_000_000;
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CoreKind {
-    /// Clipped Voronoi diagram restricted to the scaffold, Lloyd-relaxed (M4).
-    #[default]
+    /// Clipped Voronoi diagram restricted to the scaffold, Lloyd-relaxed
+    /// (M4). On hold since the solver rules decide (2026-11-25): its
+    /// wall-join cells can break them.
     Voronoi,
-    /// Vertex-centred median dual of the scaffold (M1b).
+    /// Vertex-centred median dual of the scaffold (M1b), cells that break
+    /// the solver rules split into valid parts. The default, as the dual of
+    /// a tet mesh is in production polyhedral meshers.
+    #[default]
     MedianDual,
 }
 
