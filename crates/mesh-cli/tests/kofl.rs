@@ -318,7 +318,7 @@ fn estimates_match_the_built_cell_counts() {
                     .unwrap()
                     .contains("solver rules")
             );
-            assert_eq!(actual, predicted + 16, "{args:?}");
+            assert_eq!(actual, predicted + 11, "{args:?}");
         }
     }
     let (ok, _) = kofl_in(&dir, &["--check", "check", "m.json"]);

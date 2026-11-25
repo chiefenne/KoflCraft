@@ -332,8 +332,53 @@ fn split_invalid(
     earlier: &[Vec<usize>],
     split_quads: &HashMap<[usize; 4], usize>,
 ) -> Vec<Vec<usize>> {
-    let valid = |group: &[usize]| verify::cell_shell(p, &part_faces(cell, group).0).valid();
     let mut parts: Vec<Vec<usize>> = earlier.to_vec();
+    // The part as the solver sees it after the hand-off: the faces it shares
+    // with one neighbour merged into one polygon. Neighbours: the unsplit
+    // dual cell across (`towards`), a part split before (`split_quads`),
+    // a part of this cell made before (`done`) and the rest of this cell.
+    let valid = |group: &[usize], done: &[Vec<usize>]| {
+        let mut groups: HashMap<(u8, usize), Vec<&Vec<usize>>> = HashMap::new();
+        let mut single: Vec<Vec<usize>> = Vec::new();
+        for &c in group {
+            let corner = &cell.corners[c];
+            for (f, &across) in corner.faces.iter().zip(&corner.towards) {
+                let key = match split_quads.get(&quad_key(f)) {
+                    Some(&owner) => (0, owner),
+                    None => (1, across),
+                };
+                groups.entry(key).or_default().push(f);
+            }
+            for (key, quad) in &corner.sides {
+                let shares = |o: usize| cell.corners[o].sides.iter().any(|(k, _)| k == key);
+                if group.iter().any(|&o| o != c && shares(o))
+                    || cell.boundary.iter().any(|(_, _, k)| k == key)
+                {
+                    continue;
+                }
+                let to = done.iter().position(|d| d.iter().any(|&o| shares(o)));
+                groups
+                    .entry(to.map_or((3, 0), |j| (2, j)))
+                    .or_default()
+                    .push(quad);
+            }
+        }
+        for (nodes, _, key) in &cell.boundary {
+            if group
+                .iter()
+                .any(|&c| cell.corners[c].sides.iter().any(|(k, _)| k == key))
+            {
+                single.push(nodes.to_vec());
+            }
+        }
+        for rings in groups.values() {
+            match verify::merge_rings(rings) {
+                Some(ring) => single.push(ring),
+                None => single.extend(rings.iter().map(|r| r.to_vec())),
+            }
+        }
+        verify::cell_shell(p, &single).valid()
+    };
     let touches = |a: usize, b: usize| {
         cell.corners[a]
             .sides
@@ -376,7 +421,7 @@ fn split_invalid(
                 super::voronoi_core::one_loop(&shared)
             })
     };
-    if valid(&part) && simple(&part, earlier) {
+    if valid(&part, earlier) && simple(&part, earlier) {
         return vec![part];
     }
     let mut left = part;
@@ -393,7 +438,7 @@ fn split_invalid(
                 group.iter().any(|&g| touches(g, c)) && {
                     let mut trial = group.clone();
                     trial.push(c);
-                    valid(&trial) && simple(&trial, &parts)
+                    valid(&trial, &parts) && simple(&trial, &parts)
                 }
             });
             match next {

@@ -366,15 +366,15 @@ fn vtkhdf_handoff_is_the_default_and_vtu_an_option() {
 /// Keep rule (SW-18). Invariant: `"core": "voronoi"` stays selectable with
 /// both wall joins, and the solver rules (verify.rs) reject what breaks them.
 #[test]
-fn voronoi_core_is_rejected_by_the_solver_rules() {
-    // On hold since the solver rules decide (2026-11-25): on the elbow both
-    // wall joins leave cells with a face pyramid behind the centroid (3
-    // wall-join layer cells with columns, 1 core cell with split caps),
-    // which the old kernel test accepted. When the Voronoi core is fixed,
-    // this becomes a validity test again.
+fn voronoi_core_wall_joins_against_the_solver_rules() {
+    // On hold since the solver rules decide (2026-11-25). Measured on the
+    // mesh as exported (merged faces, exact cell centroids), the columns
+    // join passes on the elbow and split caps leave 1 core cell with a face
+    // pyramid behind its centroid, which the old kernel test accepted. When
+    // the Voronoi core is fixed, split caps must pass too.
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/elbow");
     let work = WorkDirectory::new();
-    for (join, failing) in [("columns", 3), ("split_cap", 1)] {
+    for (join, failing) in [("columns", 0), ("split_cap", 1)] {
         let mut partition: Value =
             serde_json::from_slice(&fs::read(fixture.join("partition.json")).unwrap()).unwrap();
         let scaffold = &mut partition["volume_scaffold"];
@@ -384,14 +384,19 @@ fn voronoi_core_is_rejected_by_the_solver_rules() {
         let config = work.path().join(format!("{join}.json"));
         fs::write(&config, serde_json::to_vec(&partition).unwrap()).unwrap();
         let (stl, patches) = (fixture.join("elbow.stl"), fixture.join("patches.json"));
-        let error = work.fail(&[
+        let args = [
             "generate-duct",
             stl.to_str().unwrap(),
             patches.to_str().unwrap(),
             config.to_str().unwrap(),
             "polyhedral",
             join,
-        ]);
+        ];
+        if failing == 0 {
+            work.run(&args);
+            continue;
+        }
+        let error = work.fail(&args);
         let message = error["message"].as_str().unwrap().to_owned();
         assert!(
             message.starts_with(&format!("{failing} of ")) && message.contains("solver rules"),
@@ -400,20 +405,14 @@ fn voronoi_core_is_rejected_by_the_solver_rules() {
     }
 }
 
-/// Keep: the columns join builds a valid Manifold mesh on the Rust
-/// scaffold. Before, a merged column with a nonconvex footprint had its
-/// centroid behind a side face (inverted in FoehnCraft), every layout was
-/// rejected, and the third (Lloyd 12) hit a core face merge that flattened
-/// a tent of rings (MESH006). Removing the S·d split of merged columns in
-/// `columns.rs` or the all-vertex plane test of `merge_rings` breaks this;
-/// the elbow has neither layout. With the conforming wall seeds the first
-/// layout is valid: a retry here means a hand-off failure the fixture
-/// regression (which accepts retries) does not show, as with the two cells
-/// that met in two polygons round the reentrant circle before the repair
-/// of torn contacts. About 3 minutes, full run only.
+/// The Voronoi core with the columns join on Manifold is rejected by the
+/// solver rules (13 of 229,615 cells on 2026-11-25, 12 of them wall-join
+/// layer cells) while the core is on hold; it passed the old kernel test.
+/// When the Voronoi core is fixed this becomes a validity test again.
+/// About 3 minutes, full run only.
 #[test]
 #[ignore = "full run: Manifold with the columns join (about 3 minutes)"]
-fn columns_wall_join_is_valid_on_the_manifold() {
+fn columns_wall_join_on_the_manifold_is_rejected_by_the_solver_rules() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/manifold");
     let work = WorkDirectory::new();
     let mut partition: Value =
@@ -422,29 +421,20 @@ fn columns_wall_join_is_valid_on_the_manifold() {
         .as_object_mut()
         .unwrap()
         .remove("wall_join");
-    // the median dual is the default since 2026-11-25
     partition["volume_scaffold"]["core"] = "voronoi".into();
     let config = work.path().join("columns.json");
     fs::write(&config, serde_json::to_vec(&partition).unwrap()).unwrap();
     let (stl, patches) = (fixture.join("manifold.stl"), fixture.join("patches.json"));
-    let args = [
+    let error = work.fail(&[
         "generate-duct",
         stl.to_str().unwrap(),
         patches.to_str().unwrap(),
         config.to_str().unwrap(),
         "polyhedral",
         "columns",
-    ];
-    let report = work.run(&args)["report"].clone();
-    assert_eq!(report["voronoi_core"]["wall_join"], "columns");
-    assert_eq!(report["voronoi_core"]["retries"], 0);
-    let evidence: Value =
-        serde_json::from_slice(&fs::read(work.path().join("columns/mesh-evidence.json")).unwrap())
-            .unwrap();
-    assert_eq!(evidence["summary"]["inverted_faces"], 0);
-    let mesh_volume = report["volume"].as_f64().unwrap();
-    let fitted_volume = report["scaffold_volume"].as_f64().unwrap();
-    assert!((mesh_volume / fitted_volume - 1.).abs() < 1e-10);
+    ]);
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains("fail the solver rules"), "{message}");
 }
 
 #[test]
@@ -470,7 +460,7 @@ fn median_dual_core_stays_available_and_valid_on_the_elbow() {
     let report = work.run(&args)["report"].clone();
     assert_eq!(report["algorithm"], "volume_median_dual_v2");
     // 237 before cells failing the solver rules were split into valid parts
-    assert_eq!(report["polyhedra"], 243);
+    assert_eq!(report["polyhedra"], 238);
     assert_eq!(report["prisms"], 6768);
     let evidence: Value =
         serde_json::from_slice(&fs::read(work.path().join("median/mesh-evidence.json")).unwrap())
@@ -539,11 +529,13 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
                 _ => wedges,
             };
             if (mode, dir) == ("polyhedral", "manifold") {
-                // Manifold builds its scaffold in Rust and joins with wall
-                // columns: a wall triangle whose core cell covers it whole
-                // (the triangles with a conforming seed) keeps its three
-                // native wedges, about 43,800 of 56,606 (Delaunay wall flips: a few more).
-                assert!((129_000..136_000).contains(&wall_prisms), "{wall_prisms}");
+                // Manifold builds its scaffold in Rust; the median dual
+                // splits every wall prism into the six of its fine wall
+                // triangles (1,020,168 on 2026-11-25, 55,717 core cells).
+                assert!(
+                    (1_000_000..1_040_000).contains(&wall_prisms),
+                    "{wall_prisms}"
+                );
                 // Keep: the scaffold wall follows the STL to the chord
                 // tolerance both ways (the Gmsh scaffold was 0.54 off).
                 // Building the wall at a fixed coarse size, dropping the
@@ -561,16 +553,17 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
             if mode == "polyhedral" {
                 // The median dual is the default core since the solver
                 // rules decide (2026-11-25); the Voronoi core is on hold
-                // (`voronoi_core_is_rejected_by_the_solver_rules`).
+                // (`voronoi_core_wall_joins_against_the_solver_rules`).
                 assert_eq!(report["algorithm"], "volume_median_dual_v2");
                 let polyhedra = report["polyhedra"].as_i64().unwrap();
                 let expected = if dir == "elbow" {
                     // Keep: 237 before the cells that break the solver rules
-                    // were split into valid parts (five on the elbow).
-                    assert_eq!(polyhedra, 243);
+                    // were split into valid parts (one on the elbow).
+                    assert_eq!(polyhedra, 238);
                     assert!(report["minimum_cell_volume"].as_f64().unwrap() > 1e-4);
-                    243
+                    238
                 } else {
+                    assert!((54_500..57_000).contains(&polyhedra), "{polyhedra}");
                     polyhedra
                 };
                 let shape = &report["core_sphericity"];
@@ -578,7 +571,8 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
                 let thresholds = if dir == "elbow" {
                     [0.45, 0.55, 0.75]
                 } else {
-                    [0.05, 0.30, 0.60]
+                    // Manifold 2026-11-25: 0.188, 0.651, 0.787
+                    [0.15, 0.60, 0.75]
                 };
                 for (metric, minimum) in ["minimum", "p05", "median"].into_iter().zip(thresholds) {
                     let value = shape[metric].as_f64().unwrap();
@@ -587,7 +581,8 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
                 let vtu = fs::read_to_string(work.path().join(&name).join("volume.vtu")).unwrap();
                 let types = vtu_array(&vtu, "types");
                 if dir == "manifold" {
-                    assert!(maximum_core_span(&vtu, &types) < 25.0);
+                    // median dual 2026-11-25: 25.9 (one cell), 99.9 % below 19.7
+                    assert!(maximum_core_span(&vtu, &types) < 30.0);
                 }
                 let offsets = vtu_array(&vtu, "faceoffsets");
                 assert_eq!(types.len() as i64, expected + wall_prisms);

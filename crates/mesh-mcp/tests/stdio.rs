@@ -163,7 +163,7 @@ fn stdio_tools_run_the_shared_engine_and_bound_writes() {
     let poly = &responses[14]["result"]["structuredContent"]["result"]["report"];
     assert_eq!(poly["tetrahedra"], 0);
     // median dual core (default since 2026-11-25)
-    assert_eq!(poly["polyhedra"], 243);
+    assert_eq!(poly["polyhedra"], 238);
     assert!(
         responses[15]["result"]["structuredContent"]["result"]["report"]["core_cells"]
             .as_u64()
