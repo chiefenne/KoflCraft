@@ -145,14 +145,28 @@ pub fn build_graded(
     opts: ScaffoldOptions,
     field: Option<&SizeField>,
 ) -> Result<(Scaffold, ScaffoldStats), String> {
-    build_with_shells(vertices, triangles, tags, &[], opts, field)
+    build_with_shells(vertices, triangles, tags, &[], opts, field, None)
 }
 
-/// [`build_graded`] with zero-thickness shell triangles inside the domain
-/// (each with its shell index; ids into `vertices`, sharing the wall
+/// [`build_graded`] with a hole: tetrahedra whose centroid `hole` claims
+/// are dropped before refinement (the cubes of a hex core, whose shell is
+/// part of `triangles`, see [`crate::hexcore`]).
+pub fn build_with_hole(
+    vertices: &[Vec3],
+    triangles: &[[usize; 3]],
+    tags: &[usize],
+    opts: ScaffoldOptions,
+    field: Option<&SizeField>,
+    hole: Option<&dyn Fn(Vec3) -> bool>,
+) -> Result<(Scaffold, ScaffoldStats), String> {
+    build_with_shells(vertices, triangles, tags, &[], opts, field, hole)
+}
+
+/// [`build_with_hole`] with zero-thickness shell triangles inside the
+/// domain (each with its shell index; ids into `vertices`, sharing the wall
 /// vertices where a shell meets the wall). They are recovered as faces of
-/// the tetrahedralization and kept by the refinement, and returned in
-/// `Scaffold::shells` with their orientation.
+/// the tetrahedralization and kept by the refinement, but bound no region,
+/// and are returned in `Scaffold::shells` with their orientation.
 pub fn build_with_shells(
     vertices: &[Vec3],
     triangles: &[[usize; 3]],
@@ -160,6 +174,7 @@ pub fn build_with_shells(
     shells: &[([usize; 3], usize)],
     opts: ScaffoldOptions,
     field: Option<&SizeField>,
+    hole: Option<&dyn Fn(Vec3) -> bool>,
 ) -> Result<(Scaffold, ScaffoldStats), String> {
     if triangles.len() != tags.len()
         || triangles.iter().flatten().any(|&v| v >= vertices.len())
@@ -293,6 +308,16 @@ pub fn build_with_shells(
         .map(|(t, _, _)| sorted(*t))
         .collect();
     let mut inside = classify(&dt, &barrier);
+    if let Some(hole) = hole {
+        for t in 0..dt.tets.len() {
+            if inside[t] {
+                let p = dt.tets[t].map(|v| dt.points[v]);
+                if hole((p[0] + p[1] + p[2] + p[3]) / 4.0) {
+                    inside[t] = false;
+                }
+            }
+        }
+    }
     // 4. refinement
     let size_items: Vec<Weighted> = surface
         .iter()

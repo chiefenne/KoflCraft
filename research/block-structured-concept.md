@@ -338,3 +338,7 @@ The maintainer asked for this with multi-element airfoils in mind. Block vertice
   3. **Anchor (kept).** A rim node now moves toward the mean of the foot point and its TFI position (`SURFACE_ANCHOR` 1). That makes the loop gain one half. Pipe and elbow then converge in 127 and 182 sweeps (fixed walls: 127 and 155), with the same wall angles (pipe 0.42°, elbow 0.59° to 0.58°) and Jacobians, and nodes on the surface to 1e-12. Anchor weights of 0.5 and 3 give the same.
   
   The same anchor on the section contours cuts the NACA gain (15.5° to 15.3° at weight 1, 14.8° at 0.25, against 11.0° without), so contours keep the window alone.
+
+### MB1g: wall rings and layout optimisation (2026-11-25)
+
+The multi-element template's first H-grid carried every wall spacing straight to the box and sheared the gap blocks: 76° to 89° of non-orthogonality, up to 240 cells over 70°, and two of nine test layouts refused. The maintainer chose "Ring + layout optimizer (paper)" on a card, general for every block topology. Each element now sits in a wall ring of six blocks, with a cove where a flap's nose sits under the main element, and the new `block::layout` optimiser moves the vertices, edge shapes and end spacings of the blocks off the rings toward orthogonal cells by a pattern search on the TFI grid (after Sauer & Morsbach 2023). All nine layouts then mesh with 47° to 68° and no cell over 70°. Design note, candidates and benchmark: [`block-layout-optimisation.md`](block-layout-optimisation.md).
