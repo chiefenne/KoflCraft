@@ -687,4 +687,23 @@ fn block_templates_build_an_elbow_and_an_airfoil_from_a_file() {
     let (ok, e) = kofl_in(&dir, &["call", "block.grid", "--input", "g.json"]);
     assert!(ok, "{e}");
     assert_eq!(e["result"]["report"]["summary"]["inverted_faces"], 0);
+    // a slat (NACA) in front of a main element read from the coordinate file
+    write(
+        "m.json",
+        serde_json::json!({"config": {"template": "multi_element_airfoil",
+            "main": {"coordinates": "n0012.dat"},
+            "slat": {"naca": "4410", "chord": 0.16, "deflection": 25, "gap": 0.05, "overlap": -0.04},
+            "span": 0.1, "farfield": 5, "wake_length": 5, "surface_cells": 24,
+            "normal_cells": 12, "wake_cells": 12, "wall_spacing": 0.002}, "output": "multi.json"}),
+    );
+    let (ok, e) = kofl_in(&dir, &["call", "block.template", "--input", "m.json"]);
+    assert!(ok, "{e}");
+    assert_eq!(e["result"]["check"]["blocks"], 16);
+    write(
+        "gm.json",
+        serde_json::json!({"topology": "multi.json", "output": "multi"}),
+    );
+    let (ok, e) = kofl_in(&dir, &["call", "block.grid", "--input", "gm.json"]);
+    assert!(ok, "{e}");
+    assert_eq!(e["result"]["report"]["summary"]["inverted_faces"], 0);
 }

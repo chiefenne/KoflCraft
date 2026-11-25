@@ -405,14 +405,13 @@ fn voronoi_core_wall_joins_against_the_solver_rules() {
     }
 }
 
-/// The Voronoi core with the columns join on Manifold is rejected by the
-/// solver rules (13 of 229,615 cells on 2026-11-25, 12 of them wall-join
-/// layer cells) while the core is on hold; it passed the old kernel test.
-/// When the Voronoi core is fixed this becomes a validity test again.
+/// The Voronoi core (on hold) with the columns join on Manifold passes the
+/// solver rules measured on the mesh as exported (merged faces, exact cell
+/// centroids; 2026-11-25), and the export finds no face turned away.
 /// About 3 minutes, full run only.
 #[test]
 #[ignore = "full run: Manifold with the columns join (about 3 minutes)"]
-fn columns_wall_join_on_the_manifold_is_rejected_by_the_solver_rules() {
+fn columns_wall_join_is_valid_on_the_manifold() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/manifold");
     let work = WorkDirectory::new();
     let mut partition: Value =
@@ -425,16 +424,20 @@ fn columns_wall_join_on_the_manifold_is_rejected_by_the_solver_rules() {
     let config = work.path().join("columns.json");
     fs::write(&config, serde_json::to_vec(&partition).unwrap()).unwrap();
     let (stl, patches) = (fixture.join("manifold.stl"), fixture.join("patches.json"));
-    let error = work.fail(&[
+    let args = [
         "generate-duct",
         stl.to_str().unwrap(),
         patches.to_str().unwrap(),
         config.to_str().unwrap(),
         "polyhedral",
         "columns",
-    ]);
-    let message = error["message"].as_str().unwrap();
-    assert!(message.contains("fail the solver rules"), "{message}");
+    ];
+    let report = work.run(&args)["report"].clone();
+    assert_eq!(report["voronoi_core"]["wall_join"], "columns");
+    let evidence: Value =
+        serde_json::from_slice(&fs::read(work.path().join("columns/mesh-evidence.json")).unwrap())
+            .unwrap();
+    assert_eq!(evidence["summary"]["inverted_faces"], 0);
 }
 
 #[test]
@@ -563,7 +566,7 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
                     assert!(report["minimum_cell_volume"].as_f64().unwrap() > 1e-4);
                     238
                 } else {
-                    assert!((54_500..57_000).contains(&polyhedra), "{polyhedra}");
+                    assert!((48_500..50_500).contains(&polyhedra), "{polyhedra}");
                     polyhedra
                 };
                 let shape = &report["core_sphericity"];
@@ -679,7 +682,8 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
                 "collision",
             ]);
             assert_eq!(failure["code"], "validation_failed");
-            assert!(failure["message"].as_str().unwrap().contains("collision"));
+            let message = failure["message"].as_str().unwrap();
+            assert!(message.contains("collision"), "{message}");
             assert!(!work.path().join("collision").exists());
         }
     }

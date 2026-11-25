@@ -331,6 +331,7 @@ fn split_invalid(
     part: Vec<usize>,
     earlier: &[Vec<usize>],
     split_quads: &HashMap<[usize; 4], usize>,
+    limit: Option<f64>,
 ) -> Vec<Vec<usize>> {
     let mut parts: Vec<Vec<usize>> = earlier.to_vec();
     // The part as the solver sees it after the hand-off: the faces it shares
@@ -421,9 +422,12 @@ fn split_invalid(
                 super::voronoi_core::one_loop(&shared)
             })
     };
-    if valid(&part, earlier) && simple(&part, earlier) {
+    // `limit`: a part that passes on its own but fails on the exported mesh
+    // (against a neighbour) is split again into parts of at most this volume.
+    if limit.is_none() && valid(&part, earlier) && simple(&part, earlier) {
         return vec![part];
     }
+    let volume = |group: &[usize]| group.iter().map(|&c| cell.corners[c].volume).sum::<f64>();
     let mut left = part;
     left.sort_by(|&a, &b| {
         cell.corners[b]
@@ -438,7 +442,9 @@ fn split_invalid(
                 group.iter().any(|&g| touches(g, c)) && {
                     let mut trial = group.clone();
                     trial.push(c);
-                    valid(&trial, &parts) && simple(&trial, &parts)
+                    limit.is_none_or(|l| volume(&trial) <= l)
+                        && valid(&trial, &parts)
+                        && simple(&trial, &parts)
                 }
             });
             match next {
@@ -450,6 +456,42 @@ fn split_invalid(
         parts.push(group);
     }
     parts.split_off(earlier.len())
+}
+
+/// The cell made of the corner pieces `group` of a dual cell, and its
+/// boundary faces (the walls only when no layers cover them).
+fn build_part(
+    p: &[Vec3],
+    cell: &Dual,
+    group: &[usize],
+    site: usize,
+    layered: bool,
+    owner: usize,
+) -> (Cell, Vec<BoundaryFace>) {
+    let (faces, planes, used) = part_faces(cell, group);
+    let part_volume: f64 = group.iter().map(|&c| cell.corners[c].volume).sum();
+    let mut boundary = Vec::new();
+    for i in used {
+        let (nodes, patch, _) = cell.boundary[i];
+        if patch <= 2 || !layered {
+            boundary.push(BoundaryFace {
+                nodes: nodes.to_vec(),
+                patch,
+                owner,
+            });
+        }
+    }
+    let witness = if planes.is_empty() {
+        p[site]
+    } else {
+        strict_witness(p, p[site], &faces, &planes, part_volume)
+    };
+    let built = Cell {
+        element: Element::Polyhedron(Box::new(Polyhedron::new(faces, witness, None, part_volume))),
+        layer: 0,
+        region: 0,
+    };
+    (built, boundary)
 }
 
 /// A quadrilateral's nodes, sorted: the same key from both sides.
@@ -884,7 +926,12 @@ pub fn build_volume_dual(
         .collect();
     // Dual quadrilaterals of cells already split, by the part that owns them.
     let mut split_quads: HashMap<[usize; 4], usize> = HashMap::new();
-    for (id, cell) in dual.into_iter().enumerate() {
+    let layer_cells = front.cells.len();
+    // Per core cell: its dual cell and corner pieces; per dual cell: its cells.
+    let mut origin: Vec<(usize, Vec<usize>)> = Vec::new();
+    let mut cells_of: Vec<Vec<usize>> = vec![Vec::new(); dual.len()];
+    let layered = !steps.is_empty();
+    for (id, cell) in dual.iter().enumerate() {
         let volume: f64 = cell.corners.iter().map(|c| c.volume).sum();
         if volume <= 0. {
             return Err(format!("unused volume node {id}"));
@@ -893,8 +940,8 @@ pub fn build_volume_dual(
         let owner_offset = front.cells.len();
         let wall = |nodes: &[usize; 3]| prisms.get(&sorted(*nodes)).map(|&c| prism_centres[c]);
         let mut parts: Vec<Vec<usize>> = Vec::new();
-        for part in split_reentrant(p, site, &cell, &wall) {
-            let split = split_invalid(p, &cell, part, &parts, &split_quads);
+        for part in split_reentrant(p, site, cell, &wall) {
+            let split = split_invalid(p, cell, part, &parts, &split_quads, None);
             parts.extend(split);
         }
         if parts.len() > 1 {
@@ -906,34 +953,67 @@ pub fn build_volume_dual(
                 }
             }
         }
-        for (part, group) in parts.iter().enumerate() {
-            let (faces, planes, used) = part_faces(&cell, group);
-            let part_volume: f64 = group.iter().map(|&c| cell.corners[c].volume).sum();
-            for i in used {
-                let (nodes, patch, _) = cell.boundary[i];
-                if patch <= 2 || steps.is_empty() {
-                    front.boundary.push(BoundaryFace {
-                        nodes: nodes.to_vec(),
-                        patch,
-                        owner: owner_offset + part,
-                    });
+        for (part, group) in parts.into_iter().enumerate() {
+            let (built, boundary) = build_part(p, cell, &group, site, layered, owner_offset + part);
+            front.cells.push(built);
+            front.boundary.extend(boundary);
+            cells_of[id].push(owner_offset + part);
+            origin.push((id, group));
+        }
+    }
+    // Repeat the split until the mesh as exported passes the solver rules:
+    // a core cell that fails (or whose layer neighbour fails) is split again
+    // into halves by volume, until it passes or is a single corner piece.
+    loop {
+        let failing = verify::exported_failures(p, &front.cells);
+        let mut targets = std::collections::BTreeSet::new();
+        for (id, neighbours) in &failing {
+            if *id >= layer_cells {
+                targets.insert(*id);
+            } else {
+                targets.extend(neighbours.iter().filter(|&&n| n >= layer_cells));
+            }
+        }
+        targets.retain(|&c| origin[c - layer_cells].1.len() > 1);
+        if crate::trace_enabled() {
+            eprintln!(
+                "kofl trace: split again: {} cells fail as exported, {} core cells to split",
+                failing.len(),
+                targets.len()
+            );
+        }
+        if targets.is_empty() {
+            break;
+        }
+        for c in targets {
+            let (d, group) = origin[c - layer_cells].clone();
+            let cell = &dual[d];
+            let earlier: Vec<Vec<usize>> = cells_of[d]
+                .iter()
+                .filter(|&&o| o != c)
+                .map(|&o| origin[o - layer_cells].1.clone())
+                .collect();
+            let half = group.iter().map(|&k| cell.corners[k].volume).sum::<f64>() / 2.;
+            let pieces = split_invalid(p, cell, group, &earlier, &split_quads, Some(half));
+            front.boundary.retain(|b| b.owner != c);
+            for (k, piece) in pieces.into_iter().enumerate() {
+                let id = if k == 0 { c } else { front.cells.len() };
+                for &corner in &piece {
+                    for f in &cell.corners[corner].faces {
+                        split_quads.insert(quad_key(f), id);
+                    }
+                }
+                let (built, boundary) = build_part(p, cell, &piece, mapped[d], layered, id);
+                front.boundary.extend(boundary);
+                if k == 0 {
+                    front.cells[c] = built;
+                    origin[c - layer_cells].1 = piece;
+                } else {
+                    front.cells.push(built);
+                    cells_of[d].push(id);
+                    origin.push((d, piece));
                 }
             }
-            let witness = if planes.is_empty() {
-                p[site]
-            } else {
-                strict_witness(p, p[site], &faces, &planes, part_volume)
-            };
-            front.cells.push(Cell {
-                element: Element::Polyhedron(Box::new(Polyhedron::new(
-                    faces,
-                    witness,
-                    None,
-                    part_volume,
-                ))),
-                layer: 0,
-                region: 0,
-            });
         }
     }
     compact_points(p, &mut front.cells, &mut front.boundary);

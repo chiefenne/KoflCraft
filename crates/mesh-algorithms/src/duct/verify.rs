@@ -204,7 +204,11 @@ fn fan_volume_centre(p: &[Vec3], rings: &[Vec<usize>]) -> (f64, Vec3) {
 
 /// The solver rules and each cell's volume as the solver takes it (the sum
 /// of its face pyramids).
-fn solver_rules_and_volumes(p: &[Vec3], cells: &[Cell]) -> (SolverRules, Vec<f64>) {
+#[allow(clippy::type_complexity)]
+fn solver_rules_and_volumes(
+    p: &[Vec3],
+    cells: &[Cell],
+) -> (SolverRules, Vec<f64>, Vec<(usize, Vec<usize>)>) {
     // The mesh as it is exported: the faces between two cells merged into
     // one polygon (the hand-off and FoehnCraft allow one face per pair).
     let all_rings: Vec<Vec<Vec<usize>>> = cells.iter().map(|c| c.element.faces()).collect();
@@ -308,13 +312,28 @@ fn solver_rules_and_volumes(p: &[Vec3], cells: &[Cell]) -> (SolverRules, Vec<f64
     }
     out.maximum_non_orthogonality = worst;
     out.faces_turned_away = turned.iter().filter(|&&t| t).count();
-    for ((b, t), cell) in bad.iter().zip(&turned).zip(cells) {
+    let mut failing = Vec::new();
+    for (id, ((b, t), cell)) in bad.iter().zip(&turned).zip(cells).enumerate() {
         if *b || *t {
             out.failing_cells += 1;
             out.failing_layer_cells += usize::from(cell.layer > 0);
+            let mut neighbours: Vec<usize> = all_rings[id]
+                .iter()
+                .flat_map(|r| users[&key(r)].iter().copied())
+                .filter(|&c| c != id)
+                .collect();
+            neighbours.sort_unstable();
+            neighbours.dedup();
+            failing.push((id, neighbours));
         }
     }
-    (out, volumes)
+    (out, volumes, failing)
+}
+
+/// The cells that fail the solver rules on the mesh as exported, each with
+/// the cells it shares a face with.
+pub(super) fn exported_failures(p: &[Vec3], cells: &[Cell]) -> Vec<(usize, Vec<usize>)> {
+    solver_rules_and_volumes(p, cells).2
 }
 
 fn det(a: Vec3, b: Vec3, c: Vec3) -> f64 {
@@ -527,7 +546,7 @@ pub(super) fn check_with_interface_count(
     layers: usize,
     expected_interfaces: usize,
 ) -> Result<Measurements, String> {
-    let (solver_rules, solver_volumes) = solver_rules_and_volumes(p, cells);
+    let (solver_rules, solver_volumes, _) = solver_rules_and_volumes(p, cells);
     if crate::trace_enabled() {
         eprintln!(
             "kofl trace: solver rules: {} of {} cells fail ({} in layers; open {}, volume {}, pyramids {}, turned away {}), max non-orthogonality {:.2}°",
@@ -542,8 +561,14 @@ pub(super) fn check_with_interface_count(
         );
     }
     if solver_rules.failing_cells > 0 {
+        // Name the likely cause in plain words when layer cells fail.
+        let hint = if solver_rules.failing_layer_cells > 0 {
+            "; wall layer collision or fold: thinner or fewer layers help"
+        } else {
+            ""
+        };
         return Err(format!(
-            "{} of {} cells fail the solver rules ({} in layers; open {}, volume {}, pyramids {}, turned away {})",
+            "{} of {} cells fail the solver rules ({} in layers; open {}, volume {}, pyramids {}, turned away {}){hint}",
             solver_rules.failing_cells,
             solver_rules.cells,
             solver_rules.failing_layer_cells,

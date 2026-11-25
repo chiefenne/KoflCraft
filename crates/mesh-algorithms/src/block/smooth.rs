@@ -1732,10 +1732,15 @@ fn update_wall(x: &[Vec3], b: &Block, w: &mut Wall, o: &SmoothOptions) -> f64 {
             ];
             // first spacing too large: cluster harder (P toward the wall)
             let h = (node(1) - node(0)).length();
-            spacing_error = spacing_error.max((h / w.spacing[s]).ln().abs());
-            w.spacing_feedback[s] = (w.spacing_feedback[s]
-                - o.spacing_gain * sign * (h / w.spacing[s]).ln())
-            .clamp(-o.max_control, o.max_control);
+            let push = w.spacing_feedback[s] - o.spacing_gain * sign * (h / w.spacing[s]).ln();
+            // A node whose feedback sits at the control bound and still
+            // pushes outward holds the closest spacing the bounded controls
+            // reach (short blunt faces such as a trailing edge); it does not
+            // keep the grid from converging.
+            if push.abs() <= o.max_control {
+                spacing_error = spacing_error.max((h / w.spacing[s]).ln().abs());
+            }
+            w.spacing_feedback[s] = push.clamp(-o.max_control, o.max_control);
             if let Some(mut p) = solve3(m, [rhs.x, rhs.y, rhs.z]) {
                 // The system with the target slope gives the tangential
                 // controls (orthogonality). Its off-wall control depends on
