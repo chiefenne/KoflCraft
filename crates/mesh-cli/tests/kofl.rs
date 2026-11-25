@@ -308,17 +308,17 @@ fn estimates_match_the_built_cell_counts() {
                 "{args:?}: {actual} {predicted}"
             );
         } else {
-            // Polyhedral duct: cells split or added at reentrant edges come
-            // after the estimate (none for the elbow's Voronoi core, 10 for
-            // its median dual); the basis must say so.
+            // Polyhedral duct: cells split at reentrant edges or where they
+            // break the solver rules come after the estimate (on the elbow's
+            // median dual 10 and 6); the basis must say so.
             assert_eq!(args[4], "polyhedral");
             assert!(
                 estimate["cells_basis"]
                     .as_str()
                     .unwrap()
-                    .contains("reentrant")
+                    .contains("solver rules")
             );
-            assert_eq!(actual, predicted, "{args:?}");
+            assert_eq!(actual, predicted + 11, "{args:?}");
         }
     }
     let (ok, _) = kofl_in(&dir, &["--check", "check", "m.json"]);

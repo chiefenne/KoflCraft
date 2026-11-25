@@ -45,6 +45,10 @@ pub struct SolverRules {
     pub faces_turned_away: usize,
     /// Largest non-orthogonality over all faces, degrees.
     pub maximum_non_orthogonality: f64,
+    /// Largest face warping, degrees: the angle between a triangle of a
+    /// face's fan and the face's area vector (a graded quality measure, as
+    /// the warpage angle of STAR-CCM+; no limit).
+    pub maximum_warping: f64,
 }
 
 /// Area vector and centre of a face as finite-volume codes take them:
@@ -71,66 +75,213 @@ fn fv_face(p: &[Vec3], ring: &[usize]) -> (Vec3, Vec3) {
 }
 
 /// Counts the cells of a mesh against [`SolverRules`].
-pub fn solver_rules(p: &[Vec3], cells: &[Cell]) -> SolverRules {
+#[cfg(test)]
+fn solver_rules(p: &[Vec3], cells: &[Cell]) -> SolverRules {
+    solver_rules_and_volumes(p, cells).0
+}
+
+/// Largest angle between a fan triangle of a face and its area vector.
+fn warping(p: &[Vec3], ring: &[usize], area: Vec3) -> f64 {
+    if ring.len() == 3 {
+        return 0.0;
+    }
+    let mean = ring.iter().fold(Vec3::ZERO, |s, &v| s + p[v]) / ring.len() as f64;
+    let mut worst = 0.0_f64;
+    for (i, &v) in ring.iter().enumerate() {
+        let n = (p[v] - mean).cross(p[ring[(i + 1) % ring.len()]] - mean);
+        let cos = n.dot(area) / (n.length() * area.length());
+        if cos.is_finite() {
+            worst = worst.max(cos.clamp(-1.0, 1.0).acos().to_degrees());
+        }
+    }
+    worst
+}
+
+/// A cell's shell as the solver sees it.
+pub(super) struct Shell {
+    pub open: bool,
+    pub volume: f64,
+    pub centre: Vec3,
+    pub pyramids_ok: bool,
+}
+
+impl Shell {
+    /// Closed, positive volume and every face pyramid on the centre positive
+    /// (the solver rules that need no neighbour).
+    pub fn valid(&self) -> bool {
+        !self.open && self.volume > 0.0 && self.pyramids_ok
+    }
+}
+
+/// The shell of a cell given by its outward face rings.
+pub(super) fn cell_shell(p: &[Vec3], rings: &[Vec<usize>]) -> Shell {
+    let geometry: Vec<(Vec3, Vec3)> = rings.iter().map(|r| fv_face(p, r)).collect();
+    shell(p, rings, &geometry)
+}
+
+fn shell(p: &[Vec3], rings: &[Vec<usize>], geometry: &[(Vec3, Vec3)]) -> Shell {
+    // closed shell: every edge twice, area vectors summing to zero
+    let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
+    for r in rings {
+        for (i, &a) in r.iter().enumerate() {
+            let b = r[(i + 1) % r.len()];
+            *edges.entry((a.min(b), a.max(b))).or_default() += 1;
+        }
+    }
+    let sum = geometry.iter().fold(Vec3::ZERO, |s, g| s + g.0);
+    let total: f64 = geometry.iter().map(|g| g.0.length()).sum();
+    let open = edges.values().any(|&n| n != 2)
+        || sum.length().partial_cmp(&(1e-6 * total)) == Some(std::cmp::Ordering::Greater)
+        || !total.is_finite();
+    let (volume, centre) = fan_volume_centre(p, rings);
+    let pyramids_ok = geometry.iter().all(|(area, c)| area.dot(*c - centre) > 0.0);
+    Shell {
+        open,
+        volume,
+        centre,
+        pyramids_ok,
+    }
+}
+
+/// The union of rings that share their inner edges, as one ring (the
+/// hand-off merges the faces between two cells this way); `None` when the
+/// union is not one loop.
+pub(super) fn merge_rings(rings: &[&Vec<usize>]) -> Option<Vec<usize>> {
+    if rings.len() == 1 {
+        return Some(rings[0].clone());
+    }
+    let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
+    for ring in rings {
+        for (k, &a) in ring.iter().enumerate() {
+            let b = ring[(k + 1) % ring.len()];
+            if let Some(n) = edges.get_mut(&(b, a)) {
+                *n -= 1;
+                if *n == 0 {
+                    edges.remove(&(b, a));
+                }
+            } else {
+                *edges.entry((a, b)).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut next: HashMap<usize, usize> = HashMap::new();
+    for (&(a, b), &n) in &edges {
+        if n != 1 || next.insert(a, b).is_some() {
+            return None;
+        }
+    }
+    let &start = next.keys().min()?;
+    let mut ring = vec![start];
+    let mut at = next[&start];
+    while at != start && ring.len() <= next.len() {
+        ring.push(at);
+        at = next[&at];
+    }
+    (ring.len() == next.len()).then_some(ring)
+}
+
+/// Volume and centroid of a closed shell as the hand-off and FoehnCraft
+/// take them: tetrahedra on the first vertex, each face fanned from its
+/// vertex mean.
+fn fan_volume_centre(p: &[Vec3], rings: &[Vec<usize>]) -> (f64, Vec3) {
+    let Some(origin) = rings.first().and_then(|r| r.first()).map(|&v| p[v]) else {
+        return (0.0, Vec3::ZERO);
+    };
+    let mut v6 = 0.0;
+    let mut moment = Vec3::ZERO;
+    for ring in rings {
+        let c = ring.iter().fold(Vec3::ZERO, |s, &v| s + p[v]) / ring.len() as f64 - origin;
+        for (k, &a) in ring.iter().enumerate() {
+            let (pa, pb) = (p[a] - origin, p[ring[(k + 1) % ring.len()]] - origin);
+            let t6 = c.dot(pa.cross(pb));
+            v6 += t6;
+            moment = moment + (c + pa + pb) * (t6 / 4.0);
+        }
+    }
+    (v6 / 6.0, origin + moment / v6)
+}
+
+/// The solver rules and each cell's volume as the solver takes it (the sum
+/// of its face pyramids).
+#[allow(clippy::type_complexity)]
+fn solver_rules_and_volumes(
+    p: &[Vec3],
+    cells: &[Cell],
+) -> (SolverRules, Vec<f64>, Vec<(usize, Vec<usize>)>) {
+    // The mesh as it is exported: the faces between two cells merged into
+    // one polygon (the hand-off and FoehnCraft allow one face per pair).
+    let all_rings: Vec<Vec<Vec<usize>>> = cells.iter().map(|c| c.element.faces()).collect();
+    let mut users: HashMap<Vec<usize>, Vec<usize>> = HashMap::new();
+    for (id, rings) in all_rings.iter().enumerate() {
+        for r in rings {
+            users.entry(key(r)).or_default().push(id);
+        }
+    }
     let mut out = SolverRules {
         cells: cells.len(),
         ..SolverRules::default()
     };
+    let mut volumes = Vec::with_capacity(cells.len());
     let mut centres = Vec::with_capacity(cells.len());
     let mut bad = vec![false; cells.len()];
-    // face key -> (cell, area vector, face centre) of the first cell seen
-    let mut faces: HashMap<Vec<usize>, (usize, Vec3, Vec3)> = HashMap::new();
+    // (owner, neighbour, owner's area vector) once per pair
     let mut shared: Vec<(usize, usize, Vec3)> = Vec::new();
-    let mut open_faces: Vec<(usize, Vec3, Vec3)> = Vec::new();
-    for (id, cell) in cells.iter().enumerate() {
-        let rings = cell.element.faces();
-        let geometry: Vec<(Vec3, Vec3)> = rings.iter().map(|r| fv_face(p, r)).collect();
-        // closed shell: every edge twice, area vectors summing to zero
-        let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
-        for r in &rings {
-            for (i, &a) in r.iter().enumerate() {
-                let b = r[(i + 1) % r.len()];
-                *edges.entry((a.min(b), a.max(b))).or_default() += 1;
+    let mut boundary: Vec<(usize, Vec3, Vec3)> = Vec::new();
+    for (id, rings) in all_rings.iter().enumerate() {
+        let mut by_neighbour: std::collections::BTreeMap<usize, Vec<&Vec<usize>>> =
+            std::collections::BTreeMap::new();
+        let mut merged: Vec<Vec<usize>> = Vec::new();
+        let mut neighbours: Vec<Option<usize>> = Vec::new();
+        for r in rings {
+            match users[&key(r)].iter().find(|&&c| c != id) {
+                Some(&other) => by_neighbour.entry(other).or_default().push(r),
+                None => {
+                    merged.push(r.clone());
+                    neighbours.push(None);
+                }
             }
         }
-        let sum = geometry.iter().fold(Vec3::ZERO, |s, g| s + g.0);
-        let total: f64 = geometry.iter().map(|g| g.0.length()).sum();
-        let open = edges.values().any(|&n| n != 2)
-            || sum.length().partial_cmp(&(1e-6 * total)) == Some(std::cmp::Ordering::Greater)
-            || !total.is_finite();
-        // volume and centre from pyramids on the mean of the face centres
-        let estimate =
-            geometry.iter().fold(Vec3::ZERO, |s, g| s + g.1) / geometry.len().max(1) as f64;
-        let mut volume = 0.0;
-        let mut moment = Vec3::ZERO;
-        for (area, centre) in &geometry {
-            let v = area.dot(*centre - estimate) / 3.0;
-            volume += v;
-            moment = moment + (*centre * 0.75 + estimate * 0.25) * v;
+        let mut unmergeable = false;
+        for (other, group) in by_neighbour {
+            match merge_rings(&group) {
+                Some(ring) => {
+                    merged.push(ring);
+                    neighbours.push(Some(other));
+                }
+                None => {
+                    unmergeable = true;
+                    for r in group {
+                        merged.push(r.clone());
+                        neighbours.push(Some(other));
+                    }
+                }
+            }
         }
-        let centre = if volume.abs() > 0.0 && volume.is_finite() {
-            moment / volume
-        } else {
-            estimate
-        };
-        let pyramids_ok = geometry.iter().all(|(area, c)| area.dot(*c - centre) > 0.0);
+        let geometry: Vec<(Vec3, Vec3)> = merged.iter().map(|r| fv_face(p, r)).collect();
+        for (r, g) in merged.iter().zip(&geometry) {
+            out.maximum_warping = out.maximum_warping.max(warping(p, r, g.0));
+        }
+        let Shell {
+            open,
+            volume,
+            centre,
+            pyramids_ok,
+        } = shell(p, &merged, &geometry);
+        let open = open || unmergeable;
         out.open_cells += usize::from(open);
         let nonpositive = volume.is_nan() || volume <= 0.0;
         out.nonpositive_volume += usize::from(nonpositive);
         out.negative_pyramids += usize::from(!pyramids_ok);
         bad[id] = open || nonpositive || !pyramids_ok;
         centres.push(centre);
-        for (r, (area, c)) in rings.iter().zip(geometry) {
-            match faces.remove(&key(r)) {
-                Some((other, other_area, _)) => shared.push((other, id, other_area)),
-                None => {
-                    faces.insert(key(r), (id, area, c));
-                }
+        volumes.push(volume);
+        for (n, (area, c)) in neighbours.into_iter().zip(geometry) {
+            match n {
+                Some(other) if other > id => shared.push((id, other, area)),
+                Some(_) => {}
+                None => boundary.push((id, area, c)),
             }
         }
-    }
-    for (_, (id, area, c)) in faces {
-        open_faces.push((id, area, c));
     }
     let mut turned = vec![false; cells.len()];
     let mut worst = 0.0_f64;
@@ -155,18 +306,33 @@ pub fn solver_rules(p: &[Vec3], cells: &[Cell]) -> SolverRules {
             area,
         );
     }
-    for (owner, area, c) in open_faces {
+    for (owner, area, c) in boundary {
         check(&[owner], c - centres[owner], area);
     }
     out.maximum_non_orthogonality = worst;
     out.faces_turned_away = turned.iter().filter(|&&t| t).count();
-    for ((b, t), cell) in bad.iter().zip(&turned).zip(cells) {
+    let mut failing = Vec::new();
+    for (id, ((b, t), cell)) in bad.iter().zip(&turned).zip(cells).enumerate() {
         if *b || *t {
             out.failing_cells += 1;
             out.failing_layer_cells += usize::from(cell.layer > 0);
+            let mut neighbours: Vec<usize> = all_rings[id]
+                .iter()
+                .flat_map(|r| users[&key(r)].iter().copied())
+                .filter(|&c| c != id)
+                .collect();
+            neighbours.sort_unstable();
+            neighbours.dedup();
+            failing.push((id, neighbours));
         }
     }
-    out
+    (out, volumes, failing)
+}
+
+/// The cells that fail the solver rules on the mesh as exported, each with
+/// the cells it shares a face with.
+pub(super) fn exported_failures(p: &[Vec3], cells: &[Cell]) -> Vec<(usize, Vec<usize>)> {
+    solver_rules_and_volumes(p, cells).2
 }
 
 fn det(a: Vec3, b: Vec3, c: Vec3) -> f64 {
@@ -379,7 +545,7 @@ pub(super) fn check_with_interface_count(
     layers: usize,
     expected_interfaces: usize,
 ) -> Result<Measurements, String> {
-    let solver_rules = solver_rules(p, cells);
+    let (solver_rules, solver_volumes, _) = solver_rules_and_volumes(p, cells);
     if crate::trace_enabled() {
         eprintln!(
             "kofl trace: solver rules: {} of {} cells fail ({} in layers; open {}, volume {}, pyramids {}, turned away {}), max non-orthogonality {:.2}°",
@@ -392,6 +558,24 @@ pub(super) fn check_with_interface_count(
             solver_rules.faces_turned_away,
             solver_rules.maximum_non_orthogonality
         );
+    }
+    if solver_rules.failing_cells > 0 {
+        // Name the likely cause in plain words when layer cells fail.
+        let hint = if solver_rules.failing_layer_cells > 0 {
+            "; wall layer collision or fold: thinner or fewer layers help"
+        } else {
+            ""
+        };
+        return Err(format!(
+            "{} of {} cells fail the solver rules ({} in layers; open {}, volume {}, pyramids {}, turned away {}){hint}",
+            solver_rules.failing_cells,
+            solver_rules.cells,
+            solver_rules.failing_layer_cells,
+            solver_rules.open_cells,
+            solver_rules.nonpositive_volume,
+            solver_rules.negative_pyramids,
+            solver_rules.faces_turned_away
+        ));
     }
     let mut exterior = HashMap::new();
     let mut areas = [0.; 3];
@@ -431,46 +615,26 @@ pub(super) fn check_with_interface_count(
     let mut tetrahedra_below_mean_ratio_0_1 = 0;
     let mut sphericities = Vec::new();
     for (id, cell) in cells.iter().enumerate() {
-        let value = match cell.element {
+        // The solver rules decided above; the element measures below are
+        // quality reports only.
+        match cell.element {
             Element::Polyhedron(ref poly) if poly.prism.is_some() => {
-                let mut value = 0.0;
                 for w in poly.prism.iter().flatten() {
-                    let (jac, v, _) = wedge(w.map(|v| p[v]));
-                    if !jac.is_finite() || jac <= 0. {
-                        return Err(format!(
-                            "layer collision or inversion in layer {}, cell {id}, Jacobian {jac}",
-                            cell.layer
-                        ));
-                    }
+                    let (jac, _, _) = wedge(w.map(|v| p[v]));
                     minimum_j = minimum_j.min(jac);
-                    value += v;
                 }
-                shell_closed(poly).map_err(|e| format!("cell {id}: {e}"))?;
-                if !value.is_finite() || (value / poly.expected_volume - 1.0).abs() > 1e-8 {
-                    return Err(format!(
-                        "cell {id}: layer piece volume differs from its shell"
-                    ));
-                }
-                value
             }
             Element::Polyhedron(ref poly) => {
-                let (volume, sphericity) = poly_volume(poly, p)
-                    .map_err(|e| format!("cell {id} (layer {}): {e}", cell.layer))?;
-                if cell.layer == 0 {
+                if cell.layer == 0
+                    && let Ok((_, sphericity)) = poly_volume(poly, p)
+                {
                     sphericities.push(sphericity);
                 }
-                volume
             }
             Element::Tet(n) => {
                 let [o, a, b, c] = n.map(|v| p[v]);
                 let determinant = det(b - a, c - a, a - o);
                 let clearance = determinant / (b - a).cross(c - a).length();
-                if !clearance.is_finite() || clearance <= scale * 1e-12 {
-                    return Err(format!(
-                        "core collision or invalid kernel in region {} at cell {id}, clearance {clearance}",
-                        cell.region
-                    ));
-                }
                 minimum_kernel_clearance = minimum_kernel_clearance.min(clearance);
                 let squared_edges = [b - a, c - b, a - c, a - o, b - o, c - o]
                     .iter()
@@ -479,23 +643,16 @@ pub(super) fn check_with_interface_count(
                 let mean_ratio = 12.0 * (determinant / 2.0).cbrt().powi(2) / squared_edges;
                 minimum_tet_mean_ratio = minimum_tet_mean_ratio.min(mean_ratio);
                 tetrahedra_below_mean_ratio_0_1 += usize::from(mean_ratio < 0.1);
-                determinant / 6.
             }
             Element::Wedge(n) => {
-                let (jac, value, range) = wedge(n.map(|v| p[v]));
-                if !jac.is_finite() || jac <= 0. {
-                    return Err(format!(
-                        "layer collision or inversion in region {}, layer {}, cell {id}, Jacobian {jac}",
-                        cell.region, cell.layer
-                    ));
-                }
+                let (jac, _, range) = wedge(n.map(|v| p[v]));
                 minimum_j = minimum_j.min(jac);
                 let r = &mut normal_thickness_ranges[cell.layer - 1];
                 r[0] = r[0].min(range[0]);
                 r[1] = r[1].max(range[1]);
-                value
             }
-        };
+        }
+        let value = solver_volumes[id];
         if !value.is_finite() || value <= 0. {
             return Err(format!(
                 "nonpositive or unrepresentable volume at cell {id}"
