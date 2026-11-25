@@ -1,0 +1,1 @@
+- Patch proposals and boundary-condition skeleton (BC-03, BC-05): `patch.propose` splits a bare closed STL at feature edges into planes, cylinders, spheres and freeform faces, marks openings and bounding-box sides and writes a patch map to rename and give roles; `bc.skeleton` writes a FoehnCraft case with the type of every role and TODO comments in place of physical values.
