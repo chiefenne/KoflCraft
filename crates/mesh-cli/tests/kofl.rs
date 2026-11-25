@@ -928,6 +928,133 @@ fn propose_roles_and_skeleton_through_the_registry() {
     }
 }
 
+/// Keep rule (SW-18). Invariant (SHL-01, AG-13): an agent adds, lists and
+/// removes the shells of a duct partition by name through the registry;
+/// the listing fills in the default sizes from the STL; a repeated name
+/// (also through the `_back` side), a nonconvex polygon and a shell
+/// touching another are refused; the session replays. The engine test
+/// builds the shells; only this test runs the tools.
+#[test]
+fn shell_tools_add_list_and_remove_shells() {
+    let rec = fresh("shells");
+    let stl = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test-fixtures/cooling-jacket/cooling-jacket.stl"
+    );
+    let journal = rec.join("j.jsonl");
+    let j = journal.to_str().unwrap();
+    let call = |k: &str, id: &str, input: Value| {
+        let file = rec.join(format!("in-{k}.json"));
+        std::fs::write(&file, input.to_string()).unwrap();
+        kofl_in(
+            &rec,
+            &[
+                "--journal",
+                j,
+                "call",
+                id,
+                "--input",
+                file.to_str().unwrap(),
+            ],
+        )
+    };
+    let square = |z: f64| serde_json::json!([[0, 0, z], [4, 0, z], [4, 4, z], [0, 4, z]]);
+    let steps = [
+        (
+            "patch.detect_ports",
+            serde_json::json!({"surface": stl, "output": "ports.json"}),
+        ),
+        (
+            "mesh.setup_duct",
+            serde_json::json!({"surface": stl, "patches": "ports.json", "output": "p0.json"}),
+        ),
+        (
+            "shell.add",
+            serde_json::json!({"partition": "p0.json", "output": "p1.json",
+                "shell": {"name": "plate", "polygon": square(1.0)}}),
+        ),
+        (
+            "shell.add",
+            serde_json::json!({"partition": "p1.json", "output": "p2.json",
+                "shell": {"name": "fin", "polygon": square(3.0), "size": 0.2, "edge_size": 0.05}}),
+        ),
+        (
+            "shell.remove",
+            serde_json::json!({"partition": "p2.json", "output": "p3.json", "name": "plate"}),
+        ),
+        (
+            "shell.list",
+            serde_json::json!({"partition": "p3.json", "surface": stl}),
+        ),
+        ("shell.list", serde_json::json!({"partition": "p2.json"})),
+    ];
+    let mut results = Vec::new();
+    for (k, (id, input)) in steps.into_iter().enumerate() {
+        let (ok, e) = call(&k.to_string(), id, input);
+        assert!(ok, "{id}: {e:#}");
+        results.push(e);
+    }
+    let names = |v: &Value| -> Vec<String> {
+        v["shells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(names(&results[3]["result"]), ["plate", "fin"]);
+    assert_eq!(names(&results[5]["result"]), ["fin"]);
+    let fin = &results[5]["result"]["shells"][0];
+    assert_eq!(fin["sides"]["back"], "fin_back");
+    assert_eq!(fin["size_from"], "set");
+    assert_eq!(fin["edge_size"], 0.05);
+    assert!((fin["polygon_area"].as_f64().unwrap() - 16.0).abs() < 1e-12);
+    assert_eq!(fin["normal"], serde_json::json!([0.0, 0.0, 1.0]));
+    // without the STL the default size of the plate is not known
+    let plate = &results[6]["result"]["shells"][0];
+    assert!(plate["size"].is_null(), "{plate}");
+
+    for (k, shell, why) in [
+        (
+            "dup",
+            serde_json::json!({"name": "fin", "polygon": square(5.0)}),
+            "exists",
+        ),
+        (
+            "back",
+            serde_json::json!({"name": "fin_back", "polygon": square(5.0)}),
+            "exists",
+        ),
+        (
+            "dent",
+            serde_json::json!({"name": "bow", "polygon": [[0, 0, 5], [4, 0, 5], [1, 1, 5], [0, 4, 5]]}),
+            "convex",
+        ),
+        (
+            "touch",
+            serde_json::json!({"name": "cross", "polygon": [[1, -1, 2], [1, 5, 2], [1, 5, 4], [1, -1, 4]]}),
+            "touches shell fin",
+        ),
+    ] {
+        let (ok, e) = call(
+            k,
+            "shell.add",
+            serde_json::json!({"partition": "p3.json", "output": format!("bad-{k}.json"), "shell": shell}),
+        );
+        assert!(!ok, "{k}: {e}");
+        let message = e["diagnostics"][0]["message"].as_str().unwrap();
+        assert!(message.contains(why), "{k}: {message}");
+    }
+
+    let again = fresh("shells-again");
+    let (ok, envelope) = kofl_in(&again, &["run", "--script", j]);
+    assert!(ok, "{envelope:#}");
+    assert_eq!(envelope["result"]["different"], 0);
+    for d in [rec, again] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
 /// Keep rule (SW-18). Invariant (GRD-08, AG-13): an agent adds, lists and
 /// removes the size sources of a duct partition by name through the
 /// registry; a frame comes with the source that names it and goes with it;

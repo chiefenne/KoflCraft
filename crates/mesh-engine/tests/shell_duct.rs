@@ -96,12 +96,42 @@ fn check_shells(r: &serde_json::Value, x0: f64) {
 // passes the solver rules (the build refuses otherwise). Breaks when the
 // wall imprint, the shell recovery, the crack or the layers at the
 // junction go wrong; the unit tests see each step alone.
+//
+// The shells take their own default sizes (an eighth of their narrow
+// width, half that on the free edges): the 4 x 3 plate gets hundreds of
+// triangles instead of the 12 of the interior size, and the baffle, whose
+// wall line ends 0.05 from a kink of the 48-gon, stays above 15 degrees
+// (4.5 degrees before the shell was graded from its wall-line edges and
+// those were split).
 #[test]
 fn a_half_baffle_and_a_plate_in_the_scaffold() {
     let r = pipe_with_shells("median_dual");
-    for s in r["shells"].as_array().unwrap() {
+    let shells = r["shells"].as_array().unwrap();
+    for s in shells {
         assert_eq!(s["method"], "scaffold_baffle_v1", "{s}");
+        assert_eq!(
+            s["sizes"]["size_from"],
+            "default: max_size or narrow width / 8"
+        );
+        let f = |k: &str| s["sizes"][k].as_f64().unwrap();
+        assert!((f("edge_size") - f("size") / 2.0).abs() < 1e-12, "{s}");
+        let median = s["achieved"]["shell_edge_median"].as_f64().unwrap();
+        assert!(median < 1.0 * f("size"), "{s}");
     }
+    let angle = |s: &serde_json::Value| s["min_triangle_angle_degrees"].as_f64().unwrap();
+    let (baffle, plate) = (&shells[0], &shells[1]);
+    assert!(angle(baffle) > 15.0, "{baffle}");
+    assert!(
+        baffle["achieved"]["wall_line_splits"].as_u64().unwrap() > 0,
+        "{baffle}"
+    );
+    assert!(angle(plate) > 30.0, "{plate}");
+    assert!(plate["shell_triangles"].as_u64().unwrap() > 200, "{plate}");
+    // the plate's width is 3: size 3 / 8
+    assert!(
+        (plate["sizes"]["size"].as_f64().unwrap() - 0.375).abs() < 1e-12,
+        "{plate}"
+    );
 }
 
 // Keep (SW-18): the same shells cut into the finished cells of the convex

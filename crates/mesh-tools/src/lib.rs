@@ -19,6 +19,7 @@ mod mesh;
 mod page;
 mod patch;
 mod schemas;
+mod shell;
 
 use std::time::Instant;
 
@@ -472,6 +473,54 @@ pub static TOOLS: &[Tool] = &[
         input_schema: || schemas::input(json!({"partition": schemas::path()}), &[]),
         output_schema: schemas::grading_listing,
         run: grading::list,
+    },
+    Tool {
+        id: "shell.add",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Add a zero-thickness shell (baffle, plate, fin) to a duct partition (SHL-01): a planar convex `polygon` (corners counter-clockwise about the side `name`; it may reach past the wall), optionally its cell `size` and free-edge `edge_size`. Its two sides become the wall patches `<name>` and `<name>_back`. A repeated name, a bad polygon and a shell touching another are refused.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: || {
+            schemas::input(
+                json!({"partition": schemas::path(), "output": schemas::path(), "shell": schemas::shell_config()}),
+                &[],
+            )
+        },
+        output_schema: schemas::shell_result,
+        run: shell::add,
+    },
+    Tool {
+        id: "shell.remove",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Remove the shell `name` from a duct partition.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: || {
+            schemas::input(
+                json!({"partition": schemas::path(), "output": schemas::path(), "name": {"type": "string"}}),
+                &[],
+            )
+        },
+        output_schema: schemas::shell_result,
+        run: shell::remove,
+    },
+    Tool {
+        id: "shell.list",
+        version: 1,
+        action: Action::Read,
+        summary: "List the shells of a duct partition: name, sides, polygon, normal, area and sizes. With the partition's STL as `surface`, the default sizes are filled in as a build would choose them.",
+        legacy_name: None,
+        outputs: &[],
+        input_schema: || {
+            schemas::input(
+                json!({"partition": schemas::path(), "surface": schemas::path()}),
+                &["surface"],
+            )
+        },
+        output_schema: schemas::shell_listing,
+        run: shell::list,
     },
     Tool {
         id: "mesh.setup_duct",

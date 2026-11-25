@@ -450,6 +450,51 @@ pub(crate) fn grading_result() -> Value {
     }))
 }
 
+/// A zero-thickness shell of a duct partition (SHL-01).
+pub(crate) fn shell_config() -> Value {
+    let point = json!({"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3});
+    let mut schema = input(
+        json!({
+            "name": {"type": "string", "minLength": 1, "description": "The shell's name; its sides become the wall patches `<name>` (the side its normal points into) and `<name>_back`"},
+            "polygon": {"type": "array", "items": point, "minItems": 3, "description": "A planar convex polygon, corners counter-clockwise about the `name` side; it may reach past the wall (the part outside the fluid is ignored)"},
+            "size": {"type": "number", "exclusiveMinimum": 0, "description": "Cell size on the shell; default: the build's max_size or an eighth of the shell's narrow width, whichever is smaller"},
+            "edge_size": {"type": "number", "exclusiveMinimum": 0, "description": "Cell size along the free edges; default: half the shell's size"},
+        }),
+        &["size", "edge_size"],
+    );
+    schema["description"] = json!("A zero-thickness shell (baffle, plate, fin)");
+    schema
+}
+
+/// `shell.list`: the shells of a partition with their sizes.
+pub(crate) fn shell_listing() -> Value {
+    let size = json!({"type": ["number", "null"]});
+    let string = json!({"type": "string"});
+    let point = json!({"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3});
+    object_schema(json!({
+        "shells": {"type": "array", "items": object_schema(json!({
+            "name": string,
+            "sides": object_schema(json!({"front": string, "back": string})),
+            "polygon": {"type": "array", "items": point},
+            "normal": point,
+            "polygon_area": {"type": "number"},
+            "size": size, "size_from": string,
+            "edge_size": size, "edge_size_from": string,
+        }))}
+    }))
+}
+
+/// `shell.add` and `shell.remove`: the new partition and its shells.
+pub(crate) fn shell_result() -> Value {
+    let string = json!({ "type": "string" });
+    object_schema(json!({
+        "format": {"const": "koflcraft.shell-result"}, "format_version": string,
+        "output": string,
+        "files": { "type": "array", "items": object_schema(json!({ "path": string, "blake3": {"type": "string", "pattern": "^[a-f0-9]{64}$"} })) },
+        "shells": shell_listing()["properties"]["shells"]
+    }))
+}
+
 /// `patch.propose`: a patch result plus the classified regions.
 pub(crate) fn patch_propose() -> Value {
     let mut schema = patch_result();
