@@ -49,17 +49,13 @@ pub(crate) fn topology(ctx: &Context, path: &str) -> Result<TopologyFile, Diagno
 
 pub(crate) fn template(input: Value, ctx: &Context) -> Run {
     let i: TemplateInput = decode(input)?;
-    let text = match &i.config {
-        TemplateConfig::AirfoilCgrid {
-            coordinates: Some(path),
-            ..
-        } => Some(
-            String::from_utf8(ctx.read(path)?)
-                .map_err(|e| Diagnostic::new("invalid_arguments", e).with_path(path))?,
-        ),
-        _ => None,
-    };
-    let file = block::template_with(&i.config, text.as_deref())?;
+    let mut texts = std::collections::BTreeMap::new();
+    for path in i.config.coordinate_files() {
+        let text = String::from_utf8(ctx.read(path)?)
+            .map_err(|e| Diagnostic::new("invalid_arguments", e).with_path(path))?;
+        texts.insert(path.to_string(), text);
+    }
+    let file = block::template_with(&i.config, &texts)?;
     write_topology(ctx, &i.output, &file)
 }
 

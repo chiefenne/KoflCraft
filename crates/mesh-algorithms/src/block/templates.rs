@@ -14,7 +14,7 @@ pub struct Template {
     pub analytic_volume: f64,
 }
 
-fn positive(v: f64, what: &str) -> Result<f64, String> {
+pub(super) fn positive(v: f64, what: &str) -> Result<f64, String> {
     if v.is_finite() && v > 0.0 {
         Ok(v)
     } else {
@@ -22,7 +22,7 @@ fn positive(v: f64, what: &str) -> Result<f64, String> {
     }
 }
 
-fn counts(cells: &[usize]) -> Result<(), String> {
+pub(super) fn counts(cells: &[usize]) -> Result<(), String> {
     if cells.contains(&0) {
         Err("cell counts must be at least 1".into())
     } else {

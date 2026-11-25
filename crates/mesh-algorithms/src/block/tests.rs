@@ -690,3 +690,100 @@ fn wall_nodes_slide_along_the_section() {
     assert!(slid.1 >= fixed.1, "{} < {}", slid.1, fixed.1);
     assert!(slid.2 < 2e-5, "wall nodes {} off the section", slid.2);
 }
+
+fn multi_case(
+    slat: Option<(f64, f64, f64)>,
+    flap: Option<(f64, f64, f64)>,
+) -> Result<templates::Template, String> {
+    use super::multi_element::{MultiElement, Placement, multi_element_airfoil};
+    let place = |digits: &str, chord: f64, (deflection, gap, overlap): (f64, f64, f64)| Placement {
+        section: Naca4::parse(digits).unwrap().section(),
+        chord,
+        deflection,
+        gap,
+        overlap,
+    };
+    let slat = slat.map(|s| place("4410", 0.16, s));
+    let flap = flap.map(|f| place("4412", 0.3, f));
+    multi_element_airfoil(
+        &Naca4::parse("4412").unwrap().section(),
+        slat.as_ref(),
+        flap.as_ref(),
+        &MultiElement {
+            chord: 1.0,
+            span: 0.1,
+            farfield: 5.0,
+            wake: 5.0,
+            surface_cells: 32,
+            normal_cells: 16,
+            wake_cells: 16,
+            span_cells: 1,
+            thickness_cells: 8,
+            gap_cells: 8,
+            upstream_cells: 16,
+            wall_spacing: 1e-3,
+            trailing_edge_thickness: 0.005,
+        },
+    )
+}
+
+/// Invariant: the multi-element template (slat, main, flap) conforms, has
+/// positive Jacobians, gets the box area minus the three sections (the
+/// spline walls are second-order close), places the flap at the asked
+/// gap from the main trailing edge, and works with the slat or the flap
+/// alone; it refuses overlapping elements and names the gap whose blocks
+/// fold.
+#[test]
+fn multi_element_airfoil_places_and_conforms() {
+    for (slat, flap, blocks) in [
+        (Some((25.0, 0.05, -0.04)), Some((30.0, 0.03, -0.02)), 22),
+        (None, Some((20.0, 0.025, -0.015)), 16),
+        (Some((15.0, 0.03, -0.025)), None, 16),
+    ] {
+        let t = multi_case(slat, flap).unwrap();
+        let g = grid::build(&t.topology).unwrap();
+        assert_eq!(g.blocks.len(), blocks);
+        assert_conforming(&g);
+        let jmin = g
+            .quality()
+            .iter()
+            .map(|q| q.min_jacobian)
+            .fold(f64::INFINITY, f64::min);
+        assert!(jmin > 0.0, "{jmin}");
+        let v = total(&g);
+        assert!((v - g.boundary_volume()).abs() < 1e-9 * v);
+        assert!(((v - t.analytic_volume) / t.analytic_volume).abs() < 1e-4);
+        let names: Vec<&str> = t.topology.patches.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names.contains(&"slat_wall"), slat.is_some());
+        assert_eq!(names.contains(&"flap_wall"), flap.is_some());
+        assert!(names.contains(&"main_wall") && names.contains(&"inlet"));
+    }
+    // the flap gap: the main element's trailing edge (middle vertex of its
+    // blunt edge) to the nearest flap wall vertex on the section
+    let t = multi_case(None, Some((20.0, 0.025, -0.015))).unwrap();
+    let g = grid::build(&t.topology).unwrap();
+    let wall = |name: &str| {
+        let p = t
+            .topology
+            .patches
+            .iter()
+            .position(|p| p.name == name)
+            .unwrap();
+        g.boundary
+            .iter()
+            .filter(move |(_, patch, _)| *patch == p)
+            .flat_map(|(q, _, _)| *q)
+    };
+    let te = Vec3::new(1.0, 0.0, 0.0);
+    let gap = wall("flap_wall")
+        .map(|i| {
+            let p = g.points[i];
+            (Vec3::new(p.x, p.y, 0.0) - te).length()
+        })
+        .fold(f64::INFINITY, f64::min);
+    assert!((gap - 0.025).abs() < 2e-3, "flap gap {gap}");
+    let e = multi_case(None, Some((20.0, 0.025, 0.01))).err().unwrap();
+    assert!(e.contains("negative overlap"), "{e}");
+    let e = multi_case(Some((20.0, 0.04, -0.03)), None).err().unwrap();
+    assert!(e.contains("between the slat and the main element"), "{e}");
+}

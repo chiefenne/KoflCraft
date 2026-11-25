@@ -3,10 +3,11 @@
 //! (BS-03), the check (BS-05) and the build of a validated hexahedral mesh
 //! into a new bundle (BS-13, BS-14).
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 
 use mesh_algorithms::block::smooth::{SmoothOptions, smooth};
-use mesh_algorithms::block::{self as algo, BlockGrid, Issue, templates};
+use mesh_algorithms::block::{self as algo, BlockGrid, Issue, multi_element, templates};
 use mesh_core::block::{
     BlockSpec, BlockTopology, Curve, Distribution, EdgeEnd, EdgeSpec, PatchSpec, Surface,
     SurfaceSpec,
@@ -22,6 +23,11 @@ pub const TOPOLOGY_FORMAT: &str = "koflcraft.block-topology";
 pub const TOPOLOGY_FORMAT_VERSION: &str = "1.0";
 pub const ALGORITHM: &str = "block_tfi_v1";
 pub const ELLIPTIC_ALGORITHM: &str = "block_elliptic_v1";
+const MULTI_ELEMENT_TEMPLATE: &str = "multi_element_airfoil";
+/// The control decay the elliptic smoother uses on a multi-element airfoil.
+const MULTI_ELEMENT_DECAY: f64 = 0.8;
+/// The sweeps the elliptic smoother may take on a multi-element airfoil.
+const MULTI_ELEMENT_ITERATIONS: usize = 40_000;
 
 /// The volume algorithm of `block.grid` (BS-09), a choice separate from
 /// the topology.
@@ -259,6 +265,114 @@ pub enum TemplateConfig {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         trailing_edge_spacing: Option<f64>,
     },
+    /// A multi-element airfoil in a box, extruded along +z: an optional
+    /// slat, the main element (leading edge at the origin, chord along +x)
+    /// and an optional flap, one behind the other (H-topology, MB1g).
+    MultiElementAirfoil {
+        main: SectionInput,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        slat: Option<ElementInput>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        flap: Option<ElementInput>,
+        /// Chord of the main element.
+        #[serde(default = "one")]
+        chord: f64,
+        span: f64,
+        /// Distance of the box sides from the main leading edge, in chords.
+        farfield: f64,
+        /// Box length behind the last trailing edge, in chords.
+        wake_length: f64,
+        /// Cells along each side of the main element; slat and flap get
+        /// this times the square root of their chord ratio.
+        surface_cells: usize,
+        normal_cells: usize,
+        wake_cells: usize,
+        #[serde(default = "one_cell")]
+        span_cells: usize,
+        /// Cells along each nose and blunt trailing edge (default 8).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thickness_cells: Option<usize>,
+        /// Cells along each gap (default a quarter of the surface cells).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gap_cells: Option<usize>,
+        /// Cells in front of the first element (default `normal_cells`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        upstream_cells: Option<usize>,
+        /// First cell height at the walls.
+        wall_spacing: f64,
+        /// Blunt trailing-edge thickness over each element's chord
+        /// (default 0.005).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trailing_edge_thickness: Option<f64>,
+    },
+}
+
+/// An airfoil section: exactly one of a NACA 4-digit designation and a
+/// coordinate file (Selig or Lednicer).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SectionInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub naca: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinates: Option<String>,
+}
+
+/// A slat or flap: its section and where it sits (fractions of the main
+/// chord; a positive overlap reaches under or over the main element).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ElementInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub naca: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinates: Option<String>,
+    /// Chord over the main chord.
+    pub chord: f64,
+    /// Degrees: slat nose down, flap trailing edge down.
+    pub deflection: f64,
+    pub gap: f64,
+    pub overlap: f64,
+}
+
+impl TemplateConfig {
+    /// The coordinate files the template reads.
+    pub fn coordinate_files(&self) -> Vec<&str> {
+        match self {
+            Self::AirfoilCgrid {
+                coordinates: Some(path),
+                ..
+            } => vec![path.as_str()],
+            Self::MultiElementAirfoil {
+                main, slat, flap, ..
+            } => main
+                .coordinates
+                .iter()
+                .chain(slat.iter().flat_map(|e| e.coordinates.iter()))
+                .chain(flap.iter().flat_map(|e| e.coordinates.iter()))
+                .map(String::as_str)
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// The section of a NACA designation or of a coordinate file's text.
+fn section(
+    naca: &Option<String>,
+    coordinates: &Option<String>,
+    texts: &BTreeMap<String, String>,
+) -> Result<templates::Section, String> {
+    match (naca, coordinates) {
+        (Some(n), None) => templates::Naca4::parse(n).map(|s| s.section()),
+        (None, Some(path)) => match texts.get(path) {
+            Some(text) => {
+                templates::Section::from_coordinates(text).map_err(|e| format!("{path}: {e}"))
+            }
+            None => Err(format!("the coordinate file {path} was not read")),
+        },
+        _ => Err("an airfoil needs exactly one of naca and coordinates".into()),
+    }
 }
 
 fn one() -> f64 {
@@ -485,16 +599,73 @@ impl TopologyFile {
 
 /// Write the topology of a template (`block.template`).
 pub fn template(config: &TemplateConfig) -> Result<TopologyFile, EngineError> {
-    template_with(config, None)
+    template_with(config, &BTreeMap::new())
 }
 
-/// As [`template`], with the text of the airfoil coordinate file that an
-/// `airfoil_cgrid` config names.
+/// As [`template`], with the texts of the airfoil coordinate files that the
+/// config names ([`TemplateConfig::coordinate_files`]), by path.
 pub fn template_with(
     config: &TemplateConfig,
-    coordinates_text: Option<&str>,
+    texts: &BTreeMap<String, String>,
 ) -> Result<TopologyFile, EngineError> {
     let (t, name) = match *config {
+        TemplateConfig::MultiElementAirfoil {
+            ref main,
+            ref slat,
+            ref flap,
+            chord,
+            span,
+            farfield,
+            wake_length,
+            surface_cells,
+            normal_cells,
+            wake_cells,
+            span_cells,
+            thickness_cells,
+            gap_cells,
+            upstream_cells,
+            wall_spacing,
+            trailing_edge_thickness,
+        } => {
+            let placement = |e: &ElementInput| -> Result<multi_element::Placement, String> {
+                Ok(multi_element::Placement {
+                    section: section(&e.naca, &e.coordinates, texts)?,
+                    chord: e.chord,
+                    deflection: e.deflection,
+                    gap: e.gap,
+                    overlap: e.overlap,
+                })
+            };
+            (
+                (|| {
+                    let main = section(&main.naca, &main.coordinates, texts)?;
+                    let slat = slat.as_ref().map(placement).transpose()?;
+                    let flap = flap.as_ref().map(placement).transpose()?;
+                    multi_element::multi_element_airfoil(
+                        &main,
+                        slat.as_ref(),
+                        flap.as_ref(),
+                        &multi_element::MultiElement {
+                            chord,
+                            span,
+                            farfield,
+                            wake: wake_length,
+                            surface_cells,
+                            normal_cells,
+                            wake_cells,
+                            span_cells,
+                            thickness_cells: thickness_cells.unwrap_or(8),
+                            gap_cells: gap_cells.unwrap_or((surface_cells / 4).max(4)),
+                            upstream_cells: upstream_cells.unwrap_or(normal_cells),
+                            wall_spacing,
+                            trailing_edge_thickness: trailing_edge_thickness
+                                .unwrap_or(multi_element::TRAILING_EDGE_THICKNESS),
+                        },
+                    )
+                })(),
+                "multi_element_airfoil",
+            )
+        }
         TemplateConfig::AirfoilCgrid {
             ref naca,
             ref coordinates,
@@ -510,13 +681,7 @@ pub fn template_with(
             leading_edge_spacing,
             trailing_edge_spacing,
         } => (
-            match (naca, coordinates, coordinates_text) {
-                (Some(n), None, _) => templates::Naca4::parse(n).map(|s| s.section()),
-                (None, Some(_), Some(text)) => templates::Section::from_coordinates(text),
-                (None, Some(path), None) => Err(format!("the coordinate file {path} was not read")),
-                _ => Err("an airfoil needs exactly one of naca and coordinates".into()),
-            }
-            .and_then(|section| {
+            section(naca, coordinates, texts).and_then(|section| {
                 templates::airfoil_cgrid(
                     &section,
                     &templates::AirfoilCgrid {
@@ -718,6 +883,17 @@ pub fn grid(
         sliding_patches: role_patches(file, PatchRole::Symmetry),
         ..SmoothOptions::default()
     };
+    if file
+        .reference
+        .as_ref()
+        .is_some_and(|r| r.template == MULTI_ELEMENT_TEMPLATE)
+    {
+        // The slots between the elements hold long, thin blocks whose
+        // controls oscillate with the default decay; a faster decay keeps
+        // them near the walls, and they settle in more sweeps.
+        options.decay = MULTI_ELEMENT_DECAY;
+        options.max_iterations = MULTI_ELEMENT_ITERATIONS;
+    }
     match *algorithm {
         VolumeAlgorithm::Tfi => options.max_iterations = 0,
         VolumeAlgorithm::Elliptic {
