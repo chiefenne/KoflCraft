@@ -74,6 +74,17 @@ pub enum Edit {
         axis: usize,
         at: usize,
     },
+    /// Split a block whose cross-section is a triangle (its corner at
+    /// `vertex` at least 120°, nearly flat) into three blocks around a
+    /// centre vertex; a new row of `cells` cells (from the triangle's
+    /// spacing when absent) runs from two of its sides through the
+    /// neighbouring blocks to the boundary (BS-03).
+    SplitTriangle {
+        block: usize,
+        vertex: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cells: Option<usize>,
+    },
     /// Rename a patch and/or set its role.
     SetPatch {
         name: String,
@@ -103,11 +114,11 @@ pub struct Change {
     pub fitted_edges: Vec<[usize; 2]>,
 }
 
-fn refused(message: impl std::fmt::Display) -> EngineError {
+pub(crate) fn refused(message: impl std::fmt::Display) -> EngineError {
     EngineError::new(ErrorCode::InvalidArguments, message)
 }
 
-fn key(a: usize, b: usize) -> (usize, usize) {
+pub(crate) fn key(a: usize, b: usize) -> (usize, usize) {
     (a.min(b), a.max(b))
 }
 
@@ -149,7 +160,7 @@ fn carriers(file: &TopologyFile, edge: [usize; 2]) -> Result<Vec<(usize, usize)>
 }
 
 /// The same law read from the other end.
-fn reversed_law(d: &DistributionFile) -> DistributionFile {
+pub(crate) fn reversed_law(d: &DistributionFile) -> DistributionFile {
     match d {
         DistributionFile::Uniform => DistributionFile::Uniform,
         DistributionFile::Geometric { first, last } => DistributionFile::Geometric {
@@ -163,7 +174,7 @@ fn reversed_law(d: &DistributionFile) -> DistributionFile {
     }
 }
 
-fn reversed_curve(c: &CurveFile) -> CurveFile {
+pub(crate) fn reversed_curve(c: &CurveFile) -> CurveFile {
     match c {
         CurveFile::Spline { through } => CurveFile::Spline {
             through: through.iter().rev().copied().collect(),
@@ -197,7 +208,7 @@ fn edge_entry(file: &mut TopologyFile, edge: [usize; 2]) -> (&mut EdgeFile, bool
 }
 
 /// The four vertices of block face `f` in local order (00, 10, 11, 01).
-fn face_vertices(v: &[usize; 8], f: usize) -> [usize; 4] {
+pub(crate) fn face_vertices(v: &[usize; 8], f: usize) -> [usize; 4] {
     let face = BLOCK_FACES[f];
     [(0, 0), (1, 0), (1, 1), (0, 1)].map(|(a, b)| v[face_corner_slot(face, a, b)])
 }
@@ -398,13 +409,13 @@ fn remove_block(
     Ok(())
 }
 
-fn a3(p: Vec3) -> [f64; 3] {
+pub(crate) fn a3(p: Vec3) -> [f64; 3] {
     [p.x, p.y, p.z]
 }
 
 /// A law for nodes along an edge: uniform when the spacings agree,
 /// otherwise the `like` law's kind with the spacings at the ends.
-fn fitted_law(nodes: &[Vec3], curve: &CurveFile, like: &DistributionFile) -> DistributionFile {
+pub(crate) fn fitted_law(nodes: &[Vec3], curve: &CurveFile, like: &DistributionFile) -> DistributionFile {
     let s = arc_spacings(nodes, curve);
     let (lo, hi) = s
         .iter()
@@ -458,7 +469,7 @@ fn fitted_law(nodes: &[Vec3], curve: &CurveFile, like: &DistributionFile) -> Dis
 
 /// A curve through the nodes: a line when they are straight, an arc when
 /// they lie on one circle, else a spline through the inner nodes.
-fn fitted_curve(nodes: &[Vec3]) -> CurveFile {
+pub(crate) fn fitted_curve(nodes: &[Vec3]) -> CurveFile {
     let (a, b) = (nodes[0], nodes[nodes.len() - 1]);
     let len = (b - a).length();
     let inner = &nodes[1..nodes.len() - 1];
@@ -491,13 +502,13 @@ fn fitted_curve(nodes: &[Vec3]) -> CurveFile {
     }
 }
 
-fn v3(p: [f64; 3]) -> Vec3 {
+pub(crate) fn v3(p: [f64; 3]) -> Vec3 {
     Vec3::new(p[0], p[1], p[2])
 }
 
 /// The through points of a spline from `a` to `b` on either side of the
 /// point `m` on it: the polyline segment nearest to `m` decides.
-fn cut_spline(a: Vec3, through: &[Vec3], b: Vec3, m: Vec3) -> (Vec<Vec3>, Vec<Vec3>) {
+pub(crate) fn cut_spline(a: Vec3, through: &[Vec3], b: Vec3, m: Vec3) -> (Vec<Vec3>, Vec<Vec3>) {
     let mut poly = vec![a];
     poly.extend_from_slice(through);
     poly.push(b);
@@ -980,6 +991,13 @@ pub fn apply(file: &TopologyFile, edit: &Edit) -> Result<(TopologyFile, Change),
         }
         Edit::SplitBlock { block, axis, at } => {
             split_block(&mut out, *block, *axis, *at, &mut change)?
+        }
+        Edit::SplitTriangle {
+            block,
+            vertex,
+            cells,
+        } => {
+            crate::block_triangle::split_triangle(&mut out, *block, *vertex, *cells, &mut change)?;
         }
         Edit::SetPatch { name, rename, role } => {
             if rename.is_none() && role.is_none() {

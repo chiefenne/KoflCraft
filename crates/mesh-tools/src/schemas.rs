@@ -636,7 +636,24 @@ pub(crate) fn block_template() -> Value {
             "trailing_edge_thickness",
         ],
     );
-    json!({"oneOf": [channel, pipe, elbow, airfoil, multi]})
+    let corner_counts = |n: usize| {
+        json!({"type": "array", "items": count, "minItems": n, "maxItems": n,
+               "description": "Cells per corner: the side from corner i to corner j gets cells[i] + cells[j]"})
+    };
+    let xy = json!({"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2});
+    let triangle = input(
+        json!({"template": {"const": "triangle"},
+               "corners": {"type": "array", "items": xy, "minItems": 3, "maxItems": 3},
+               "cells": corner_counts(3), "span": positive, "span_cells": count}),
+        &["corners", "span_cells"],
+    );
+    let tetrahedron = input(
+        json!({"template": {"const": "tetrahedron"},
+               "corners": {"type": "array", "items": point(), "minItems": 4, "maxItems": 4},
+               "cells": corner_counts(4)}),
+        &["corners"],
+    );
+    json!({"oneOf": [channel, pipe, elbow, airfoil, multi, triangle, tetrahedron]})
 }
 
 /// The volume algorithm of `block.grid` (BS-09).
@@ -753,6 +770,23 @@ pub(crate) fn block_remove_block() -> Value {
     input(
         json!({"topology": path(), "output": path(), "block": index(), "patch": name(), "role": role()}),
         &["patch", "role"],
+    )
+}
+
+pub(crate) fn block_split_triangle() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "block": index(),
+               "vertex": {"type": "integer", "minimum": 0, "description": "The block's flat corner (at least 120°)"},
+               "cells": {"type": "integer", "minimum": 1, "description": "Cells of the new row; from the triangle's spacing when absent"}}),
+        &["cells"],
+    )
+}
+
+pub(crate) fn block_optimize_layout() -> Value {
+    input(
+        json!({"topology": path(), "output": path(),
+               "triangle_splits": {"type": "boolean", "description": "Split blocks with a corner of 150° or more into three where that measurably helps (default true)"}}),
+        &["triangle_splits"],
     )
 }
 

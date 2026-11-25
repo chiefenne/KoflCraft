@@ -330,3 +330,46 @@ pub(crate) fn split_block(input: Value, ctx: &Context) -> Run {
     };
     edit(ctx, &i.topology, &i.output, e)
 }
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SplitTriangleInput {
+    pub topology: String,
+    pub output: String,
+    pub block: usize,
+    pub vertex: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cells: Option<usize>,
+}
+
+pub(crate) fn split_triangle(input: Value, ctx: &Context) -> Run {
+    let i: SplitTriangleInput = decode(input)?;
+    let e = Edit::SplitTriangle {
+        block: i.block,
+        vertex: i.vertex,
+        cells: i.cells,
+    };
+    edit(ctx, &i.topology, &i.output, e)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OptimizeLayoutInput {
+    pub topology: String,
+    pub output: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triangle_splits: Option<bool>,
+}
+
+pub(crate) fn optimize_layout(input: Value, ctx: &Context) -> Run {
+    let i: OptimizeLayoutInput = decode(input)?;
+    let file = topology(ctx, &i.topology)?;
+    let (new, layout) = mesh_engine::block_triangle::optimize_layout(
+        &file,
+        i.triangle_splits.unwrap_or(true),
+    )
+    .map_err(|e| Diagnostic::from(e).with_path(&i.topology))?;
+    let mut result = write_topology(ctx, &i.output, &new)?;
+    result["layout"] = layout;
+    Ok(result)
+}

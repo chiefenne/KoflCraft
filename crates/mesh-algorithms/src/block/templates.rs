@@ -14,6 +14,9 @@ pub struct Template {
     pub analytic_volume: f64,
     /// What the layout optimisation did, for templates that run it.
     pub layout: Option<super::layout::LayoutReport>,
+    /// The topology before the layout optimisation, for templates that run
+    /// it (a block split is judged from there, MB1h).
+    pub unoptimised: Option<BlockTopology>,
 }
 
 pub(super) fn positive(v: f64, what: &str) -> Result<f64, String> {
@@ -104,6 +107,7 @@ pub fn channel(
         },
         analytic_volume: l * w * h,
         layout: None,
+        unoptimised: None,
     })
 }
 
@@ -131,6 +135,7 @@ pub fn pipe_ogrid(
         topology,
         analytic_volume: std::f64::consts::PI * r * r * l,
         layout: None,
+        unoptimised: None,
     })
 }
 
@@ -210,6 +215,7 @@ pub fn elbow(
             * r
             * (inlet_length + outlet_length + big * theta.to_radians()),
         layout: None,
+        unoptimised: None,
     })
 }
 
@@ -1048,5 +1054,6 @@ pub fn airfoil_cgrid(section: &Section, p: &AirfoilCgrid) -> Result<Template, St
         },
         analytic_volume: area * span,
         layout: None,
+        unoptimised: None,
     })
 }
