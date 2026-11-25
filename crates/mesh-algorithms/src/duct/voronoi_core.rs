@@ -603,6 +603,9 @@ pub fn build_voronoi_core(
     steps: &[f64],
     options: VoronoiOptions,
 ) -> Result<(DuctMesh, ClosedSurface, VoronoiStats), String> {
+    if scaffold.boundary.iter().any(|b| is_slip(b.1)) {
+        return Err("patches without layers (no_layers) need the median dual core".into());
+    }
     let mut seeds = None;
     let mut added = 0;
     for round in 0..=SITE_ROUNDS {

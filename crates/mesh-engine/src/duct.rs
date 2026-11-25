@@ -25,6 +25,10 @@ pub struct Partition {
     pub first_thickness: f64,
     pub growth: f64,
     pub layers: usize,
+    /// Names of wall patches that grow no layers (planar patches only): the
+    /// layers of the walls around run straight into them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub no_layers: Vec<String>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -311,7 +315,7 @@ pub fn generate(
     let mut source_areas = vec![0.; names.len()];
     let scale = surface.bounds().extent().max_abs_component();
     for (f, &tag) in surface.facets().iter().zip(&patches) {
-        source_areas[tag - 1] += f.normalized_area * scale * scale;
+        source_areas[duct::patch_index(tag) - 1] += f.normalized_area * scale * scale;
     }
     let mesh = if let (Mode::Polyhedral, Some(spec)) = (mode, &plan.volume_scaffold) {
         let limit = spec.max_relative_geometry_error;
@@ -380,6 +384,8 @@ pub fn generate(
                 }
             }
         };
+        let mut mesh = mesh;
+        unmark_slip(&mut mesh, names.len());
         scaffold_volume = Some(shell.volume());
         if (shell.volume() / surface.volume() - 1.).abs() > limit
             || source_areas
@@ -430,6 +436,12 @@ pub fn generate(
     };
     let mut mesh = mesh;
     mesh.patches = names.clone();
+    unmark_slip(&mut mesh, names.len());
+    let unlayered: Vec<usize> = patches
+        .iter()
+        .filter(|&&p| duct::is_slip(p))
+        .map(|&p| duct::patch_index(p))
+        .collect();
     let m = &mesh.measurements;
     let walls_of = |a: &[f64]| a.iter().skip(duct::WALL - 1).sum::<f64>();
     let patch_list: Vec<Value> = names
@@ -438,7 +450,7 @@ pub fn generate(
         .filter(|&(i, _)| source_areas[i] > 0.)
         .map(|(i, (name, role))| {
             json!({"id": i + 1, "name": name, "role": role,
-                   "layered": duct::is_wall(i + 1),
+                   "layered": duct::is_wall(i + 1) && !unlayered.contains(&(i + 1)),
                    "stl_area": source_areas[i], "area": m.areas.get(i).copied().unwrap_or(0.)})
         })
         .collect();
@@ -547,7 +559,53 @@ fn prepare(
             "patch map or partition digest differs from input STL",
         ));
     }
-    surface_tags(data, patch_map)
+    let (surface, mut patches, names) = surface_tags(data, patch_map)?;
+    for name in &plan.no_layers {
+        let ids: Vec<usize> = (1..=names.len())
+            .filter(|&id| names[id - 1].0 == *name && duct::is_wall(id))
+            .collect();
+        if ids.is_empty() && !names.iter().any(|(n, _)| n == name) {
+            return Err(invalid(&format!(
+                "no_layers names an unknown patch {name:?}"
+            )));
+        }
+        for p in patches.iter_mut().filter(|p| ids.contains(p)) {
+            *p += duct::SLIP;
+        }
+    }
+    // A flush opening in a wall without layers has none either.
+    if !plan.no_layers.is_empty() {
+        let geometry = SurfaceGeometry::new(&surface);
+        for id in duct::WALL..=names.len() {
+            if names[id - 1].1 == "wall" || !patches.contains(&id) {
+                continue;
+            }
+            let inside = geometry.edges.iter().any(|e| {
+                let [f, g] = e.facets;
+                (patches[f] == id && duct::is_slip(patches[g]))
+                    || (patches[g] == id && duct::is_slip(patches[f]))
+            });
+            if inside {
+                for p in patches.iter_mut().filter(|p| **p == id) {
+                    *p += duct::SLIP;
+                }
+            }
+        }
+    }
+    Ok((surface, patches, names))
+}
+
+/// Drop the [`duct::SLIP`] mark of the patches without layers from the
+/// boundary faces and the measured areas of a built mesh with `n` patches.
+fn unmark_slip(mesh: &mut duct::DuctMesh, n: usize) {
+    for face in &mut mesh.boundary {
+        face.patch = duct::patch_index(face.patch);
+    }
+    let areas = &mut mesh.measurements.areas;
+    for i in duct::SLIP..areas.len() {
+        areas[i - duct::SLIP] += areas[i];
+    }
+    areas.truncate(n.max(duct::WALL));
 }
 
 /// Name and role of every patch id, indexed by id - 1.
@@ -725,6 +783,7 @@ pub fn setup(
         first_thickness: round(first_thickness),
         growth,
         layers,
+        no_layers: Vec::new(),
     };
     Ok((plan, r))
 }
@@ -741,8 +800,8 @@ pub fn stl_facet_error(surface: &mesh_geometry::ClosedSurface, patches: &[usize]
     let mut items: Vec<(f64, f64)> = Vec::new();
     for e in &g.edges {
         let [f, k] = e.facets;
-        if !duct::is_wall(patches[f])
-            || !duct::is_wall(patches[k])
+        if duct::is_cap(patches[f])
+            || duct::is_cap(patches[k])
             || e.angle >= limit
             || e.angle < 1e-3
         {
@@ -1003,7 +1062,7 @@ fn load_scaffold(
                 .iter()
                 .map(|f| f.triangle.vertices)
                 .collect();
-            let keep: Vec<bool> = patches.iter().map(|&p| !duct::is_wall(p)).collect();
+            let keep: Vec<bool> = patches.iter().map(|&p| duct::is_cap(p)).collect();
             let wall = remesh::remesh_grouped(
                 surface.vertices(),
                 &triangles,
@@ -1099,13 +1158,13 @@ fn wall_deviation(
         .facets()
         .iter()
         .zip(patches)
-        .filter(|(_, p)| duct::is_wall(**p))
+        .filter(|(_, p)| !duct::is_cap(**p))
         .map(|(f, _)| f.triangle.vertices.map(|v| surface.vertices()[v]))
         .collect();
     let wall: Vec<[mesh_core::geometry::Vec3; 3]> = scaffold
         .boundary
         .iter()
-        .filter(|(_, p)| duct::is_wall(*p))
+        .filter(|(_, p)| !duct::is_cap(*p))
         .map(|(t, _)| t.map(|v| scaffold.points[v]))
         .collect();
     let one_way = |from: &[[mesh_core::geometry::Vec3; 3]],

@@ -7,8 +7,9 @@ tubes of 0.16 m diameter through it under the roof (z = 2.1 m, from
 x = 0.9 m in steps of 0.4 m), a burner disc of 0.5 m diameter in the front
 wall (x = 0) and a rectangular opening in the back wall (x = 4 m) under the
 roof. The burner and the opening are flush with their walls. Patches:
-`walls` (floor, roof, side walls, rest of the back wall), `front` (rest of
-the front wall), `tubes`, `burner` (role inlet) and `outlet` (role outlet).
+`walls` (floor, roof, rest of the back wall), `front` (rest of the front
+wall), `tubes`, `burner` (role inlet), `outlet` (role outlet) and `sides`
+(the two side walls the tubes pass through).
 
     python3 -m pip install gmsh numpy
     python3 make_furnace.py furnace.stl 1      # the fixture: one tube
@@ -51,7 +52,7 @@ def main():
     occ.synchronize()
     vol = gmsh.model.getEntities(3)
     eps = 1e-6
-    names = ["walls", "front", "tubes", "burner", "outlet"]
+    names = ["walls", "front", "tubes", "burner", "outlet", "sides"]
     groups = {n: [] for n in names}
     for _, tag in gmsh.model.getBoundary(vol, oriented=False):
         x0, ya, za, x1, yb_, zb_ = gmsh.model.getBoundingBox(2, tag)
@@ -64,6 +65,8 @@ def main():
             groups["outlet" if inside else "walls"].append(tag)
         elif zb_ - za < 2 * TUBE_R + 1e-3 and za > TUBE_Z - TUBE_R - 1e-3 and x1 - x0 < 2 * TUBE_R + 1e-3:
             groups["tubes"].append(tag)
+        elif yb_ - ya < eps:
+            groups["sides"].append(tag)
         else:
             groups["walls"].append(tag)
     for name in ("burner", "outlet"):

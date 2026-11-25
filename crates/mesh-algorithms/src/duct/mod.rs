@@ -96,9 +96,30 @@ type Edge = (usize, usize);
 /// each a named boundary of its own.
 pub const WALL: usize = 3;
 
-/// Whether a patch id grows wall layers (3 and above).
+/// Added to the id of a wall patch that grows no layers (`no_layers` in
+/// the partition). Such a patch must be planar: where layered walls meet
+/// it, their layers run straight into it, sliding along its plane, and its
+/// own facets move in its plane to make room (as an inlet cap contracts).
+pub const SLIP: usize = 1 << 16;
+
+/// Whether a patch id grows wall layers (3 and above, below [`SLIP`]).
 pub fn is_wall(patch: usize) -> bool {
-    patch >= WALL
+    (WALL..SLIP).contains(&patch)
+}
+
+/// Whether a patch id is a wall patch without layers (see [`SLIP`]).
+pub fn is_slip(patch: usize) -> bool {
+    patch >= SLIP
+}
+
+/// Whether a patch id is an inlet or outlet cap (1 or 2).
+pub fn is_cap(patch: usize) -> bool {
+    patch < WALL
+}
+
+/// The patch id without the [`SLIP`] mark: the index of its name.
+pub fn patch_index(patch: usize) -> usize {
+    if is_slip(patch) { patch - SLIP } else { patch }
 }
 
 fn edges([a, b, c]: [usize; 3]) -> [Edge; 3] {
@@ -177,7 +198,7 @@ pub fn build(
         .map_err(|e| format!("input STL: {e}"))?;
     let mut pending = BTreeMap::new();
     let mut seams = BTreeMap::<(usize, usize), Vec<Edge>>::new();
-    let mut rims: [Vec<Edge>; 2] = Default::default();
+    let mut rims = BTreeMap::<usize, Vec<Edge>>::new();
     for (i, f) in facets.iter().enumerate() {
         for (a, b) in edges(f.triangle.vertices) {
             if let Some(j) = pending.remove(&(b, a)) {
@@ -190,15 +211,21 @@ pub fn build(
                     };
                     seams.entry(pair).or_default().push(edge);
                 }
-                if patches[i] != patches[j] && !(is_wall(patches[i]) && is_wall(patches[j])) {
+                if patches[i] != patches[j]
+                    && !(is_wall(patches[i]) && is_wall(patches[j]))
+                    && !(is_slip(patches[i]) && is_slip(patches[j]))
+                {
                     let (port, edge) = if is_wall(patches[i]) {
                         (patches[j], (a, b))
                     } else if is_wall(patches[j]) {
                         (patches[i], (b, a))
                     } else {
-                        return Err("inlet and outlet share an edge".into());
+                        return Err(
+                            "two patches without layers (inlet, outlet or no_layers) share an edge"
+                                .into(),
+                        );
                     };
-                    rims[port - 1].push(edge); // wall winding
+                    rims.entry(port).or_default().push(edge); // wall winding
                 }
             } else {
                 pending.insert((a, b), i);
