@@ -150,7 +150,19 @@ tests = [
   "crates/mesh-cli/tests/workflow.rs::flush_openings_grow_layers_and_every_patch_keeps_its_name",
 ]
 commands = []
-gaps = "Median dual core only; each connected piece must be planar; two such patches meet only in one plane and never at an inlet or outlet cap; no priority yet between two layered walls that meet (the tube still mitres into a layered wall)"
+gaps = "Median dual core only; each connected piece must be planar; two such patches meet only in one plane and never at an inlet or outlet cap (`layers_yield` keeps the layers of such a wall)"
+
+[[feature]]
+id = "layers-yield"
+title = "Walls whose layers yield: crossing walls' layers run straight through (BC-01)"
+requirements = ["BC-01"]
+grade = "partial"
+how = "`layers_yield` in the partition names planar wall patches that keep their layers while every wall crossing them runs its own layers straight through down to them, with no mitre. The duct is built with those planes moved in by the layer height (a linear ramp over four layer heights in front of them), then each face on a moved plane is extruded back through the layer heights: under core cells these are the wall's own layers, under a tube's layer columns a block of (tube layer x side layer) hexahedra. On the furnace fixture all six patches are layered, the side wall area matches the STL to 0.1%, and the mesh passes the solver rules and FoehnCraft's checks"
+tests = [
+  "crates/mesh-cli/tests/workflow.rs::yielding_side_walls_keep_layers_under_the_crossing_walls",
+]
+commands = []
+gaps = "Median dual core with a built scaffold only; each connected piece must be planar; walls within four layer heights of it must meet it at a right angle (within about 6 degrees); two yielding walls must not meet; one yield level, no general priority order"
 
 [[feature]]
 id = "sweep"

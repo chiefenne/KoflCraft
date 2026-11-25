@@ -10,6 +10,7 @@ mod verify;
 mod volume_dual;
 mod voronoi_core;
 mod wall_seeds;
+mod yield_layers;
 pub use volume_dual::{Scaffold, build_volume_dual};
 pub use voronoi_core::{
     DEFAULT_LLOYD_ITERATIONS, VoronoiOptions, VoronoiStats, WallJoin, build_voronoi_core,
@@ -21,6 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub use polyhedral::Polyhedron;
 pub use verify::Measurements;
+pub use yield_layers::{YieldPlane, extrude as extrude_yielding, shorten as shorten_yielding};
 
 pub struct Region {
     pub kernel: Vec3,

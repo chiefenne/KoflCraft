@@ -29,6 +29,11 @@ pub struct Partition {
     /// layers of the walls around run straight into them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub no_layers: Vec<String>,
+    /// Names of planar wall patches whose layers yield: they keep their
+    /// layers, and every wall that crosses them (at a right angle) runs its
+    /// own layers straight through down to them, with no mitre.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers_yield: Vec<String>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -300,6 +305,49 @@ pub fn generate(
             step *= plan.growth;
         }
     }
+    // Walls whose layers yield: build on a domain with their planes moved
+    // in by the layer height, then extrude the slab back out.
+    let full_source = surface.clone();
+    let mut yielding_ids: Vec<usize> = Vec::new();
+    let mut yield_planes = Vec::new();
+    let surface = if plan.layers_yield.is_empty() {
+        surface
+    } else {
+        let core_ok = matches!(mode, Mode::Polyhedral)
+            && plan
+                .volume_scaffold
+                .as_ref()
+                .is_some_and(|s| s.build.is_some() && matches!(s.core, CoreKind::MedianDual));
+        if !core_ok || scaffold_data.is_some() {
+            return Err(invalid(
+                "layers_yield needs the polyhedral mode with a built scaffold and the median dual core",
+            ));
+        }
+        yielding_ids = (1..=names.len())
+            .filter(|&id| plan.layers_yield.contains(&names[id - 1].0))
+            .collect();
+        // flush openings inside a yielding wall yield with it
+        let geometry = SurfaceGeometry::new(&surface);
+        for id in duct::WALL..=names.len() {
+            if names[id - 1].1 != "wall"
+                && geometry.edges.iter().any(|e| {
+                    let [f, g] = e.facets;
+                    let (a, b) = (duct::patch_index(patches[f]), duct::patch_index(patches[g]));
+                    (a == id && yielding_ids.contains(&b)) || (b == id && yielding_ids.contains(&a))
+                })
+            {
+                yielding_ids.push(id);
+            }
+        }
+        let yielding: Vec<bool> = patches
+            .iter()
+            .map(|&p| duct::is_slip(p) && yielding_ids.contains(&duct::patch_index(p)))
+            .collect();
+        let (short, planes) = duct::shorten_yielding(&surface, &yielding, steps.iter().sum())
+            .map_err(|e| invalid(&e))?;
+        yield_planes = planes;
+        short
+    };
     let regions: Vec<_> = plan
         .regions
         .iter()
@@ -428,6 +476,28 @@ pub fn generate(
                 }
             }
         }
+        if !yield_planes.is_empty() {
+            let shell_patches: Vec<usize> = shell
+                .facets()
+                .iter()
+                .map(|f| {
+                    shell.patch_names()[f.triangle.patch.0]
+                        .parse::<usize>()
+                        .map(duct::patch_index)
+                        .unwrap_or(0)
+                })
+                .collect();
+            let full = duct::extrude_yielding(
+                &mut mesh,
+                &shell,
+                &shell_patches,
+                &yield_planes,
+                &yielding_ids,
+                &steps,
+            )
+            .map_err(validated)?;
+            scaffold_volume = Some(full.volume());
+        }
         mesh
     } else if matches!(mode, Mode::Polyhedral) {
         duct::build_polyhedral(&surface, &patches, &regions, &steps).map_err(validated)?
@@ -441,7 +511,14 @@ pub fn generate(
         .iter()
         .filter(|&&p| duct::is_slip(p))
         .map(|&p| duct::patch_index(p))
+        .filter(|id| !yielding_ids.contains(id))
         .collect();
+    // the report names the areas of the full STL, also when yielding walls
+    // were built on a shortened domain
+    let mut source_areas = vec![0.; names.len()];
+    for (f, &tag) in full_source.facets().iter().zip(&patches) {
+        source_areas[duct::patch_index(tag) - 1] += f.normalized_area * scale * scale;
+    }
     let m = &mesh.measurements;
     let walls_of = |a: &[f64]| a.iter().skip(duct::WALL - 1).sum::<f64>();
     let patch_list: Vec<Value> = names
@@ -487,7 +564,7 @@ pub fn generate(
         "polyhedron_face_range": (polyhedra > 0).then_some(face_range),
         "prism_core_faces":m.prism_core_faces,
         "prisms": prisms,
-        "source_volume": surface.volume(),
+        "source_volume": full_source.volume(),
         "volume": m.volume,
         "minimum_cell_volume": m.minimum_volume,
         "minimum_tet_mean_ratio": (tetrahedra > 0).then_some(m.minimum_tet_mean_ratio),
@@ -560,13 +637,22 @@ fn prepare(
         ));
     }
     let (surface, mut patches, names) = surface_tags(data, patch_map)?;
-    for name in &plan.no_layers {
+    if let Some(name) = plan
+        .layers_yield
+        .iter()
+        .find(|n| plan.no_layers.contains(n))
+    {
+        return Err(invalid(&format!(
+            "patch {name:?} is listed under both no_layers and layers_yield"
+        )));
+    }
+    for name in plan.no_layers.iter().chain(&plan.layers_yield) {
         let ids: Vec<usize> = (1..=names.len())
             .filter(|&id| names[id - 1].0 == *name && duct::is_wall(id))
             .collect();
         if ids.is_empty() && !names.iter().any(|(n, _)| n == name) {
             return Err(invalid(&format!(
-                "no_layers names an unknown patch {name:?}"
+                "no_layers or layers_yield names an unknown patch {name:?}"
             )));
         }
         for p in patches.iter_mut().filter(|p| ids.contains(p)) {
@@ -574,7 +660,7 @@ fn prepare(
         }
     }
     // A flush opening in a wall without layers has none either.
-    if !plan.no_layers.is_empty() {
+    if !plan.no_layers.is_empty() || !plan.layers_yield.is_empty() {
         let geometry = SurfaceGeometry::new(&surface);
         for id in duct::WALL..=names.len() {
             if names[id - 1].1 == "wall" || !patches.contains(&id) {
@@ -784,6 +870,7 @@ pub fn setup(
         growth,
         layers,
         no_layers: Vec::new(),
+        layers_yield: Vec::new(),
     };
     Ok((plan, r))
 }
