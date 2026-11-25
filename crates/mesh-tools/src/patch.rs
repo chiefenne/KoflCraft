@@ -424,7 +424,6 @@ pub(crate) fn bc_skeleton(input: Value, ctx: &Context) -> Run {
     let mut result = json!(k);
     result["format_version"] = json!(crate::FORMAT_VERSION);
     result["output"] = json!(i.output);
-    result["files"] =
-        json!([{ "path": i.output, "blake3": mesh_engine::file_digest(bytes) }]);
+    result["files"] = json!([{ "path": i.output, "blake3": mesh_engine::file_digest(bytes) }]);
     Ok(result)
 }
