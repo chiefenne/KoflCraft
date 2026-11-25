@@ -943,10 +943,12 @@ fn flush_openings_grow_layers_and_every_patch_keeps_its_name() {
             p["name"]
         );
     }
-    // no cap: every boundary face is the wall face of a layer prism
+    // no cap: every boundary face is the wall face of a layer prism (polygon
+    // prisms; the few single wedges left where one failed the solver rules
+    // vary with rounding between platforms)
     assert_eq!(report["patch_areas"]["inlet"], 0.0);
     assert_eq!(report["patch_areas"]["outlet"], 0.0);
-    assert!(report["prisms"].as_i64().unwrap() > 0);
+    assert!(report["layer_polyhedra"].as_i64().unwrap() > 0);
     let volume = report["volume"].as_f64().unwrap();
     assert!((volume / report["source_volume"].as_f64().unwrap() - 1.).abs() < 0.005);
     let out = work.path().join("furnace");
