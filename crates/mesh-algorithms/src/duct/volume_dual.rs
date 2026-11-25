@@ -673,7 +673,7 @@ pub(super) fn prepare(scaffold: &Scaffold, steps: &[f64]) -> Result<Prepared, St
     if scaffold
         .boundary
         .iter()
-        .any(|&(t, tag)| !(1..=3).contains(&tag) || t.iter().any(|&n| n >= scaffold.points.len()))
+        .any(|&(t, tag)| tag == 0 || t.iter().any(|&n| n >= scaffold.points.len()))
     {
         return Err("invalid scaffold boundary node or patch".into());
     }
@@ -691,6 +691,10 @@ pub(super) fn prepare(scaffold: &Scaffold, steps: &[f64]) -> Result<Prepared, St
     let mut surface_points = Vec::new();
     let mut triangles = Vec::new();
     let mut patches = Vec::new();
+    // The shell names each patch by its id; ids no facet uses are left out.
+    let mut ids: Vec<usize> = scaffold.boundary.iter().map(|b| b.1).collect();
+    ids.sort_unstable();
+    ids.dedup();
     for &(t, tag) in &scaffold.boundary {
         let vertices = t.map(|n| {
             *surface_ids.entry(n).or_insert_with(|| {
@@ -701,14 +705,14 @@ pub(super) fn prepare(scaffold: &Scaffold, steps: &[f64]) -> Result<Prepared, St
         });
         triangles.push(SurfaceTriangle {
             vertices,
-            patch: PatchId(tag - 1),
+            patch: PatchId(ids.binary_search(&tag).unwrap_or(0)),
         });
         patches.push(tag);
     }
     let surface = ClosedSurface::new(
         surface_points,
         triangles,
-        vec!["inlet".into(), "outlet".into(), "walls".into()],
+        ids.iter().map(|id| id.to_string()).collect(),
     )
     .map_err(|e| e.to_string())?;
     let ts: Vec<_> = surface
@@ -1020,7 +1024,7 @@ pub fn build_volume_dual(
         &front.cells,
         &front.boundary,
         steps.len(),
-        patches.iter().filter(|&&p| p == 3).count() * 6,
+        patches.iter().filter(|&&p| is_wall(p)).count() * 6,
     )?;
     Ok((
         DuctMesh {
@@ -1028,6 +1032,7 @@ pub fn build_volume_dual(
             cells: front.cells,
             boundary: front.boundary,
             measurements,
+            patches: classic_patches(),
         },
         surface,
     ))

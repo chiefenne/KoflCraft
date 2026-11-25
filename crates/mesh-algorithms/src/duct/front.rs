@@ -35,7 +35,7 @@ pub(super) fn advance(
     let mut port_vertex = vec![false; original.len()];
     let mut normals = vec![Vec::<Vec3>::new(); original.len()];
     for (f, &patch) in surface.facets().iter().zip(patches) {
-        if patch != 3 {
+        if !is_wall(patch) {
             continue;
         }
         let ids = f.triangle.vertices;
@@ -76,6 +76,9 @@ pub(super) fn advance(
     // rounding of f32 coordinates
     let port_tol = surface.bounds().extent().max_abs_component() * PORT_RELATIVE_TOLERANCE;
     for (index, edges) in rims.iter().enumerate() {
+        if edges.is_empty() {
+            continue;
+        }
         let ids = loop_vertices(edges)?;
         let center = mean(original, &ids);
         let mut caps = surface
@@ -123,7 +126,7 @@ pub(super) fn advance(
         // face offset. Scale to the least normal advance of its incident walls.
         let mut projection = vec![f64::INFINITY; original.len()];
         for (f, &patch) in surface.facets().iter().zip(patches) {
-            if patch != 3 {
+            if !is_wall(patch) {
                 continue;
             }
             for &v in &f.triangle.vertices {
@@ -178,7 +181,7 @@ pub(super) fn advance(
             }
         }
         for (i, f) in surface.facets().iter().enumerate() {
-            if patches[i] != 3 {
+            if !is_wall(patches[i]) {
                 continue;
             }
             let [a, b, c] = f.triangle.vertices;
@@ -191,7 +194,7 @@ pub(super) fn advance(
             if level == 0 {
                 boundary.push(BoundaryFace {
                     nodes: vec![a, b, c],
-                    patch: 3,
+                    patch: patches[i],
                     owner,
                 });
             }
@@ -262,7 +265,7 @@ fn squeeze(
     let wedge = 45f64.to_radians();
     let cap = 1.01 * total / GAP_SHARE;
     for (f, t) in triangles.iter().enumerate() {
-        if patches[f] != 3 {
+        if !is_wall(patches[f]) {
             continue;
         }
         let n = geometry.normals[f];
@@ -277,7 +280,7 @@ fn squeeze(
     }
     let mut neighbours = vec![Vec::new(); original.len()];
     for (f, t) in triangles.iter().enumerate() {
-        if patches[f] != 3 {
+        if !is_wall(patches[f]) {
             continue;
         }
         for (a, b) in edges(*t) {

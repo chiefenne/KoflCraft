@@ -7,7 +7,8 @@ pub struct Measurements {
     pub core_sphericity: Option<[f64; 3]>,
     pub minimum_volume: f64,
     pub minimum_wedge_jacobian: Option<f64>,
-    pub areas: [f64; 3],
+    /// Boundary area of every patch id, indexed by id - 1.
+    pub areas: Vec<f64>,
     pub prism_core_faces: usize,
     pub port_layer_areas: [Vec<f64>; 2],
     pub minimum_tet_mean_ratio: f64,
@@ -520,7 +521,7 @@ pub(super) fn check(
         cells,
         boundary,
         layers,
-        patches.iter().filter(|&&p| p == 3).count(),
+        patches.iter().filter(|&&p| super::is_wall(p)).count(),
     )
 }
 
@@ -578,24 +579,30 @@ pub(super) fn check_with_interface_count(
         ));
     }
     let mut exterior = HashMap::new();
-    let mut areas = [0.; 3];
+    let ids = patches.iter().copied().max().unwrap_or(0).max(super::WALL);
+    let mut areas = vec![0.; ids];
     let mut port_layer_areas = [vec![0.; layers + 1], vec![0.; layers + 1]];
     for face in boundary {
         if exterior.insert(key(&face.nodes), face).is_some() {
             return Err("duplicate outer boundary face".into());
         }
         let area = boundary_area(p, &face.nodes);
-        areas[face.patch - 1] += area;
+        *areas
+            .get_mut(face.patch.wrapping_sub(1))
+            .ok_or("boundary face with an unknown patch")? += area;
         if face.patch <= 2 {
             port_layer_areas[face.patch - 1][cells[face.owner].layer] += area;
         }
     }
-    let mut expected = [0.; 3];
+    let mut expected = vec![0.; ids];
     let scale = surface.bounds().extent().max_abs_component();
     for (facet, &patch) in surface.facets().iter().zip(patches) {
         expected[patch - 1] += facet.normalized_area * scale * scale;
     }
     for (i, (&a, &e)) in areas.iter().zip(&expected).enumerate() {
+        if a == 0. && e == 0. {
+            continue; // an id no facet uses (no inlet cap, say)
+        }
         if !a.is_finite() || !e.is_finite() || e <= 0. || (a / e - 1.).abs() >= 1e-9 {
             return Err(format!(
                 "patch {} area {a} differs from STL area {e}",
@@ -692,7 +699,13 @@ pub(super) fn check_with_interface_count(
             surface.volume()
         ));
     }
-    if port_layer_areas.iter().flatten().any(|v| *v <= 0.) {
+    // every layer reaches each cap the surface has
+    let has_cap = |id: usize| patches.contains(&id);
+    if port_layer_areas
+        .iter()
+        .enumerate()
+        .any(|(i, a)| has_cap(i + 1) && a.iter().any(|v| *v <= 0.))
+    {
         return Err("a layer does not reach both ports".into());
     }
     if layers > 0 && prism_core_faces != expected_interfaces {

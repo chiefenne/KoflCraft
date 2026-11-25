@@ -237,6 +237,7 @@ pub(super) fn coplanar(
 pub(super) fn build(
     points: &mut Vec<Vec3>,
     tris: &[[usize; 3]],
+    patches: &[usize],
     wall: &[usize],
     coarse: &[Cell],
     old_boundary: Vec<BoundaryFace>,
@@ -687,7 +688,7 @@ pub(super) fn build(
                 if level == 0 {
                     boundary.push(BoundaryFace {
                         nodes: bottom.clone(),
-                        patch: 3,
+                        patch: patches[units[col[0]].bi],
                         owner: id,
                     });
                 }

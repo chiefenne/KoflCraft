@@ -67,7 +67,8 @@ pub struct Cell {
 
 pub struct BoundaryFace {
     pub nodes: Vec<usize>,
-    /// 1 inlet, 2 outlet, 3 walls.
+    /// 1 inlet, 2 outlet (port caps), 3 and above: wall layers (see
+    /// [`is_wall`]).
     pub patch: usize,
     pub owner: usize,
 }
@@ -76,8 +77,29 @@ pub struct DuctMesh {
     pub cells: Vec<Cell>,
     pub boundary: Vec<BoundaryFace>,
     pub measurements: Measurements,
+    /// Name and role (`inlet`, `outlet` or `wall`) of every patch id,
+    /// indexed by id - 1; the builders set [`classic_patches`].
+    pub patches: Vec<(String, String)>,
+}
+
+/// The patches of a duct with an inlet cap, an outlet cap and one wall.
+pub fn classic_patches() -> Vec<(String, String)> {
+    [("inlet", "inlet"), ("outlet", "outlet"), ("walls", "wall")]
+        .map(|(n, r)| (n.to_string(), r.to_string()))
+        .to_vec()
 }
 type Edge = (usize, usize);
+
+/// The patch id of the first wall patch. Ids 1 and 2 are the inlet and
+/// outlet caps, which contract in their planes; every id from 3 up is a
+/// patch the wall layers grow from (walls, and openings flush with a wall),
+/// each a named boundary of its own.
+pub const WALL: usize = 3;
+
+/// Whether a patch id grows wall layers (3 and above).
+pub fn is_wall(patch: usize) -> bool {
+    patch >= WALL
+}
 
 fn edges([a, b, c]: [usize; 3]) -> [Edge; 3] {
     [(a, b), (b, c), (c, a)]
@@ -145,7 +167,7 @@ pub fn build(
     thicknesses: &[f64],
 ) -> Result<DuctMesh, String> {
     let facets = surface.facets();
-    if patches.len() != facets.len() || patches.iter().any(|p| !(1..=3).contains(p)) {
+    if patches.len() != facets.len() || patches.contains(&0) {
         return Err("expected a patch on every STL facet".into());
     }
     let labels = region_labels(facets.len(), regions)?;
@@ -168,10 +190,10 @@ pub fn build(
                     };
                     seams.entry(pair).or_default().push(edge);
                 }
-                if patches[i] != patches[j] {
-                    let (port, edge) = if patches[i] == 3 {
+                if patches[i] != patches[j] && !(is_wall(patches[i]) && is_wall(patches[j])) {
+                    let (port, edge) = if is_wall(patches[i]) {
                         (patches[j], (a, b))
-                    } else if patches[j] == 3 {
+                    } else if is_wall(patches[j]) {
                         (patches[i], (b, a))
                     } else {
                         return Err("inlet and outlet share an edge".into());
@@ -201,7 +223,7 @@ pub fn build(
             layer: 0,
             region: labels[i],
         });
-        if patches[i] != 3 || thicknesses.is_empty() {
+        if !is_wall(patches[i]) || thicknesses.is_empty() {
             front.boundary.push(BoundaryFace {
                 nodes: vec![a, b, c],
                 patch: patches[i],
@@ -252,6 +274,7 @@ pub fn build(
         cells: front.cells,
         boundary: front.boundary,
         measurements,
+        patches: classic_patches(),
     })
 }
 

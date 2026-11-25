@@ -708,7 +708,7 @@ fn build(
 
     // Layer nodes of every surface vertex, level by level (0 is the wall).
     let facets = surface.facets();
-    let wall: Vec<usize> = (0..facets.len()).filter(|&i| patches[i] == 3).collect();
+    let wall: Vec<usize> = (0..facets.len()).filter(|&i| is_wall(patches[i])).collect();
     let mut stack = vec![vec![usize::MAX; surface.vertices().len()]; layers + 1];
     for (v, s0) in stack[0].iter_mut().enumerate() {
         *s0 = v;
@@ -753,7 +753,7 @@ fn build(
                 layers > 0
                     && by_edge[&(u.min(v), u.max(v))].iter().any(|&o| {
                         o != bi
-                            && (patches[o] != 3
+                            && (patches[o] != patches[bi]
                                 || !super::columns::coplanar(
                                     &front.points,
                                     &tris,
@@ -793,7 +793,7 @@ fn build(
             for k in 0..3 {
                 let (u, v) = (t[k], t[(k + 1) % 3]);
                 for &o in &by_edge[&(u.min(v), u.max(v))] {
-                    if o == bi || patches[o] != 3 {
+                    if o == bi || !is_wall(patches[o]) {
                         continue;
                     }
                     let apex = tris[o].into_iter().find(|&x| x != u && x != v).unwrap_or(u);
@@ -1257,7 +1257,7 @@ fn build(
                     && across(p.tet, k).is_none()
                     && let Some(&bi) =
                         boundary_index.get(&local_face(&scaffold.tetrahedra[p.tet], k))
-                    && scaffold.boundary[bi].1 == 3
+                    && is_wall(scaffold.boundary[bi].1)
                 {
                     let (n, c) = super::convex::ring_plane(points, ring);
                     out.push((n / n.length(), c, bi));
@@ -1274,7 +1274,7 @@ fn build(
     };
     // centroid of the innermost layer prism over each wall triangle
     let wall_rank: HashMap<usize, usize> = (0..scaffold.boundary.len())
-        .filter(|&bi| scaffold.boundary[bi].1 == 3)
+        .filter(|&bi| is_wall(scaffold.boundary[bi].1))
         .enumerate()
         .map(|(r, bi)| (bi, r))
         .collect();
@@ -1319,7 +1319,7 @@ fn build(
                             if walls
                                 && let Some(&bi) =
                                     boundary_index.get(&local_face(&scaffold.tetrahedra[p.tet], k))
-                                && scaffold.boundary[bi].1 == 3
+                                && is_wall(scaffold.boundary[bi].1)
                             {
                                 by.entry((true, bi)).or_default().push(ring);
                             }
@@ -1391,7 +1391,7 @@ fn build(
                         && across(pieces[i].tet, k).is_none()
                         && let Some(&bi) =
                             boundary_index.get(&local_face(&scaffold.tetrahedra[pieces[i].tet], k))
-                        && scaffold.boundary[bi].1 == 3
+                        && is_wall(scaffold.boundary[bi].1)
                     {
                         let (n, c) = super::convex::ring_plane(points, ring);
                         let area = n.length();
@@ -1904,7 +1904,7 @@ fn build(
     let old_boundary = std::mem::take(&mut front.boundary);
     let mut rim: HashMap<(usize, usize), usize> = HashMap::new();
     for (i, f) in facets.iter().enumerate() {
-        if patches[i] == 3 {
+        if is_wall(patches[i]) {
             continue;
         }
         let [a, b, c] = f.triangle.vertices;
@@ -2048,6 +2048,7 @@ fn build(
         let built = super::columns::build(
             points,
             &tris,
+            &patches,
             &wall,
             &coarse,
             old_boundary,
@@ -2137,6 +2138,7 @@ fn build(
             cells,
             boundary,
             measurements,
+            patches: classic_patches(),
         },
         surface,
         stats,

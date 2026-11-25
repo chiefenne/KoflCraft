@@ -1,0 +1,1 @@
+- **Named wall patches and flush openings** in the polyhedral duct: a patch map may name any number of wall patches. Each one keeps its name and role in the report, the Gmsh physical groups and the FoehnCraft hand-off. An inlet or outlet that sits flush with its wall grows wall layers instead of contracting in its plane. New fixture: the box furnace from FoehnCraft gallery 259.

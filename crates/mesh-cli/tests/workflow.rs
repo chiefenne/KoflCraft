@@ -827,3 +827,97 @@ fn generate_duct_reads_a_patch_map_like_a_port_file() {
     }
     assert_eq!(b["patch_areas"]["inlet"], 1.0);
 }
+
+/// The box furnace (FoehnCraft gallery 259) with one tube: its burner disc
+/// and its outlet opening are flush with their walls, so they cannot
+/// contract in their planes as a pipe-end cap does; they grow wall layers
+/// like the walls. Every patch of the map keeps its name and role through
+/// the remesh (the patch borders are feature lines), into the report, the
+/// Gmsh physical groups and the FoehnCraft hand-off. About 5 seconds.
+#[test]
+fn flush_openings_grow_layers_and_every_patch_keeps_its_name() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/furnace");
+    let work = WorkDirectory::new();
+    let path = |f: &str| fixture.join(f).to_str().unwrap().to_string();
+    let (stl, map, partition) = (
+        path("furnace.stl"),
+        path("furnace.patches.json"),
+        path("partition.json"),
+    );
+    let report = work.run(&[
+        "generate-duct",
+        &stl,
+        &map,
+        &partition,
+        "polyhedral",
+        "furnace",
+        "--handoff",
+        "vtu",
+    ])["report"]
+        .clone();
+    assert_eq!(report["algorithm"], "volume_median_dual_v2");
+    let patches = report["patches"].as_array().unwrap();
+    let named: Vec<(&str, &str, bool)> = patches
+        .iter()
+        .map(|p| {
+            (
+                p["name"].as_str().unwrap(),
+                p["role"].as_str().unwrap(),
+                p["layered"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        named,
+        [
+            ("walls", "wall", true),
+            ("front", "wall", true),
+            ("tubes", "wall", true),
+            ("burner", "inlet", true),
+            ("outlet", "outlet", true),
+        ]
+    );
+    for p in patches {
+        let (stl_area, area) = (p["stl_area"].as_f64().unwrap(), p["area"].as_f64().unwrap());
+        // the burner disc loses the segments of its 0.04 rim chords (0.8%),
+        // the tube those of its wall chords
+        let limit = if p["name"] == "tubes" { 0.03 } else { 0.01 };
+        assert!(
+            (area / stl_area - 1.).abs() < limit,
+            "{}: {area} {stl_area}",
+            p["name"]
+        );
+    }
+    // no cap: every boundary face is the wall face of a layer prism
+    assert_eq!(report["patch_areas"]["inlet"], 0.0);
+    assert_eq!(report["patch_areas"]["outlet"], 0.0);
+    assert!(report["prisms"].as_i64().unwrap() > 0);
+    let volume = report["volume"].as_f64().unwrap();
+    assert!((volume / report["source_volume"].as_f64().unwrap() - 1.).abs() < 0.005);
+    let out = work.path().join("furnace");
+    let msh = fs::read_to_string(out.join("mesh.msh")).unwrap();
+    for group in [
+        "\"walls\"",
+        "\"front\"",
+        "\"tubes\"",
+        "\"burner\"",
+        "\"outlet\"",
+        "\"fluid\"",
+    ] {
+        assert!(msh.contains(group), "{group}");
+    }
+    let vtu = fs::read_to_string(out.join("foehncraft.vtu")).unwrap();
+    let names = vtu
+        .lines()
+        .find(|l| l.contains("Name=\"boundary_names\""))
+        .unwrap();
+    let text: String = names
+        .split('>')
+        .nth(1)
+        .unwrap()
+        .split_whitespace()
+        .filter_map(|b| b.parse::<u8>().ok())
+        .map(|b| if b == 0 { ' ' } else { b as char })
+        .collect();
+    assert_eq!(text.trim(), "0=walls 1=front 2=tubes 3=burner 4=outlet");
+}
