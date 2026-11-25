@@ -358,9 +358,9 @@ impl Cdt {
         self.nbr[n] = [n_oa, t_oa, t];
         let relink = |s: &mut Self, outer: usize, from: usize, to: usize| {
             if outer != NONE {
-                for k in 0..3 {
-                    if s.nbr[outer][k] == from {
-                        s.nbr[outer][k] = to;
+                for x in &mut s.nbr[outer] {
+                    if *x == from {
+                        *x = to;
                     }
                 }
             }
