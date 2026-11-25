@@ -110,6 +110,21 @@ kofl call grading.add --input add.json          # grading.list, grading.remove b
 
 The build report has a `grading` object: for each source, the core cells (no prisms) whose centroid lies in its zone where it sets the size, and their achieved cbrt(volume) quantiles, next to the median of all other core cells. On a round pipe (r = 5) a sphere datum of size 0.25 gives cells of median 0.27 and a box region of size 0.3 gives 0.33, against 0.52 elsewhere ([test](../crates/mesh-engine/tests/grading_duct.rs)). Sizes are cell sizes: the median cbrt(volume) of the cells in a zone lands within about 15 % of `size`.
 
+## Thin shells: baffles and plates
+
+A baffle, plate or fin of zero thickness inside the fluid is a `shells` entry in the partition: a name and a planar convex polygon (SHL-01 to SHL-03). The polygon may reach past the wall: only its part inside the fluid is meshed, and where it leaves the fluid it ends on the wall. Where it stays inside the fluid it has a free edge.
+
+```json
+"shells": [
+  {"name": "baffle", "polygon": [[-9, -9, 24.3], [0.7, -9, 24.3], [0.7, 9, 24.3], [-9, 9, 24.3]]},
+  {"name": "plate",  "polygon": [[-2, -1.5, 11], [2, -1.5, 11.8], [2, 1.5, 11.8], [-2, 1.5, 11]]}
+]
+```
+
+Each shell becomes two wall patches, `<name>` on the side its normal points to and `<name>_back` on the other, with one owner cell per face, so the solver sees two walls back to back. On the default median-dual core the shell goes into the scaffold before the cells are built: the wall is cut along the shell, the shell is triangulated at the local cell size (2D constrained Delaunay with refinement), its triangles are recovered in the tetrahedra and the scaffold is split into two sides there. The wall layers run into the shell and stop at its free edges; the shell itself has no layers yet (SHL-04). On the Voronoi core the finished cells are cut by the shell instead, which needs convex cells.
+
+The build report has a `shells` list: per shell the two patches, the polygon area, the area of each side and its face count, the free-edge length and the length of the line along the wall. A half baffle and a plate in a round pipe give both sides of equal area, the plate's area equals its polygon and none of the 135k cells fails the solver rules ([test](../crates/mesh-engine/tests/shell_duct.rs)). For now a shell may meet walls only: a shell over an inlet or outlet cap, two shells that touch and a shell lying in a wall facet are refused with the shell's name. [Shell surface](../crates/mesh-algorithms/src/shell_surface.rs) · [Planar Delaunay](../crates/mesh-algorithms/src/planar.rs) · [Crack](../crates/mesh-algorithms/src/duct/volume_dual.rs)
+
 ## Scaffold from a file
 
 Supply a Gmsh MSH 2.2 ASCII file containing only linear tetrahedra (physical volume 4) and outward-oriented boundary triangles (physical surfaces 1 inlet, 2 outlet and 3 walls). The size and distribution of the scaffold vertices control polyhedral spacing. Reference it in the partition JSON with `volume_scaffold.file`, `volume_scaffold.sha256` and `volume_scaffold.max_relative_geometry_error`. The CLI resolves the filename relative to the partition. The geometry error limit applies separately to total fluid volume and each patch area. Port planes and orientations are checked against the source STL. Existing configurations without a scaffold retain the regional fan construction under the algorithm name `stl_partitioned_dual_v1`. Gmsh optimization can change node positions and counts between preparations; the checked-in elbow scaffold pins the input for reproducible output. [Elbow sizing](../test-fixtures/elbow/prepare-scaffold.geo)

@@ -62,18 +62,20 @@ type Parts = (Vec<Vec<usize>>, Vec<Vec<usize>>);
 /// run along it where they cross; the exact cut takes the small pieces.
 const SNAP: f64 = 0.0;
 
-struct Frame {
-    origin: Vec3,
-    n: Vec3,
-    u: Vec3,
-    v: Vec3,
+/// The plane of a shell polygon: an origin, the unit normal and two
+/// in-plane axes (v = n × u), and the polygon in plane coordinates.
+pub(crate) struct Frame {
+    pub(crate) origin: Vec3,
+    pub(crate) n: Vec3,
+    pub(crate) u: Vec3,
+    pub(crate) v: Vec3,
     /// The polygon in plane coordinates.
-    poly: Vec<[f64; 2]>,
-    scale: f64,
+    pub(crate) poly: Vec<[f64; 2]>,
+    pub(crate) scale: f64,
 }
 
 impl Frame {
-    fn new(polygon: &[Vec3]) -> Result<Self, String> {
+    pub(crate) fn new(polygon: &[Vec3]) -> Result<Self, String> {
         if polygon.len() < 3 || polygon.iter().any(|p| !p.is_finite()) {
             return Err("a shell polygon needs at least three finite corners".into());
         }
@@ -129,21 +131,21 @@ impl Frame {
         })
     }
 
-    fn distance(&self, p: Vec3) -> f64 {
+    pub(crate) fn distance(&self, p: Vec3) -> f64 {
         (p - self.origin).dot(self.n)
     }
 
-    fn uv(&self, p: Vec3) -> [f64; 2] {
+    pub(crate) fn uv(&self, p: Vec3) -> [f64; 2] {
         let d = p - self.origin;
         [d.dot(self.u), d.dot(self.v)]
     }
 
-    fn point(&self, q: [f64; 2]) -> Vec3 {
+    pub(crate) fn point(&self, q: [f64; 2]) -> Vec3 {
         self.origin + self.u * q[0] + self.v * q[1]
     }
 
     /// Signed distance of `q` inside edge `i` (positive inside).
-    fn edge_side(&self, i: usize, q: [f64; 2]) -> f64 {
+    pub(crate) fn edge_side(&self, i: usize, q: [f64; 2]) -> f64 {
         let k = self.poly.len();
         let (a, b) = (self.poly[i], self.poly[(i + 1) % k]);
         let e = sub2(b, a);
@@ -151,13 +153,13 @@ impl Frame {
     }
 
     /// Smallest edge distance: > 0 strictly inside, < 0 outside.
-    fn inside(&self, q: [f64; 2]) -> f64 {
+    pub(crate) fn inside(&self, q: [f64; 2]) -> f64 {
         (0..self.poly.len())
             .map(|i| self.edge_side(i, q))
             .fold(f64::INFINITY, f64::min)
     }
 
-    fn area(&self) -> f64 {
+    pub(crate) fn area(&self) -> f64 {
         polygon_area2(&self.poly)
     }
 }
@@ -923,8 +925,9 @@ fn cut_by_plane(
     // below take the copies
     let mut back_copy: HashMap<usize, usize> = HashMap::new();
     let mut source_of: HashMap<usize, usize> = HashMap::new();
-    for v in 0..mesh.points.len() {
-        if side[v] == 0 && f.inside(f.uv(mesh.points[v])) > tol {
+    let original = mesh.points.len();
+    for (v, &s) in side.iter().enumerate().take(original) {
+        if s == 0 && f.inside(f.uv(mesh.points[v])) > tol {
             mesh.points.push(mesh.points[v]);
             back_copy.insert(v, mesh.points.len() - 1);
             source_of.insert(mesh.points.len() - 1, v);
@@ -1126,7 +1129,7 @@ impl Outline {
 impl Frame {
     /// Place of a point on the outline (edge index + share), `None` when it
     /// is not within `tol` of it.
-    fn perimeter(&self, q: [f64; 2], tol: f64) -> Option<f64> {
+    pub(crate) fn perimeter(&self, q: [f64; 2], tol: f64) -> Option<f64> {
         let k = self.poly.len();
         let mut best: Option<(f64, f64)> = None;
         for j in 0..k {

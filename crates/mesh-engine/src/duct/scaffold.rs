@@ -89,5 +89,6 @@ pub(super) fn read(bytes: &[u8]) -> Result<Scaffold, String> {
         points,
         boundary,
         tetrahedra,
+        ..Scaffold::default()
     })
 }

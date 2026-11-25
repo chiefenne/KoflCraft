@@ -15,6 +15,29 @@ pub(crate) const PORT_RELATIVE_TOLERANCE: f64 = 1e-6;
 /// Largest 1 - cos of the angle between two port facet normals (0.08°).
 pub(crate) const PORT_NORMAL_SLACK: f64 = 1e-6;
 
+/// The triangles that may not collide: `triangles` with every vertex copy
+/// replaced by its original (`twins`, see [`advance`]), each coincident
+/// pair kept once.
+pub(super) fn contact_triangles(triangles: &[[usize; 3]], twins: &[usize]) -> Vec<[usize; 3]> {
+    if twins.is_empty() {
+        return triangles.to_vec();
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    triangles
+        .iter()
+        .map(|t| t.map(|v| twins[v]))
+        .filter(|t| {
+            let mut k = *t;
+            k.sort_unstable();
+            seen.insert(k)
+        })
+        .collect()
+}
+
+/// The wall layers. `twins` (empty, or the original of every surface
+/// vertex) names the vertex copies of a cracked zero-thickness shell
+/// (SHL-01): a copy and its original lie at one place and move as one
+/// vertex, with the wall normals of both sides.
 pub(super) fn advance(
     surface: &ClosedSurface,
     patches: &[usize],
@@ -22,8 +45,32 @@ pub(super) fn advance(
     rims: &BTreeMap<usize, Vec<Edge>>,
     steps: &[f64],
     limit: Option<&[f64]>,
+    twins: &[usize],
 ) -> Result<Front, String> {
     let original = surface.vertices();
+    if !twins.is_empty() && twins.len() != original.len() {
+        return Err("invalid vertex copies".into());
+    }
+    let canon = |v: usize| twins.get(v).copied().unwrap_or(v);
+    let unify_min = |values: &mut [f64]| {
+        for v in 0..values.len() {
+            let c = canon(v);
+            if c != v {
+                let m = values[v].min(values[c]);
+                values[v] = m;
+                values[c] = m;
+            }
+        }
+        for v in 0..values.len() {
+            values[v] = values[canon(v)];
+        }
+    };
+    let start: Option<Vec<f64>> = limit.map(|l| {
+        let mut l = l.to_vec();
+        unify_min(&mut l);
+        l
+    });
+    let limit = start.as_deref();
     let mut points = original.to_vec();
     let total: f64 = steps.iter().sum();
     if !total.is_finite() || steps.iter().any(|&s| !s.is_finite() || s <= 0.0) {
@@ -45,13 +92,14 @@ pub(super) fn advance(
             let v = original[ids[(i + 2) % 3]] - p;
             let angle = u.cross(v).length().atan2(u.dot(v));
             let inward = f.plane.normal() * -1.0;
-            let groups = &mut normals[ids[i]];
+            let groups = &mut normals[canon(ids[i])];
             if let Some(group) = groups.iter_mut().find(|v| v.dot(inward) > 0.9 * v.length()) {
                 *group = *group + inward * angle;
             } else {
                 groups.push(inward * angle);
             }
             on_wall[ids[i]] = true;
+            on_wall[canon(ids[i])] = true;
         }
     }
     if !steps.is_empty() {
@@ -70,6 +118,9 @@ pub(super) fn advance(
                     return Err(format!("incompatible sharp wall normals at vertex {i}"));
                 }
             }
+        }
+        for v in 0..original.len() {
+            direction[v] = direction[canon(v)];
         }
     }
     // single-precision STL: a tilted cap's corners are coplanar only to the
@@ -144,21 +195,29 @@ pub(super) fn advance(
                 continue;
             }
             for &v in &f.triangle.vertices {
-                projection[v] = projection[v].min(-direction[v].dot(f.plane.normal()));
+                let c = canon(v);
+                projection[c] = projection[c].min(-direction[v].dot(f.plane.normal()));
             }
         }
         for i in 0..original.len() {
             if on_wall[i] {
-                if projection[i] <= 1e-10 || !projection[i].is_finite() {
+                let projection = projection[canon(i)];
+                if projection <= 1e-10 || !projection.is_finite() {
                     return Err(format!("no common inward wall direction at vertex {i}"));
                 }
                 if !port_vertex[i] {
-                    direction[i] = direction[i] / projection[i];
+                    direction[i] = direction[i] / projection;
                 }
             }
         }
         for (normal, inner_ids, faces) in &slip_inner {
             spread_in_plane(*normal, inner_ids, faces, &mut direction);
+        }
+        for v in 0..original.len() {
+            direction[v] = direction[canon(v)];
+        }
+        free_edges_keep_their_line(surface, patches, &on_wall, &mut direction)?;
+        for (normal, inner_ids, faces) in &slip_inner {
             for &v in inner_ids {
                 points[v] = original[v] + direction[v] * total;
             }
@@ -187,10 +246,12 @@ pub(super) fn advance(
         .map(|f| f.triangle.vertices)
         .collect();
     let extent = surface.bounds().extent().max_abs_component();
-    let scale = squeeze(
+    let contact = contact_triangles(&triangles, twins);
+    let mut scale = squeeze(
         surface,
         patches,
         &triangles,
+        &contact,
         &direction,
         &on_wall,
         &port_vertex,
@@ -198,13 +259,14 @@ pub(super) fn advance(
         steps,
         limit,
     )?;
+    unify_min(&mut scale);
     let mut distance = 0.0;
     for (level, &step) in steps.iter().enumerate() {
         distance += step;
         let displaced: Vec<_> = (0..original.len())
             .map(|i| original[i] + direction[i] * (distance * scale[i]))
             .collect();
-        super::intersection::embedded(&displaced, &triangles, extent)
+        super::intersection::embedded(&displaced, &contact, extent)
             .map_err(|e| format!("layer {} front: {e}", level + 1))?;
         let mut next = inner.clone();
         for (i, &wall) in on_wall.iter().enumerate() {
@@ -252,6 +314,66 @@ pub(super) fn advance(
     })
 }
 
+/// The free edges of a zero-thickness shell (where its two sides meet back
+/// to back) keep their line, so the shell keeps its outline and area: a
+/// vertex inside a straight free edge slides along it, a free-edge corner
+/// stays, and where a free edge meets a layered wall, the wall's layer
+/// direction there is turned along the free edge.
+fn free_edges_keep_their_line(
+    surface: &ClosedSurface,
+    patches: &[usize],
+    on_wall: &[bool],
+    direction: &mut [Vec3],
+) -> Result<(), String> {
+    let facets = surface.facets();
+    let original = surface.vertices();
+    let mut by_edge = BTreeMap::<Edge, usize>::new();
+    let mut tangents = BTreeMap::<usize, Vec<Vec3>>::new();
+    for (f, facet) in facets.iter().enumerate() {
+        if !is_slip(patches[f]) {
+            continue;
+        }
+        for (a, b) in edges(facet.triangle.vertices) {
+            match by_edge.remove(&(b, a)) {
+                Some(g)
+                    if facet.plane.normal().dot(facets[g].plane.normal())
+                        < -1.0 + PORT_NORMAL_SLACK =>
+                {
+                    let t = original[b] - original[a];
+                    let t = t / t.length();
+                    tangents.entry(a).or_default().push(t);
+                    tangents.entry(b).or_default().push(t * -1.0);
+                }
+                Some(_) => {}
+                None => {
+                    by_edge.insert((a, b), f);
+                }
+            }
+        }
+    }
+    for (v, t) in tangents {
+        let d = direction[v];
+        direction[v] = match t[..] {
+            [t0] if on_wall[v] => {
+                let along = d.dot(t0);
+                if d.dot(d) == 0.0 {
+                    d
+                } else if along <= 0.3 * d.length() {
+                    return Err(
+                        "a free edge of a shell meets a layered wall at too shallow an angle for the layers to follow it"
+                            .into(),
+                    );
+                } else {
+                    t0 * (d.dot(d) / along)
+                }
+            }
+            [t0, t1] if !on_wall[v] && t0.cross(t1).length() < 1e-6 => t0 * d.dot(t0),
+            _ => Vec3::ZERO,
+        };
+    }
+    Ok(())
+}
+
 /// Plane normal, inner vertices and facets of a wall patch without layers.
 type SlipPatch = (Vec3, Vec<usize>, Vec<[usize; 3]>);
 
@@ -287,6 +409,13 @@ fn slip_patches(
     for &f in &slip {
         for (a, b) in edges(facets[f].triangle.vertices) {
             if let Some(g) = by_edge.remove(&(b, a)) {
+                // the two sides of a zero-thickness shell meet back to back
+                // at its free edges: each side is a plane of its own
+                let back_to_back = facets[f].plane.normal().dot(facets[g].plane.normal())
+                    < -1.0 + PORT_NORMAL_SLACK;
+                if back_to_back {
+                    continue;
+                }
                 let (x, y) = (root(&mut parent, f), root(&mut parent, g));
                 parent.insert(x, y);
             } else {
@@ -420,6 +549,7 @@ fn squeeze(
     surface: &ClosedSurface,
     patches: &[usize],
     triangles: &[[usize; 3]],
+    contact: &[[usize; 3]],
     direction: &[Vec3],
     on_wall: &[bool],
     port_vertex: &[bool],
@@ -491,7 +621,7 @@ fn squeeze(
             let displaced: Vec<_> = (0..original.len())
                 .map(|i| original[i] + direction[i] * (distance * scale[i]))
                 .collect();
-            hit = super::intersection::collisions(&displaced, triangles, extent, usize::MAX);
+            hit = super::intersection::collisions(&displaced, contact, extent, usize::MAX);
             if !hit.is_empty() {
                 break;
             }
@@ -503,7 +633,7 @@ fn squeeze(
         rounds += 1;
         let mut touched = vec![false; original.len()];
         for (i, j) in hit {
-            for v in triangles[i].into_iter().chain(triangles[j]) {
+            for v in contact[i].into_iter().chain(contact[j]) {
                 touched[v] = true;
             }
         }

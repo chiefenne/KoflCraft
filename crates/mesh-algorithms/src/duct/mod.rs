@@ -5,14 +5,14 @@ mod convex;
 mod front;
 mod intersection;
 mod polyhedral;
-mod shell;
+pub(crate) mod shell;
 mod symbolic;
 mod verify;
 mod volume_dual;
 mod voronoi_core;
 mod wall_seeds;
 mod yield_layers;
-pub use volume_dual::{Scaffold, build_volume_dual};
+pub use volume_dual::{CrackStats, Scaffold, build_volume_dual, crack_shells};
 pub use voronoi_core::{
     DEFAULT_LLOYD_ITERATIONS, VoronoiOptions, VoronoiStats, WallJoin, build_voronoi_core,
 };
@@ -239,7 +239,7 @@ pub fn build(
     if !pending.is_empty() {
         return Err("unpaired surface edges".into());
     }
-    let mut front = front::advance(surface, patches, &labels, &rims, thicknesses, None)?;
+    let mut front = front::advance(surface, patches, &labels, &rims, thicknesses, None, &[])?;
     let tol = surface.bounds().extent().max_abs_component() * 1e-10;
     let mut kernels = Vec::new();
     for r in regions {

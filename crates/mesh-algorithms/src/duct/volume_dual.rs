@@ -4,11 +4,21 @@ use mesh_core::geometry::PatchId;
 use mesh_geometry::SurfaceTriangle;
 use std::collections::HashMap;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scaffold {
     pub points: Vec<Vec3>,
     pub boundary: Vec<([usize; 3], usize)>,
     pub tetrahedra: Vec<[usize; 4]>,
+    /// Zero-thickness shell triangles inside the domain (SHL-01), each a
+    /// face of two tetrahedra, counter-clockwise about its shell's normal,
+    /// with the shell's index. [`crack`](super::crack_shells) turns them
+    /// into boundary faces on both sides.
+    pub shells: Vec<([usize; 3], usize)>,
+    /// After cracking: (copy, original) for every node doubled at a shell.
+    pub twins: Vec<(usize, usize)>,
+    /// After cracking: the boundary tags of the two sides of each shell
+    /// (front: the side its normal points into).
+    pub shell_sides: Vec<(usize, usize)>,
 }
 
 #[derive(Default)]
@@ -261,8 +271,21 @@ fn split_reentrant(
         }
         groups[best].push(c);
     }
-    // Pieces join through shared tetrahedron faces; each connected set is
-    // its own part.
+    let mut parts = connected_parts(cell, groups);
+    parts.sort();
+    if parts.len() < 2 || !parts.iter().all(|part| manifold(cell, part)) {
+        return vec![all];
+    }
+    let after: usize = parts
+        .iter()
+        .map(|part| wall_inversions(p, cell, part, wall))
+        .sum();
+    if after < before { parts } else { vec![all] }
+}
+
+/// The corner pieces of each group in connected parts: pieces join through
+/// shared tetrahedron faces.
+fn connected_parts(cell: &Dual, groups: Vec<Vec<usize>>) -> Vec<Vec<usize>> {
     let mut parts = Vec::new();
     for group in groups {
         let mut left = group;
@@ -286,35 +309,48 @@ fn split_reentrant(
             parts.push(part);
         }
     }
-    parts.sort();
-    if parts.len() < 2 {
+    parts
+}
+
+/// Whether the cell made of the pieces `part` is a closed, consistently
+/// oriented, manifold shell.
+fn manifold(cell: &Dual, part: &[usize]) -> bool {
+    let (faces, _, _) = part_faces(cell, part);
+    let mut edges = HashMap::<(usize, usize), (i32, usize)>::new();
+    for f in &faces {
+        for (k, &a) in f.iter().enumerate() {
+            let b = f[(k + 1) % f.len()];
+            let e = edges.entry((a.min(b), a.max(b))).or_default();
+            e.0 += if a < b { 1 } else { -1 };
+            e.1 += 1;
+        }
+    }
+    edges.values().all(|&(s, u)| s == 0 && u == 2)
+}
+
+/// The dual cell of a node on a free edge of a zero-thickness shell wraps
+/// round the edge, so its centroid lies near the shell plane and its faces
+/// on the shell are seen almost edge-on (non-orthogonality near 90°).
+/// Split it into the pieces in front of the shell plane and those behind
+/// (`normal` points to the front), so each part sits on one side as a wall
+/// cell does; the faces between the parts lie on the scaffold faces
+/// through the node, around the plane beyond the edge. Kept only where
+/// every part is a closed manifold shell.
+fn split_shell_edge(p: &[Vec3], site: usize, cell: &Dual, normal: Vec3) -> Vec<Vec<usize>> {
+    let all: Vec<usize> = (0..cell.corners.len()).collect();
+    let mut groups = vec![Vec::new(), Vec::new()];
+    for (c, corner) in cell.corners.iter().enumerate() {
+        groups[usize::from((corner.centre - p[site]).dot(normal) <= 0.)].push(c);
+    }
+    if groups.iter().any(|g| g.is_empty()) {
         return vec![all];
     }
-    for part in &parts {
-        let (faces, _, _) = part_faces(cell, part);
-        let mut edges = HashMap::<(usize, usize), i32>::new();
-        for f in &faces {
-            for (k, &a) in f.iter().enumerate() {
-                let b = f[(k + 1) % f.len()];
-                *edges.entry((a.min(b), a.max(b))).or_default() += if a < b { 1 } else { -1 };
-            }
-        }
-        let mut uses = HashMap::<(usize, usize), usize>::new();
-        for f in &faces {
-            for (k, &a) in f.iter().enumerate() {
-                let b = f[(k + 1) % f.len()];
-                *uses.entry((a.min(b), a.max(b))).or_default() += 1;
-            }
-        }
-        if edges.values().any(|&s| s != 0) || uses.values().any(|&u| u != 2) {
-            return vec![all];
-        }
+    let mut parts = connected_parts(cell, groups);
+    parts.sort();
+    if parts.len() < 2 || !parts.iter().all(|part| manifold(cell, part)) {
+        return vec![all];
     }
-    let after: usize = parts
-        .iter()
-        .map(|part| wall_inversions(p, cell, part, wall))
-        .sum();
-    if after < before { parts } else { vec![all] }
+    parts
 }
 
 /// Splits a part that breaks the solver rules (verify::Shell::valid: closed,
@@ -661,6 +697,165 @@ pub(super) struct Prepared {
     pub surface_ids: BTreeMap<usize, usize>,
 }
 
+/// What [`crack_shells`] did.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CrackStats {
+    /// Shell triangles, now a boundary face on each side.
+    pub shell_triangles: usize,
+    /// Nodes given a copy (one per extra side).
+    pub copies: usize,
+    /// Shell nodes kept single: on free edges, where the fluid wraps round.
+    pub single_nodes: usize,
+}
+
+/// Crack the scaffold along its zero-thickness shells (SHL-01, SHL-02):
+/// every shell node gets one copy per connected set of its tetrahedra
+/// (connected through faces that are not shell faces), so a node inside a
+/// shell or on its line on the wall gets one copy per side, and a node on a
+/// free edge, where the fluid wraps round the edge, stays single. Every
+/// shell triangle becomes two boundary faces, oriented out of the fluid on
+/// each side: `sides[k].0` for the side its normal points into (the
+/// shell's name), `sides[k].1` for the other (`<name>_back`). The copies
+/// are listed in `twins`.
+pub fn crack_shells(
+    mut scaffold: Scaffold,
+    sides: &[(usize, usize)],
+) -> Result<(Scaffold, CrackStats), String> {
+    let mut stats = CrackStats::default();
+    if scaffold.shells.is_empty() {
+        return Ok((scaffold, stats));
+    }
+    let p = &scaffold.points;
+    let mut shell_face: HashMap<[usize; 3], usize> = HashMap::new();
+    for (i, (t, k)) in scaffold.shells.iter().enumerate() {
+        if *k >= sides.len() || t.iter().any(|&v| v >= p.len()) {
+            return Err("invalid shell triangle".into());
+        }
+        if shell_face.insert(sorted(*t), i).is_some() {
+            return Err("a shell triangle is given twice".into());
+        }
+    }
+    let on_shell: std::collections::BTreeSet<usize> =
+        scaffold.shells.iter().flat_map(|(t, _)| *t).collect();
+    // the two tetrahedra on each shell triangle: [front, back]
+    let mut owners = vec![[usize::MAX; 2]; scaffold.shells.len()];
+    let mut star: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut faces: HashMap<[usize; 3], Vec<usize>> = HashMap::new();
+    for (ti, tet) in scaffold.tetrahedra.iter().enumerate() {
+        if !tet.iter().any(|v| on_shell.contains(v)) {
+            continue;
+        }
+        for &v in tet {
+            if on_shell.contains(&v) {
+                star.entry(v).or_default().push(ti);
+            }
+        }
+        for o in 0..4 {
+            let face = sorted(std::array::from_fn(|k| tet[(o + 1 + k) % 4]));
+            if !face.iter().any(|v| on_shell.contains(v)) {
+                continue;
+            }
+            faces.entry(face).or_default().push(ti);
+            if let Some(&i) = shell_face.get(&face) {
+                let [a, b, c] = scaffold.shells[i].0.map(|v| p[v]);
+                let normal = (b - a).cross(c - a);
+                let side = usize::from((p[tet[o]] - a).dot(normal) <= 0.0);
+                if owners[i][side] != usize::MAX {
+                    return Err(format!("shell triangle {i} has two tetrahedra on one side"));
+                }
+                owners[i][side] = ti;
+            }
+        }
+    }
+    if let Some(i) = owners.iter().position(|o| o.contains(&usize::MAX)) {
+        return Err(format!(
+            "shell triangle {i} is not inside the fluid (a tetrahedron on one side only)"
+        ));
+    }
+    // one copy per extra connected set of tetrahedra around each node
+    let mut copy: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut points = scaffold.points.clone();
+    for &v in &on_shell {
+        let tets = &star[&v];
+        let mut parent: HashMap<usize, usize> = tets.iter().map(|&t| (t, t)).collect();
+        fn root(parent: &mut HashMap<usize, usize>, mut t: usize) -> usize {
+            while parent[&t] != t {
+                let up = parent[&parent[&t]];
+                parent.insert(t, up);
+                t = up;
+            }
+            t
+        }
+        for &t in tets {
+            let tet = scaffold.tetrahedra[t];
+            for o in 0..4 {
+                let face = sorted(std::array::from_fn(|k| tet[(o + 1 + k) % 4]));
+                if !face.contains(&v) || shell_face.contains_key(&face) {
+                    continue;
+                }
+                for &n in &faces[&face] {
+                    if n != t {
+                        let (x, y) = (root(&mut parent, t), root(&mut parent, n));
+                        parent.insert(x.max(y), x.min(y));
+                    }
+                }
+            }
+        }
+        let mut sets: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+        for &t in tets {
+            let r = root(&mut parent, t);
+            sets.entry(r).or_default().push(t);
+        }
+        if sets.len() == 1 {
+            stats.single_nodes += 1;
+            continue;
+        }
+        for group in sets.into_values().skip(1) {
+            let id = points.len();
+            points.push(points[v]);
+            scaffold.twins.push((id, v));
+            stats.copies += 1;
+            for t in group {
+                copy.insert((t, v), id);
+            }
+        }
+    }
+    let map = |t: usize, nodes: [usize; 3]| nodes.map(|v| copy.get(&(t, v)).copied().unwrap_or(v));
+    for (wall, _) in &mut scaffold.boundary {
+        if wall.iter().any(|v| on_shell.contains(v)) {
+            let owner = faces
+                .get(&sorted(*wall))
+                .and_then(|o| (o.len() == 1).then_some(o[0]))
+                .ok_or("a wall triangle at a shell has no single tetrahedron")?;
+            *wall = map(owner, *wall);
+        }
+    }
+    for (i, (t, k)) in scaffold.shells.iter().enumerate() {
+        let [front, back] = owners[i];
+        let f = map(front, [t[0], t[2], t[1]]);
+        let b = map(back, *t);
+        if sorted(f) == sorted(b) {
+            return Err(format!(
+                "shell triangle {i} has all its corners on free edges"
+            ));
+        }
+        scaffold.boundary.push((f, sides[*k].0));
+        scaffold.boundary.push((b, sides[*k].1));
+    }
+    for (ti, tet) in scaffold.tetrahedra.iter_mut().enumerate() {
+        for v in tet.iter_mut() {
+            if let Some(&c) = copy.get(&(ti, *v)) {
+                *v = c;
+            }
+        }
+    }
+    stats.shell_triangles = scaffold.shells.len();
+    scaffold.points = points;
+    scaffold.shells.clear();
+    scaffold.shell_sides = sides.to_vec();
+    Ok((scaffold, stats))
+}
+
 /// Check the scaffold, build its boundary surface and the wall layers.
 /// Rounds of squeezing the layers where the wall offset spoils the scaffold.
 const OFFSET_ROUNDS: usize = 40;
@@ -670,6 +865,9 @@ const OFFSET_FACTOR: f64 = 0.7;
 const OFFSET_MIN: f64 = 0.02;
 
 pub(super) fn prepare(scaffold: &Scaffold, steps: &[f64]) -> Result<Prepared, String> {
+    if !scaffold.shells.is_empty() {
+        return Err("crack the scaffold along its shells before the dual is built".into());
+    }
     if scaffold
         .boundary
         .iter()
@@ -709,20 +907,33 @@ pub(super) fn prepare(scaffold: &Scaffold, steps: &[f64]) -> Result<Prepared, St
         });
         patches.push(tag);
     }
-    let surface = ClosedSurface::new(
-        surface_points,
-        triangles,
-        ids.iter().map(|id| id.to_string()).collect(),
-    )
+    let names = ids.iter().map(|id| id.to_string()).collect();
+    // a shell that touches no wall is a closed piece of its own
+    let surface = if scaffold.twins.is_empty() {
+        ClosedSurface::new(surface_points, triangles, names)
+    } else {
+        ClosedSurface::with_pieces(surface_points, triangles, names)
+    }
     .map_err(|e| e.to_string())?;
     let ts: Vec<_> = surface
         .facets()
         .iter()
         .map(|f| f.triangle.vertices)
         .collect();
+    // the original surface vertex of every vertex copy at a shell
+    let mut twins: Vec<usize> = Vec::new();
+    if !scaffold.twins.is_empty() {
+        twins = (0..surface.vertices().len()).collect();
+        for &(c, o) in &scaffold.twins {
+            match (surface_ids.get(&c), surface_ids.get(&o)) {
+                (Some(&c), Some(&o)) => twins[c] = o,
+                _ => return Err("a shell node copy is not on the boundary".into()),
+            }
+        }
+    }
     intersection::embedded(
         surface.vertices(),
-        &ts,
+        &front::contact_triangles(&ts, &twins),
         surface.bounds().extent().max_abs_component(),
     )?;
     let mut rims = BTreeMap::<usize, Vec<Edge>>::new();
@@ -751,7 +962,7 @@ pub(super) fn prepare(scaffold: &Scaffold, steps: &[f64]) -> Result<Prepared, St
     // Squeeze the layers further where the wall offset would turn a
     // scaffold tetrahedron over or flatten it (thin ribs, tight corners).
     let labels = vec![0; ts.len()];
-    let mut front = front::advance(&surface, &patches, &labels, &rims, steps, None)?;
+    let mut front = front::advance(&surface, &patches, &labels, &rims, steps, None, &twins)?;
     if !steps.is_empty() {
         let mut neighbours = vec![Vec::new(); scaffold.points.len()];
         for t in &scaffold.tetrahedra {
@@ -803,7 +1014,15 @@ pub(super) fn prepare(scaffold: &Scaffold, steps: &[f64]) -> Result<Prepared, St
             if bad == 0 || scale == front.scale {
                 break;
             }
-            front = front::advance(&surface, &patches, &labels, &rims, steps, Some(&scale))?;
+            front = front::advance(
+                &surface,
+                &patches,
+                &labels,
+                &rims,
+                steps,
+                Some(&scale),
+                &twins,
+            )?;
         }
     }
     Ok(Prepared {
@@ -963,7 +1182,19 @@ pub fn build_volume_dual(
         let owner_offset = front.cells.len();
         let wall = |nodes: &[usize; 3]| prisms.get(&sorted(*nodes)).map(|&c| prism_centres[c]);
         let mut parts: Vec<Vec<usize>> = Vec::new();
-        for part in split_reentrant(p, site, cell, &wall) {
+        // a node on a shell's free edge: both sides of one shell
+        let shell_normal = scaffold.shell_sides.iter().find_map(|&(front, back)| {
+            let f = cell.boundary.iter().find(|b| b.1 == front)?;
+            cell.boundary.iter().find(|b| b.1 == back)?;
+            let [a, b, c] = f.0.map(|n| p[n]);
+            // a front face points out of the fluid, against the normal
+            Some((b - a).cross(c - a) * -1.)
+        });
+        let first = match shell_normal {
+            Some(n) => split_shell_edge(p, site, cell, n),
+            None => split_reentrant(p, site, cell, &wall),
+        };
+        for part in first {
             let split = split_invalid(p, cell, part, &parts, &split_quads, None);
             parts.extend(split);
         }
@@ -1071,4 +1302,94 @@ pub fn build_volume_dual(
         },
         surface,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Four tetrahedra round the edge ab; the shell triangle abc ends at
+    /// the free edge ab.
+    fn fan() -> Scaffold {
+        let v = |x, y, z| Vec3::new(x, y, z);
+        let (a, b, c, d, e, f) = (0, 1, 2, 3, 4, 5);
+        let tetrahedra = vec![[a, b, c, d], [a, b, d, f], [a, b, f, e], [a, b, e, c]];
+        let boundary = [
+            [a, c, d],
+            [b, c, d],
+            [a, d, f],
+            [b, d, f],
+            [a, f, e],
+            [b, f, e],
+            [a, e, c],
+            [b, e, c],
+        ]
+        .into_iter()
+        .map(|t| (t, 1))
+        .collect();
+        Scaffold {
+            points: vec![
+                v(0., 0., 0.),
+                v(1., 0., 0.),
+                v(0.5, 1., 0.),
+                v(0.5, 0., 1.),
+                v(0.5, 0., -1.),
+                v(0.5, -1., 0.),
+            ],
+            boundary,
+            tetrahedra,
+            shells: vec![([a, b, c], 0)],
+            ..Scaffold::default()
+        }
+    }
+
+    #[test]
+    fn crack_doubles_the_shell_and_keeps_its_free_edge() {
+        let (s, stats) = crack_shells(fan(), &[(7, 8)]).unwrap();
+        assert_eq!(
+            (stats.shell_triangles, stats.copies, stats.single_nodes),
+            (1, 1, 2)
+        );
+        assert_eq!(s.twins, vec![(6, 2)]);
+        assert_eq!(s.points[6], s.points[2]);
+        assert!(s.shells.is_empty());
+        assert_eq!(s.shell_sides, vec![(7, 8)]);
+        // the tetrahedra above and below the shell now share the free edge only
+        let shared = s.tetrahedra[0]
+            .iter()
+            .filter(|v| s.tetrahedra[3].contains(v))
+            .count();
+        assert_eq!(shared, 2);
+        // every boundary face lies on one tetrahedron, both shell sides too
+        assert_eq!(s.boundary.len(), 10);
+        for (t, _) in &s.boundary {
+            assert!(
+                s.tetrahedra
+                    .iter()
+                    .any(|tet| t.iter().all(|v| tet.contains(v))),
+                "{t:?}"
+            );
+        }
+        let sides: Vec<_> = s.boundary[8..].iter().map(|b| b.1).collect();
+        assert_eq!(sides, vec![7, 8]);
+        // the front side faces away from the tetrahedron it bounds
+        for (t, _) in &s.boundary[8..] {
+            let owner = s
+                .tetrahedra
+                .iter()
+                .find(|tet| t.iter().all(|v| tet.contains(v)))
+                .unwrap();
+            let apex = owner.iter().find(|v| !t.contains(v)).unwrap();
+            let [a, b, c] = t.map(|n| s.points[n]);
+            assert!((b - a).cross(c - a).dot(s.points[*apex] - a) < 0.0);
+        }
+    }
+
+    #[test]
+    fn crack_refuses_a_shell_on_the_fluid_boundary() {
+        let mut s = fan();
+        s.tetrahedra.pop();
+        let e = crack_shells(s, &[(7, 8)]).unwrap_err();
+        assert!(e.contains("not inside the fluid"), "{e}");
+    }
 }
