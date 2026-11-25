@@ -526,7 +526,41 @@ pub(crate) fn block_template() -> Value {
             "trailing_edge_spacing",
         ],
     );
-    json!({"oneOf": [channel, pipe, elbow, airfoil]})
+    let naca = json!({"type": "string", "pattern": "^[0-9]{4}$"});
+    let main_section = input(
+        json!({"naca": naca, "coordinates": {"type": "string"}}),
+        &["naca", "coordinates"],
+    );
+    let element = input(
+        json!({"naca": naca, "coordinates": {"type": "string"},
+               "chord": positive,
+               "deflection": {"type": "number", "minimum": -80, "maximum": 80,
+                              "description": "Degrees: slat nose down, flap trailing edge down"},
+               "gap": positive,
+               "overlap": {"type": "number", "exclusiveMaximum": 0,
+                           "description": "Over the main chord; negative: the elements follow each other along x"}}),
+        &["naca", "coordinates"],
+    );
+    let multi = input(
+        json!({"template": {"const": "multi_element_airfoil"},
+               "main": main_section, "slat": element, "flap": element,
+               "chord": positive, "span": positive, "farfield": positive, "wake_length": positive,
+               "surface_cells": {"type": "integer", "minimum": 8}, "normal_cells": count,
+               "wake_cells": count, "span_cells": count, "thickness_cells": count,
+               "gap_cells": count, "upstream_cells": count, "wall_spacing": positive,
+               "trailing_edge_thickness": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.05}}),
+        &[
+            "slat",
+            "flap",
+            "chord",
+            "span_cells",
+            "thickness_cells",
+            "gap_cells",
+            "upstream_cells",
+            "trailing_edge_thickness",
+        ],
+    );
+    json!({"oneOf": [channel, pipe, elbow, airfoil, multi]})
 }
 
 /// The volume algorithm of `block.grid` (BS-09).
