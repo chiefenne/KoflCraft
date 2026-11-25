@@ -47,6 +47,27 @@ impl ClosedSurface {
         triangles: Vec<SurfaceTriangle>,
         patch_names: Vec<String>,
     ) -> Result<Self, SurfaceError> {
+        Self::build(vertices, triangles, patch_names, true)
+    }
+
+    /// [`ClosedSurface::new`] for a domain boundary of several closed
+    /// pieces: a meshed domain around a zero-thickness shell that touches
+    /// no wall (its two sides form a closed piece of zero volume). Every
+    /// other check stays.
+    pub fn with_pieces(
+        vertices: Vec<Vec3>,
+        triangles: Vec<SurfaceTriangle>,
+        patch_names: Vec<String>,
+    ) -> Result<Self, SurfaceError> {
+        Self::build(vertices, triangles, patch_names, false)
+    }
+
+    fn build(
+        vertices: Vec<Vec3>,
+        triangles: Vec<SurfaceTriangle>,
+        patch_names: Vec<String>,
+        connected: bool,
+    ) -> Result<Self, SurfaceError> {
         let first = *vertices.first().ok_or(SurfaceError::Empty)?;
         let mut min = first;
         let mut max = first;
@@ -144,7 +165,7 @@ impl ClosedSurface {
                 }
             }
         }
-        if seen.contains(&false) {
+        if connected && seen.contains(&false) {
             return Err(SurfaceError::Disconnected);
         }
 

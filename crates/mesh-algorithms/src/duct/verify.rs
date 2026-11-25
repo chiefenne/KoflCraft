@@ -1,6 +1,7 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+#[derive(Default)]
 pub struct Measurements {
     pub volume: f64,
     /// Minimum, fifth percentile and median over core polyhedra.
@@ -1399,6 +1400,104 @@ pub(super) fn check_with_interface_count(
         normal_thickness_ranges,
         minimum_kernel_clearance,
         solver_rules,
+    })
+}
+
+/// Volume of a closed cell shell as the solver takes it (see
+/// [`fan_volume_centre`]).
+pub(super) fn shell_volume(p: &[Vec3], faces: &[Vec<usize>]) -> f64 {
+    let mut rings = Rings::default();
+    for r in faces {
+        rings.push(r);
+    }
+    fan_volume_centre(p, &rings).0
+}
+
+/// What [`check_edited`] measured.
+pub(super) struct EditCheck {
+    pub solver_rules: SolverRules,
+    pub volume: f64,
+    pub minimum_volume: f64,
+    /// Boundary area of every patch id, indexed by id - 1.
+    pub areas: Vec<f64>,
+}
+
+/// The checks after a finished mesh was edited in place (a shell imprint),
+/// where no source surface is left to compare with: every cell passes the
+/// solver rules, every interior face is used by exactly two cells in
+/// opposite order, every boundary face once, by its owner, in its owner's
+/// order, and every volume is positive.
+pub(super) fn check_edited(
+    p: &[Vec3],
+    cells: &[Cell],
+    boundary: &[BoundaryFace],
+    patch_count: usize,
+) -> Result<EditCheck, String> {
+    let (solver_rules, volumes, _) = solver_rules_and_volumes(p, cells)?;
+    if solver_rules.failing_cells > 0 {
+        return Err(format!(
+            "{} of {} cells fail the solver rules after the edit (open {}, volume {}, pyramids {}, turned away {})",
+            solver_rules.failing_cells,
+            solver_rules.cells,
+            solver_rules.open_cells,
+            solver_rules.nonpositive_volume,
+            solver_rules.negative_pyramids,
+            solver_rules.faces_turned_away
+        ));
+    }
+    let mut areas = vec![0.0; patch_count];
+    let mut exterior: KeyMap<&BoundaryFace> = KeyMap::default();
+    for face in boundary {
+        if exterior.insert(FaceKey::new(&face.nodes), face).is_some() {
+            return Err("duplicate boundary face".into());
+        }
+        *areas
+            .get_mut(face.patch.wrapping_sub(1))
+            .ok_or("boundary face with an unknown patch")? += boundary_area(p, &face.nodes);
+    }
+    let mut pending: KeyMap<(usize, usize)> = KeyMap::default();
+    let (mut rings, mut earlier) = (Rings::default(), Rings::default());
+    for (id, cell) in cells.iter().enumerate() {
+        rings.load(&cell.element);
+        for (index, ring) in rings.iter().enumerate() {
+            let k = FaceKey::new(ring);
+            if let Some(face) = exterior.remove(&k) {
+                if id != face.owner || !same_ring(&face.nodes, ring, false) {
+                    return Err("incorrect boundary owner or winding".into());
+                }
+            } else if let Some((previous, at)) = pending.remove(&k) {
+                earlier.load(&cells[previous].element);
+                if !same_ring(earlier.get(at), ring, true) {
+                    return Err("interior face has inconsistent winding".into());
+                }
+            } else {
+                pending.insert(k, (id, index));
+            }
+        }
+    }
+    if !pending.is_empty() || !exterior.is_empty() {
+        return Err(format!(
+            "{} unpaired interior and {} unmatched boundary faces",
+            pending.len(),
+            exterior.len()
+        ));
+    }
+    let mut volume = 0.0;
+    let mut minimum_volume = f64::INFINITY;
+    for (id, &v) in volumes.iter().enumerate() {
+        if !v.is_finite() || v <= 0.0 {
+            return Err(format!(
+                "nonpositive or unrepresentable volume at cell {id}"
+            ));
+        }
+        volume += v;
+        minimum_volume = minimum_volume.min(v);
+    }
+    Ok(EditCheck {
+        solver_rules,
+        volume,
+        minimum_volume,
+        areas,
     })
 }
 

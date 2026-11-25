@@ -196,6 +196,27 @@ commands = []
 gaps = "Polyhedral mode with a Rust-built scaffold only (not a scaffold file, not bulk or layered); no STL surface or closed-body datum yet; the zones' cells are counted where the grading sets the size, which near a wall can also be the wall's own size; not run on the jacket, furnace or Manifold"
 
 [[feature]]
+id = "duct-shells"
+title = "Zero-thickness shells on the nonconvex duct path (SHL-01 to SHL-03)"
+requirements = ["SHL-01", "SHL-02", "SHL-03"]
+grade = "partial"
+how = "In a round pipe (r = 5, 48-gon wall) a half baffle from the wall to a free edge and a tilted plate with free edges all round go into the tet scaffold of the median-dual core: the wall is cut along each shell before the remesh, each shell is meshed by a 2D constrained Delaunay at the local size, its triangles are recovered in the scaffold and the scaffold is cracked into two sides; both sides are wall patches (`<shell>`, `<shell>_back`) of equal area, the plate covers its polygon exactly, the baffle the pipe section on its side within 1 %, the volume holds within 0.5 % and none of the 135k cells fails the solver rules; the wall layers run into the shell and stop at its free edges. Each shell has its own size (default: an eighth of its narrow width, half that on the free edges) in the build's size field, is graded from its wall-line edges and splits encroached boundary edges: the 4 x 3 plate goes from 12 to 390 triangles (angles above 35 degrees) and the baffle's smallest angle from 4.5 to 15.4 degrees. On the Voronoi core the finished cells are cut exactly instead, with the same areas. A shell over a port cap, two shells that meet and a shell in a wall facet are refused with the shell's name; shell.add/list/remove add a shell by name, refuse a repeated name, a nonconvex polygon and a shell touching another, list the default sizes from the STL, and replay from the journal"
+tests = [
+  "crates/mesh-engine/tests/shell_duct.rs::a_half_baffle_and_a_plate_in_the_scaffold",
+  "crates/mesh-engine/tests/shell_duct.rs::a_half_baffle_and_a_plate_cut_into_the_voronoi_core",
+  "crates/mesh-algorithms/src/shell_surface.rs::plate_and_spanning_baffle_in_a_box",
+  "crates/mesh-algorithms/src/shell_surface.rs::caps_crossing_and_coplanar_shells_are_refused",
+  "crates/mesh-algorithms/src/planar.rs::constraints_are_recovered_and_regions_split",
+  "crates/mesh-algorithms/src/duct/volume_dual.rs::crack_doubles_the_shell_and_keeps_its_free_edge",
+  "crates/mesh-algorithms/src/duct/volume_dual.rs::crack_refuses_a_shell_on_the_fluid_boundary",
+  "crates/mesh-algorithms/src/duct/shell.rs::a_plate_with_free_edges_covers_its_polygon",
+  "crates/mesh-algorithms/src/shell_surface.rs::narrow_width_and_size_items_of_a_shell",
+  "crates/mesh-cli/tests/kofl.rs::shell_tools_add_list_and_remove_shells",
+]
+commands = []
+gaps = "Shells may meet walls only: a shell over an inlet or outlet cap and shells that touch each other are refused for now; planar convex polygons only; no prism layers on the shells (SHL-04); the report names both sides, but the hand-off evidence does not pair them yet and `foehn` does not read them (FC-11); Polyhedral mode with a Rust-built median-dual scaffold (the Voronoi core takes the exact cut, which needs convex cells); the smallest shell triangle angle is 15.4 degrees on the test baffle, where the wall line ends 0.05 from a kink of the 48-gon (wall-line edges are split once at most, to keep the wall triangles beside them sound); shell sizes apply to the median-dual scaffold only (the Voronoi core's cut follows its cells); not run on the jacket, furnace or Manifold"
+
+[[feature]]
 id = "sweep"
 title = "Swept block and pipe with prism layers"
 requirements = ["BL-01", "BL-03"]
@@ -520,10 +541,32 @@ id = "block-mb1g-multi-element"
 title = "Block-structured variant MB1g: multi-element airfoil template (slat, main element, flap; extruded H-grid)"
 requirements = ["BS-03", "BS-09", "BS-12"]
 grade = "partial"
-how = "block.template with multi_element_airfoil: each element a NACA 4-digit section or a Selig/Lednicer file, blunt trailing edge (0.5 % chord), placed by chord, deflection, gap (closest distance, fraction of the main chord) and negative overlap; an H-grid of 2E+1 columns and four rows with each element a hole two blocks tall, spline walls, fan-shaped gap edges that leave each trailing edge toward the next element, and a check that refuses a folded TFI grid naming the gap to change. Slat 25° (gap 0.05, overlap -0.04), flap 30° (gap 0.03, overlap -0.02), 4,320 cells: FoehnCraft max/mean non-orthogonality TFI 89.14°/9.25°, elliptic 89.14°/8.74°, elliptic + wall sliding 89.14°/8.49°; wall angle max/mean 78.7°/22.8° → 49.0°/7.2° (elliptic) and 62.6°/7.4° (sliding). Elliptic smoothing on this template uses decay 0.8 and up to 40,000 sweeps; wall nodes whose spacing feedback sits at the control bound (blunt trailing-edge faces) do not hold up convergence"
+how = "block.template with multi_element_airfoil: each element a NACA 4-digit section or a Selig/Lednicer file, blunt trailing edge (0.5 % chord), placed by chord, deflection, gap (closest distance, fraction of the main chord) and negative overlap; an H-grid of 2E+1 columns and four rows around a wall ring per element (six blocks, 5 % of its chord thick, the wall offset along its normals, cells growing by at most 1.2), with a cove where the next element's nose sits below the chord, spline walls, and gap edges that leave each trailing edge toward the next element. The blocks off the rings then go through the layout optimisation (block::layout, after Sauer & Morsbach 2023): vertices slide along the box or move freely, interior edges bend by two Hermite modes, Tanh/Geometric end spacings scale, minimising the face non-orthogonality and growth of the TFI grid by a pattern search (Hooke & Jeeves 1961); the result's layout entry reports before and after. A check refuses a TFI grid that still folds, naming the gap to change. Nine cases (research/block-layout-optimisation.md): max non-orthogonality 76-89° (58-240 cells over 70°, two cases refused) became 47.4-68.2° with no cell over 70° and no fold, at 0.5-2.5 s per template. Slat 25° (gap 0.05, overlap -0.04), flap 30° (gap 0.03, overlap -0.02), 64 surface cells: TFI 54.72°/14.46° max/mean, elliptic 54.85°/14.23° converged in 1,310 sweeps (34 s; was 40,000 sweeps, 6 min), wall angle max/mean 44.9°/4.6°. Elliptic smoothing on this template uses decay 0.8 and up to 40,000 sweeps"
 tests = [
   "crates/mesh-algorithms/src/block/tests.rs::multi_element_airfoil_places_and_conforms",
+  "crates/mesh-algorithms/src/block/layout.rs::layout_straightens_a_leaning_edge_along_the_boundary",
+  "crates/mesh-algorithms/src/block/layout.rs::layout_keeps_blocks_on_rigid_patches",
   "crates/mesh-cli/tests/kofl.rs::block_templates_build_an_elbow_and_an_airfoil_from_a_file",
 ]
 commands = ["kofl call block.template", "kofl call block.grid"]
-gaps = "Overlapping elements (slot topology) are refused; the max non-orthogonality (82° to 89°) sits in the upstream wedge in front of the slat nose, far from the walls, so no volume algorithm changes it; wall sliding raises the largest wall angle at the slat (49.0° → 62.6°); the template's smoothing settings are lost once an edit drops the reference; not in the acceptance runner yet (sliding raises the max non-orthogonality by 3e-4°)"
+gaps = "Overlapping elements (slot topology) are refused; the worst angles left sit in the gap blocks and at the box top (the layout has no triangle blocks, so the MB1h trigger adds no split there); the largest growth across a face (17 to 28) sits at the ring's blunt trailing-edge corner cells, which the optimiser does not move; the optimiser works on extruded topologies only (as a tool: block.optimize_layout, MB1h); the template's smoothing settings are lost once an edit drops the reference; not in the acceptance runner yet"
+
+[[feature]]
+id = "block-mb1h-triangle-split"
+title = "Block-structured variant MB1h: triangle split (tri-center) with an automatic trigger; tetrahedron and prism as hexahedra"
+requirements = ["BS-03", "BS-05", "BS-13"]
+grade = "partial"
+how = "block.split_triangle splits a block with a corner of at least 120° into three blocks around a centre of valence 3 (side i-j gets n_i + n_j cells); the new count enters as a row that runs through the neighbouring blocks to the boundary (sheet insertion), new vertices on the edges' own curves and laws, halves fitted to the old grid, patches kept. block.optimize_layout runs the MB1g layout optimiser on any extruded topology and, by default, the trigger: every corner of 150° or more in the layout before optimisation is tried (split, then optimised with the growth held at the larger of 2 and the start growth) and kept only when its blocks' worst angle drops by 2° or more while the grid's worst angle, cells over 70°, folds and growth get no worse; kept and skipped corners are reported with the reason. The multi_element_airfoil template runs the trigger too. block::tri_center builds a prism as three hexahedra and a tetrahedron as four (edge midpoints, face centroids, body centroid; shared points made once, either orientation), with templates triangle and tetrahedron. A 171° triangle beside a quadrilateral: 61.9° after plain optimisation, 26.2° with the kept split, growth 2.0, 0.2 s; the nine MB1g airfoil cases have no 150° corner and stay unchanged (research/block-triangle-split.md)"
+tests = [
+  "crates/mesh-engine/src/block_triangle.rs::a_triangle_becomes_three_blocks_and_a_row",
+  "crates/mesh-engine/src/block_triangle.rs::the_trigger_keeps_a_split_that_helps",
+  "crates/mesh-engine/src/block_triangle.rs::the_trigger_leaves_a_layout_without_triangles_alone",
+  "crates/mesh-engine/src/block_triangle.rs::the_growth_hold_keeps_the_size_ratio",
+  "crates/mesh-engine/src/block_triangle.rs::a_split_is_refused_off_a_triangle_or_layer",
+  "crates/mesh-algorithms/src/block/tri_center.rs::a_tetrahedron_becomes_four_hexahedra",
+  "crates/mesh-algorithms/src/block/tri_center.rs::two_tetrahedra_share_their_face",
+  "crates/mesh-algorithms/src/block/tri_center.rs::a_triangle_becomes_a_prism_of_three_hexahedra",
+  "crates/mesh-cli/tests/kofl.rs::tri_center_tools_split_blocks_and_build_meshes",
+]
+commands = ["kofl call block.split_triangle", "kofl call block.optimize_layout", "kofl call block.template"]
+gaps = "One layer of blocks only (extruded topologies), like the layout optimiser; the tetrahedron split is a template building block, not an edit of a 3D topology; a corner of exactly 180° cannot be stored (the check refuses the block); the trigger tries at most four corners per round, one layout optimisation each; no template uses a triangle layout yet (the multi-element gaps have none); not in the acceptance runner yet"

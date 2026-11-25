@@ -95,13 +95,17 @@ fn write_topology(ctx: &Context, output: &str, file: &TopologyFile) -> Result<Va
     let (dir, name) = ctx.target(output)?;
     dir.write_new(&name, &bytes)
         .map_err(|e| Diagnostic::new("io_error", e).with_path(output))?;
-    Ok(json!({
+    let mut result = json!({
         "format": BLOCK_RESULT_FORMAT,
         "format_version": crate::FORMAT_VERSION,
         "output": output,
         "files": [{ "path": output, "blake3": mesh_engine::file_digest(&bytes) }],
         "check": check,
-    }))
+    });
+    if let Some(layout) = file.reference.as_ref().and_then(|r| r.layout.as_ref()) {
+        result["layout"] = layout.clone();
+    }
+    Ok(result)
 }
 
 pub(crate) fn list(input: Value, ctx: &Context) -> Run {
@@ -325,4 +329,45 @@ pub(crate) fn split_block(input: Value, ctx: &Context) -> Run {
         at: i.at,
     };
     edit(ctx, &i.topology, &i.output, e)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SplitTriangleInput {
+    pub topology: String,
+    pub output: String,
+    pub block: usize,
+    pub vertex: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cells: Option<usize>,
+}
+
+pub(crate) fn split_triangle(input: Value, ctx: &Context) -> Run {
+    let i: SplitTriangleInput = decode(input)?;
+    let e = Edit::SplitTriangle {
+        block: i.block,
+        vertex: i.vertex,
+        cells: i.cells,
+    };
+    edit(ctx, &i.topology, &i.output, e)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OptimizeLayoutInput {
+    pub topology: String,
+    pub output: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triangle_splits: Option<bool>,
+}
+
+pub(crate) fn optimize_layout(input: Value, ctx: &Context) -> Run {
+    let i: OptimizeLayoutInput = decode(input)?;
+    let file = topology(ctx, &i.topology)?;
+    let (new, layout) =
+        mesh_engine::block_triangle::optimize_layout(&file, i.triangle_splits.unwrap_or(true))
+            .map_err(|e| Diagnostic::from(e).with_path(&i.topology))?;
+    let mut result = write_topology(ctx, &i.output, &new)?;
+    result["layout"] = layout;
+    Ok(result)
 }

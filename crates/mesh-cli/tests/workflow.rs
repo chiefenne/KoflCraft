@@ -980,3 +980,39 @@ fn flush_openings_grow_layers_and_every_patch_keeps_its_name() {
         "0=walls 1=front 2=tubes 3=sides 4=burner 5=outlet"
     );
 }
+
+/// The hex core (`"core": "hex_core"`, research/hex-core.md) on the furnace:
+/// octree cubes in the bulk, the median dual between them and the wall
+/// layers; the mesh passes the solver rules and keeps the volume.
+#[test]
+fn hex_core_fills_the_furnace_bulk_with_cubes() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/furnace");
+    let work = WorkDirectory::new();
+    let mut partition: Value =
+        serde_json::from_str(&fs::read_to_string(fixture.join("partition.json")).unwrap()).unwrap();
+    partition["volume_scaffold"]["core"] = "hex_core".into();
+    let hex = work.path().join("hex.json");
+    fs::write(&hex, partition.to_string()).unwrap();
+    let path = |f: &str| fixture.join(f).to_str().unwrap().to_string();
+    let report = work.run(&[
+        "generate-duct",
+        &path("furnace.stl"),
+        &path("furnace.patches.json"),
+        hex.to_str().unwrap(),
+        "polyhedral",
+        "furnace",
+    ])["report"]
+        .clone();
+    assert_eq!(report["algorithm"], "volume_hex_core_v1");
+    let core = &report["scaffold"]["build"]["hex_core"];
+    let cubes = core["cubes"].as_u64().unwrap();
+    assert!(cubes > 100, "{core}");
+    // graded: the wall spacing grows inward, so the cubes come in several sizes
+    assert!(core["cube_sizes"].as_array().unwrap().len() > 1, "{core}");
+    // the cubes are cells of the mesh
+    assert!(report["polyhedra"].as_u64().unwrap() > cubes);
+    let volume = report["volume"].as_f64().unwrap();
+    assert!((volume / report["source_volume"].as_f64().unwrap() - 1.).abs() < 0.005);
+    let walls = report["patch_areas"]["walls"].as_f64().unwrap();
+    assert!(walls > 0.);
+}

@@ -450,6 +450,51 @@ pub(crate) fn grading_result() -> Value {
     }))
 }
 
+/// A zero-thickness shell of a duct partition (SHL-01).
+pub(crate) fn shell_config() -> Value {
+    let point = json!({"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3});
+    let mut schema = input(
+        json!({
+            "name": {"type": "string", "minLength": 1, "description": "The shell's name; its sides become the wall patches `<name>` (the side its normal points into) and `<name>_back`"},
+            "polygon": {"type": "array", "items": point, "minItems": 3, "description": "A planar convex polygon, corners counter-clockwise about the `name` side; it may reach past the wall (the part outside the fluid is ignored)"},
+            "size": {"type": "number", "exclusiveMinimum": 0, "description": "Cell size on the shell; default: the build's max_size or an eighth of the shell's narrow width, whichever is smaller"},
+            "edge_size": {"type": "number", "exclusiveMinimum": 0, "description": "Cell size along the free edges; default: half the shell's size"},
+        }),
+        &["size", "edge_size"],
+    );
+    schema["description"] = json!("A zero-thickness shell (baffle, plate, fin)");
+    schema
+}
+
+/// `shell.list`: the shells of a partition with their sizes.
+pub(crate) fn shell_listing() -> Value {
+    let size = json!({"type": ["number", "null"]});
+    let string = json!({"type": "string"});
+    let point = json!({"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3});
+    object_schema(json!({
+        "shells": {"type": "array", "items": object_schema(json!({
+            "name": string,
+            "sides": object_schema(json!({"front": string, "back": string})),
+            "polygon": {"type": "array", "items": point},
+            "normal": point,
+            "polygon_area": {"type": "number"},
+            "size": size, "size_from": string,
+            "edge_size": size, "edge_size_from": string,
+        }))}
+    }))
+}
+
+/// `shell.add` and `shell.remove`: the new partition and its shells.
+pub(crate) fn shell_result() -> Value {
+    let string = json!({ "type": "string" });
+    object_schema(json!({
+        "format": {"const": "koflcraft.shell-result"}, "format_version": string,
+        "output": string,
+        "files": { "type": "array", "items": object_schema(json!({ "path": string, "blake3": {"type": "string", "pattern": "^[a-f0-9]{64}$"} })) },
+        "shells": shell_listing()["properties"]["shells"]
+    }))
+}
+
 /// `patch.propose`: a patch result plus the classified regions.
 pub(crate) fn patch_propose() -> Value {
     let mut schema = patch_result();
@@ -636,7 +681,24 @@ pub(crate) fn block_template() -> Value {
             "trailing_edge_thickness",
         ],
     );
-    json!({"oneOf": [channel, pipe, elbow, airfoil, multi]})
+    let corner_counts = |n: usize| {
+        json!({"type": "array", "items": count, "minItems": n, "maxItems": n,
+               "description": "Cells per corner: the side from corner i to corner j gets cells[i] + cells[j]"})
+    };
+    let xy = json!({"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2});
+    let triangle = input(
+        json!({"template": {"const": "triangle"},
+               "corners": {"type": "array", "items": xy, "minItems": 3, "maxItems": 3},
+               "cells": corner_counts(3), "span": positive, "span_cells": count}),
+        &["corners", "span_cells"],
+    );
+    let tetrahedron = input(
+        json!({"template": {"const": "tetrahedron"},
+               "corners": {"type": "array", "items": point(), "minItems": 4, "maxItems": 4},
+               "cells": corner_counts(4)}),
+        &["corners"],
+    );
+    json!({"oneOf": [channel, pipe, elbow, airfoil, multi, triangle, tetrahedron]})
 }
 
 /// The volume algorithm of `block.grid` (BS-09).
@@ -753,6 +815,23 @@ pub(crate) fn block_remove_block() -> Value {
     input(
         json!({"topology": path(), "output": path(), "block": index(), "patch": name(), "role": role()}),
         &["patch", "role"],
+    )
+}
+
+pub(crate) fn block_split_triangle() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "block": index(),
+               "vertex": {"type": "integer", "minimum": 0, "description": "The block's flat corner (at least 120°)"},
+               "cells": {"type": "integer", "minimum": 1, "description": "Cells of the new row; from the triangle's spacing when absent"}}),
+        &["cells"],
+    )
+}
+
+pub(crate) fn block_optimize_layout() -> Value {
+    input(
+        json!({"topology": path(), "output": path(),
+               "triangle_splits": {"type": "boolean", "description": "Split blocks with a corner of 150° or more into three where that measurably helps (default true)"}}),
+        &["triangle_splits"],
     )
 }
 

@@ -3,15 +3,19 @@
 mod columns;
 mod convex;
 mod front;
+mod hex_join;
 mod intersection;
 mod polyhedral;
+pub(crate) mod shell;
 mod symbolic;
 mod verify;
 mod volume_dual;
 mod voronoi_core;
 mod wall_seeds;
 mod yield_layers;
-pub use volume_dual::{Scaffold, build_volume_dual, prism_sectors};
+pub use volume_dual::{
+    CrackStats, Scaffold, build_volume_dual, build_volume_dual_hex, crack_shells, prism_sectors,
+};
 pub use voronoi_core::{
     DEFAULT_LLOYD_ITERATIONS, VoronoiOptions, VoronoiStats, WallJoin, build_voronoi_core,
 };
@@ -21,6 +25,7 @@ use mesh_geometry::ClosedSurface;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub use polyhedral::Polyhedron;
+pub use shell::{PlanarShell, ShellStats, imprint_planar_shell};
 pub use verify::{FaceKey, KeyHasher, KeyMap, KeySet, Measurements};
 pub use yield_layers::{YieldPlane, extrude as extrude_yielding, shorten as shorten_yielding};
 
@@ -111,7 +116,16 @@ pub fn is_wall(patch: usize) -> bool {
 
 /// Whether a patch id is a wall patch without layers (see [`SLIP`]).
 pub fn is_slip(patch: usize) -> bool {
-    patch >= SLIP
+    (SLIP..HEX).contains(&patch)
+}
+
+/// Scaffold boundary tag of the shell of a hex core ([`crate::hexcore`]):
+/// an inner boundary of the scaffold that the cubes replace, no patch.
+pub const HEX: usize = crate::hexcore::HEX;
+
+/// Whether a scaffold boundary tag is the shell of a hex core.
+pub fn is_hex(patch: usize) -> bool {
+    patch == HEX
 }
 
 /// Whether a patch id is an inlet or outlet cap (1 or 2).
@@ -237,7 +251,7 @@ pub fn build(
     if !pending.is_empty() {
         return Err("unpaired surface edges".into());
     }
-    let mut front = front::advance(surface, patches, &labels, &rims, thicknesses, None)?;
+    let mut front = front::advance(surface, patches, &labels, &rims, thicknesses, None, &[])?;
     let tol = surface.bounds().extent().max_abs_component() * 1e-10;
     let mut kernels = Vec::new();
     for r in regions {

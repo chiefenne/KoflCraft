@@ -65,6 +65,10 @@ The partition may list wall patches that grow no layers: `"no_layers": ["sides"]
 
 `"layers_yield": ["sides"]` keeps the layers of a planar wall and lets every wall that crosses it win: their layers run straight through its layers down to it, with no mitre. KoflCraft builds the duct with the yielding plane moved into the fluid by the total layer height, as a wall without layers, so the crossing walls' layers end on the moved plane. Vertices in a band of four layer heights in front of the plane move with it on a linear ramp, and the walls there stand at a right angle on it, so they slide in their own planes and the domain keeps its shape. Each face on the moved plane is then extruded back to the real wall through the layer heights (first layer at the wall): under a core cell this is the wall's own layer stack, and under a crossing wall's layer column it is a block of (crossing layer × yielding layer) hexahedra, so on the furnace each tube is ringed by such blocks at the side walls. The result is checked again against the full domain (areas, volume, solver rules). Flush openings in a yielding wall yield with it. Limits: median dual core with a built scaffold only; each connected piece planar; walls within four layer heights of it at a right angle (about 6° slack for the chord facets of a triangulated tube); two yielding walls must not meet; a patch can't be under both `no_layers` and `layers_yield`.
 
+## Hex core (opt-in)
+
+`"core": "hex_core"` in `volume_scaffold` (built scaffold only) fills the bulk with the cubes of a 2:1 balanced octree, sized from the scaffold spacing, and keeps them one cube edge plus the layer stack away from the wall. The median dual fills the gap between the wall layers and the cubes; each dual cell meets a cube in its own triangles on the cube side, and a cube next to smaller cubes has a face per small neighbour (hanging nodes, accepted by FoehnCraft). Optional `"hex_core": {"size_factor": 1.0, "margin": 1.0}`: cube edge over the local spacing, and the gap in cube edges. The report's `scaffold.build.hex_core` lists the cubes per size. On the furnace at an interior size of 0.0625 it builds in 26 s instead of 42 s with 7% fewer faces but 3% more cells than the median dual, so it is not yet a choice of the region menu ([note and benchmark](../research/hex-core.md)). Median dual join only; no `layers_yield`. Run `cargo test --release --locked -p mesh-cli --test workflow hex_core`.
+
 ## Fixture results
 
 | Case | Core tetrahedra | Core polyhedra | Wall prisms | Fluid volume | Inlet / outlet area |
@@ -109,6 +113,25 @@ kofl call grading.add --input add.json          # grading.list, grading.remove b
 ```
 
 The build report has a `grading` object: for each source, the core cells (no prisms) whose centroid lies in its zone where it sets the size, and their achieved cbrt(volume) quantiles, next to the median of all other core cells. On a round pipe (r = 5) a sphere datum of size 0.25 gives cells of median 0.27 and a box region of size 0.3 gives 0.33, against 0.52 elsewhere ([test](../crates/mesh-engine/tests/grading_duct.rs)). Sizes are cell sizes: the median cbrt(volume) of the cells in a zone lands within about 15 % of `size`.
+
+## Thin shells: baffles and plates
+
+A baffle, plate or fin of zero thickness inside the fluid is a `shells` entry in the partition: a name and a planar convex polygon (SHL-01 to SHL-03). The polygon may reach past the wall: only its part inside the fluid is meshed, and where it leaves the fluid it ends on the wall. Where it stays inside the fluid it has a free edge.
+
+```json
+"shells": [
+  {"name": "baffle", "polygon": [[-9, -9, 24.3], [0.7, -9, 24.3], [0.7, 9, 24.3], [-9, 9, 24.3]]},
+  {"name": "plate",  "polygon": [[-2, -1.5, 11], [2, -1.5, 11.8], [2, 1.5, 11.8], [-2, 1.5, 11]]}
+]
+```
+
+An agent adds them with `shell.add` (name, polygon, optional `size` and `edge_size`), checks them with `shell.list` (give the STL as `surface` to see the default sizes) and drops one with `shell.remove`, without editing the partition by hand ([tools](tools.md)).
+
+Each shell has its own cell size: by default the build's `max_size` or an eighth of the shell's narrow width inside the STL's box, whichever is smaller (about eight cells across), and half of that along its free edges, where the flow separates. Both go into the build's size field, so the wall is remeshed finer along the shell's line and the tetrahedra grade away from the shell at the build's rate. The shell is graded from the edges of its line on the wall too: a polygonal wall keeps every kink on that line, and a line edge far shorter than its neighbours asks for short pieces of the free edge beside it. Where a refinement point would crowd the boundary, the boundary edge is split instead (Ruppert 1995): free-edge pieces as often as the size asks, wall-line edges once, with their wall triangles bisected.
+
+Each shell becomes two wall patches, `<name>` on the side its normal points to and `<name>_back` on the other, with one owner cell per face, so the solver sees two walls back to back. On the default median-dual core the shell goes into the scaffold before the cells are built: the wall is cut along the shell, the shell is triangulated at the local cell size (2D constrained Delaunay with refinement), its triangles are recovered in the tetrahedra and the scaffold is split into two sides there. The wall layers run into the shell and stop at its free edges; the shell itself has no layers yet (SHL-04). On the Voronoi core the finished cells are cut by the shell instead, which needs convex cells.
+
+The build report has a `shells` list: per shell the two patches, the polygon area, the area of each side and its face count, the free-edge length, the length of the line along the wall, the sizes and where they came from, and the achieved shell edge lengths and splits. A half baffle and a plate in a round pipe give both sides of equal area, the plate's area equals its polygon and no cell fails the solver rules; with the default sizes the 4 x 3 plate has 390 triangles (12 at the interior size) with angles above 35 degrees, and the baffle's smallest angle is 15.4 degrees (4.5 before) ([test](../crates/mesh-engine/tests/shell_duct.rs)). For now a shell may meet walls only: a shell over an inlet or outlet cap, two shells that touch and a shell lying in a wall facet are refused with the shell's name. [Shell surface](../crates/mesh-algorithms/src/shell_surface.rs) · [Planar Delaunay](../crates/mesh-algorithms/src/planar.rs) · [Crack](../crates/mesh-algorithms/src/duct/volume_dual.rs)
 
 ## Scaffold from a file
 

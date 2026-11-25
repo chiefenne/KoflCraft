@@ -19,6 +19,7 @@ mod mesh;
 mod page;
 mod patch;
 mod schemas;
+mod shell;
 
 use std::time::Instant;
 
@@ -474,6 +475,54 @@ pub static TOOLS: &[Tool] = &[
         run: grading::list,
     },
     Tool {
+        id: "shell.add",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Add a zero-thickness shell (baffle, plate, fin) to a duct partition (SHL-01): a planar convex `polygon` (corners counter-clockwise about the side `name`; it may reach past the wall), optionally its cell `size` and free-edge `edge_size`. Its two sides become the wall patches `<name>` and `<name>_back`. A repeated name, a bad polygon and a shell touching another are refused.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: || {
+            schemas::input(
+                json!({"partition": schemas::path(), "output": schemas::path(), "shell": schemas::shell_config()}),
+                &[],
+            )
+        },
+        output_schema: schemas::shell_result,
+        run: shell::add,
+    },
+    Tool {
+        id: "shell.remove",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Remove the shell `name` from a duct partition.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: || {
+            schemas::input(
+                json!({"partition": schemas::path(), "output": schemas::path(), "name": {"type": "string"}}),
+                &[],
+            )
+        },
+        output_schema: schemas::shell_result,
+        run: shell::remove,
+    },
+    Tool {
+        id: "shell.list",
+        version: 1,
+        action: Action::Read,
+        summary: "List the shells of a duct partition: name, sides, polygon, normal, area and sizes. With the partition's STL as `surface`, the default sizes are filled in as a build would choose them.",
+        legacy_name: None,
+        outputs: &[],
+        input_schema: || {
+            schemas::input(
+                json!({"partition": schemas::path(), "surface": schemas::path()}),
+                &["surface"],
+            )
+        },
+        output_schema: schemas::shell_listing,
+        run: shell::list,
+    },
+    Tool {
         id: "mesh.setup_duct",
         version: 1,
         action: Action::WriteFiles,
@@ -560,7 +609,7 @@ pub static TOOLS: &[Tool] = &[
         id: "block.template",
         version: 1,
         action: Action::WriteFiles,
-        summary: "Write a block topology (`koflcraft.block-topology`, BS-02/BS-03) for a standard case: `channel` (one block, optional two-sided wall clustering) `pipe_ogrid` (H-core and four O-grid blocks, optional wall spacing) `elbow` (the pipe O-grid swept through a bend with optional straight legs, walls projected onto cylinders and the torus) `airfoil_cgrid` (an extruded C-grid of six blocks around a NACA 4-digit section or a Selig/Lednicer coordinate file, the wall a spline through the points) or `multi_element_airfoil` (an extruded H-grid around a main element with an optional slat and flap, each a NACA section or coordinate file placed by chord, deflection, gap and a negative overlap). The file is checked before it is written.",
+        summary: "Write a block topology (`koflcraft.block-topology`, BS-02/BS-03) for a standard case: `channel` (one block, optional two-sided wall clustering) `pipe_ogrid` (H-core and four O-grid blocks, optional wall spacing) `elbow` (the pipe O-grid swept through a bend with optional straight legs, walls projected onto cylinders and the torus) `airfoil_cgrid` (an extruded C-grid of six blocks around a NACA 4-digit section or a Selig/Lednicer coordinate file, the wall a spline through the points) `multi_element_airfoil` (an extruded H-grid around a main element with an optional slat and flap, each a NACA section or coordinate file placed by chord, deflection, gap and a negative overlap; its layout is optimised and triangle blocks are split where that measurably helps), `triangle` (a triangle extruded along +z as three hexahedra around its centroid) or `tetrahedron` (four hexahedra around the centroid; both with cells per corner, MB1h). The file is checked before it is written.",
         legacy_name: None,
         outputs: &["output"],
         input_schema: || {
@@ -709,6 +758,28 @@ pub static TOOLS: &[Tool] = &[
         input_schema: schemas::block_split_block,
         output_schema: schemas::block_edit_result,
         run: block::split_block,
+    },
+    Tool {
+        id: "block.split_triangle",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Split a block whose cross-section is a triangle (a corner of at least 120° at `vertex`) into three blocks around a centre of valence 3, the tri-center map (MB1h): the side from corner i to corner j gets n_i + n_j cells. The new count enters as a row of `cells` cells (from the triangle's spacing when absent) that runs from two of the triangle's sides through the neighbouring blocks to the boundary, cutting each in two on its own grid. Extruded topologies (one layer of blocks). Writes a new checked topology.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: schemas::block_split_triangle,
+        output_schema: schemas::block_edit_result,
+        run: block::split_triangle,
+    },
+    Tool {
+        id: "block.optimize_layout",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Optimise the layout of an extruded block topology (MB1g): blocks on wall patches stay; other vertices move (boundary ones slide on straight boundaries), interior edges bend and end spacings scale so that the TFI grid comes closer to orthogonal. With `triangle_splits` (default true) every block corner of 150° or more is tried as a triangle split (`block.split_triangle`) and kept only when its blocks' worst angle drops by 2° or more and the whole grid gets no worse (worst angle, cells above 70°, folds, growth). Reports the non-orthogonality before and after and every split kept or skipped with why. Writes a new checked topology.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: schemas::block_optimize_layout,
+        output_schema: || json!({"type": "object", "description": "`koflcraft.block-result` with the written file, its check and `layout` (non-orthogonality before and after, triangle splits kept and skipped)"}),
+        run: block::optimize_layout,
     },
     Tool {
         id: "block.set_patch",

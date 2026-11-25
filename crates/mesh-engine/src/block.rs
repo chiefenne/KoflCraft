@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 
 use mesh_algorithms::block::smooth::{SmoothOptions, smooth};
-use mesh_algorithms::block::{self as algo, BlockGrid, Issue, multi_element, templates};
+use mesh_algorithms::block::{
+    self as algo, BlockGrid, Issue, multi_element, templates, tri_center,
+};
 use mesh_core::block::{
     BlockSpec, BlockTopology, Curve, Distribution, EdgeEnd, EdgeSpec, PatchSpec, Surface,
     SurfaceSpec,
@@ -164,6 +166,9 @@ pub struct Reference {
     pub template: String,
     pub parameters: Value,
     pub analytic_volume: f64,
+    /// What the layout optimisation of the template changed (MB1g).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<Value>,
 }
 
 /// The file `koflcraft.block-topology` (BS-02).
@@ -304,6 +309,31 @@ pub enum TemplateConfig {
         /// (default 0.005).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         trailing_edge_thickness: Option<f64>,
+    },
+    /// A triangle extruded along +z as three hexahedra around its centroid
+    /// (tri-center, MB1h); sides `walls`, ends `symmetry_low` and
+    /// `symmetry_high`.
+    Triangle {
+        /// Corners in the x-y plane (default an equilateral triangle with
+        /// unit sides).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        corners: Option<[[f64; 2]; 3]>,
+        /// Cells per corner: the side from corner i to corner j gets
+        /// `cells[i] + cells[j]`.
+        cells: [usize; 3],
+        span: f64,
+        #[serde(default = "one_cell")]
+        span_cells: usize,
+    },
+    /// A tetrahedron as four hexahedra around its centroid (MB1h); all
+    /// faces `walls`.
+    Tetrahedron {
+        /// Corners (default a regular tetrahedron with unit edges).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        corners: Option<[[f64; 3]; 4]>,
+        /// Cells per corner: the edge from corner i to corner j gets
+        /// `cells[i] + cells[j]`.
+        cells: [usize; 4],
     },
 }
 
@@ -513,7 +543,7 @@ impl TopologyFile {
         })
     }
 
-    fn from_topology(t: &BlockTopology, reference: Option<Reference>) -> Self {
+    pub(crate) fn from_topology(t: &BlockTopology, reference: Option<Reference>) -> Self {
         Self {
             format: TOPOLOGY_FORMAT.into(),
             format_version: TOPOLOGY_FORMAT_VERSION.into(),
@@ -698,6 +728,27 @@ pub fn template_with(
             }),
             "airfoil_cgrid",
         ),
+        TemplateConfig::Triangle {
+            corners,
+            cells,
+            span,
+            span_cells,
+        } => (
+            tri_center::triangle(
+                corners.unwrap_or([[0.0, 0.0], [1.0, 0.0], [0.5, 0.75f64.sqrt()]]),
+                cells,
+                span,
+                span_cells,
+            ),
+            "triangle",
+        ),
+        TemplateConfig::Tetrahedron { corners, cells } => (
+            tri_center::tetrahedron(
+                corners.unwrap_or_else(tri_center::regular_tetrahedron),
+                cells,
+            ),
+            "tetrahedron",
+        ),
         TemplateConfig::Channel {
             length,
             width,
@@ -754,17 +805,51 @@ pub fn template_with(
     let t = t.map_err(invalid)?;
     let parameters = serde_json::to_value(config)
         .map_err(|e| EngineError::new(ErrorCode::SerializationFailed, e))?;
-    let file = TopologyFile::from_topology(
+    let mut file = TopologyFile::from_topology(
         &t.topology,
         Some(Reference {
             template: name.into(),
             parameters,
             analytic_volume: t.analytic_volume,
+            layout: t.layout.as_ref().map(layout_report),
         }),
     );
+    if let Some(unoptimised) = &t.unoptimised {
+        // split triangle blocks where that measurably helps (MB1h)
+        let raw = TopologyFile::from_topology(unoptimised, file.reference.clone());
+        let injection = crate::block_triangle::inject_triangle_splits(
+            &raw,
+            Some(&file),
+            crate::block_triangle::MAX_SPLITS,
+        )?;
+        file = injection.file.clone();
+        if let Some(layout) = file.reference.as_mut().and_then(|r| r.layout.as_mut()) {
+            note_injection(layout, &injection);
+        }
+    }
     // a template's topology always passes its own check
-    algo::check(&t.topology).map_err(issues_error)?;
+    algo::check(&file.topology()?).map_err(issues_error)?;
     Ok(file)
+}
+
+/// Add the triangle splits kept and the corners left alone (with why) to
+/// a layout report, and the grid's quality after them.
+pub(crate) fn note_injection(layout: &mut Value, i: &crate::block_triangle::Injection) {
+    layout["after"] = orthogonality_json(&i.after);
+    layout["triangle_splits"] = json!({"kept": i.kept, "skipped": i.skipped});
+}
+
+fn orthogonality_json(o: &algo::layout::Orthogonality) -> Value {
+    json!({"max_nonorthogonality_deg": o.max_deg, "mean_nonorthogonality_deg": o.mean_deg,
+           "cells_over_70_deg": o.cells_over_70, "max_growth": o.max_growth,
+           "folded_corners": o.folded_corners})
+}
+
+/// The layout report as JSON: the grid's non-orthogonality (2D, in the
+/// plane of the extrusion) before and after the optimisation.
+pub(crate) fn layout_report(r: &algo::layout::LayoutReport) -> Value {
+    json!({"parameters": r.parameters, "sweeps": r.sweeps, "trials": r.trials,
+           "before": orthogonality_json(&r.before), "after": orthogonality_json(&r.after)})
 }
 
 /// The check of a topology (`block.check`): counts, chains, faces, or every
@@ -855,7 +940,7 @@ fn algorithm_name(algorithm: &VolumeAlgorithm) -> &'static str {
 }
 
 /// The patches with the role `wall` (given, or from the name).
-fn wall_patches(file: &TopologyFile) -> Vec<usize> {
+pub(crate) fn wall_patches(file: &TopologyFile) -> Vec<usize> {
     role_patches(file, PatchRole::Wall)
 }
 

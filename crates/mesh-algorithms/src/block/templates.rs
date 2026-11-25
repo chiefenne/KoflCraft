@@ -12,6 +12,11 @@ use mesh_core::geometry::Vec3;
 pub struct Template {
     pub topology: BlockTopology,
     pub analytic_volume: f64,
+    /// What the layout optimisation did, for templates that run it.
+    pub layout: Option<super::layout::LayoutReport>,
+    /// The topology before the layout optimisation, for templates that run
+    /// it (a block split is judged from there, MB1h).
+    pub unoptimised: Option<BlockTopology>,
 }
 
 pub(super) fn positive(v: f64, what: &str) -> Result<f64, String> {
@@ -101,6 +106,8 @@ pub fn channel(
             surfaces: Vec::new(),
         },
         analytic_volume: l * w * h,
+        layout: None,
+        unoptimised: None,
     })
 }
 
@@ -127,6 +134,8 @@ pub fn pipe_ogrid(
     Ok(Template {
         topology,
         analytic_volume: std::f64::consts::PI * r * r * l,
+        layout: None,
+        unoptimised: None,
     })
 }
 
@@ -205,6 +214,8 @@ pub fn elbow(
             * r
             * r
             * (inlet_length + outlet_length + big * theta.to_radians()),
+        layout: None,
+        unoptimised: None,
     })
 }
 
@@ -1042,5 +1053,7 @@ pub fn airfoil_cgrid(section: &Section, p: &AirfoilCgrid) -> Result<Template, St
             surfaces: Vec::new(),
         },
         analytic_volume: area * span,
+        layout: None,
+        unoptimised: None,
     })
 }
