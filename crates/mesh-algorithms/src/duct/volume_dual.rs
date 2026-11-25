@@ -563,9 +563,18 @@ fn offset_interior(
     for (&id, &v) in surface_ids {
         displacement[id] = front.points[front.inner[v]] - scaffold.points[id];
     }
+    // the shell of a hex core stays where the cubes are
+    let mut pinned = vec![false; scaffold.points.len()];
+    for &(t, tag) in &scaffold.boundary {
+        if is_hex(tag) {
+            for n in t {
+                pinned[n] = true;
+            }
+        }
+    }
     let mut stencils = Vec::new();
     for (i, adj) in neighbors.iter_mut().enumerate() {
-        if surface_ids.contains_key(&i) {
+        if surface_ids.contains_key(&i) || pinned[i] {
             continue;
         }
         adj.sort_unstable();
@@ -692,10 +701,18 @@ pub(super) fn prepare(scaffold: &Scaffold, steps: &[f64]) -> Result<Prepared, St
     let mut triangles = Vec::new();
     let mut patches = Vec::new();
     // The shell names each patch by its id; ids no facet uses are left out.
-    let mut ids: Vec<usize> = scaffold.boundary.iter().map(|b| b.1).collect();
+    let mut ids: Vec<usize> = scaffold
+        .boundary
+        .iter()
+        .map(|b| b.1)
+        .filter(|&t| !is_hex(t))
+        .collect();
     ids.sort_unstable();
     ids.dedup();
     for &(t, tag) in &scaffold.boundary {
+        if is_hex(tag) {
+            continue;
+        }
         let vertices = t.map(|n| {
             *surface_ids.entry(n).or_insert_with(|| {
                 let id = surface_points.len();
@@ -839,6 +856,26 @@ pub fn build_volume_dual(
     scaffold: Scaffold,
     steps: &[f64],
 ) -> Result<(DuctMesh, ClosedSurface), String> {
+    build_dual(scaffold, steps, None)
+}
+
+/// [`build_volume_dual`] on a scaffold whose boundary includes the shell of
+/// `core` (tag [`HEX`]): the dual fills the gap between the wall layers and
+/// the shell, and every cube of the core becomes one cell, joined to the
+/// dual cells through their triangles on the shell.
+pub fn build_volume_dual_hex(
+    scaffold: Scaffold,
+    steps: &[f64],
+    core: &crate::hexcore::HexCore,
+) -> Result<(DuctMesh, ClosedSurface), String> {
+    build_dual(scaffold, steps, Some(core))
+}
+
+fn build_dual(
+    scaffold: Scaffold,
+    steps: &[f64],
+    core: Option<&crate::hexcore::HexCore>,
+) -> Result<(DuctMesh, ClosedSurface), String> {
     let Prepared {
         surface,
         patches,
@@ -938,6 +975,8 @@ pub fn build_volume_dual(
     let layer_cells = front.cells.len();
     // Per core cell: its dual cell and corner pieces; per dual cell: its cells.
     let mut origin: Vec<(usize, Vec<usize>)> = Vec::new();
+    // cells that are no dual part (the cubes of a hex core) from here on
+    let mut not_dual = usize::MAX;
     let mut cells_of: Vec<Vec<usize>> = vec![Vec::new(); dual.len()];
     let layered = !steps.is_empty();
     for (id, cell) in dual.iter().enumerate() {
@@ -975,18 +1014,33 @@ pub fn build_volume_dual(
     // into halves by volume, until it passes or is a single corner piece.
     // After the first check of the whole mesh only the cells near a split
     // are checked again (verify::ExportedCheck), with the same verdicts.
+    if let Some(core) = core {
+        not_dual = front.cells.len();
+        super::hex_join::join(core, p, &mut front.cells, &mut front.boundary)?;
+    }
+    let cubes = core.map_or(0, |c| c.cubes.len());
+    // index in `origin` of a dual cell: the cubes sit between the first
+    // dual cells and those added by the splits below
+    let slot = |c: usize| {
+        if c >= not_dual {
+            c - layer_cells - cubes
+        } else {
+            c - layer_cells
+        }
+    };
     let mut exported = verify::ExportedCheck::new(p, &front.cells)?;
     loop {
         let failing = exported.failing();
         let mut targets = std::collections::BTreeSet::new();
+        let is_dual = |c: usize| c >= layer_cells && !(not_dual..not_dual + cubes).contains(&c);
         for (id, neighbours) in failing {
-            if *id >= layer_cells {
+            if is_dual(*id) {
                 targets.insert(*id);
             } else {
-                targets.extend(neighbours.iter().filter(|&&n| n >= layer_cells));
+                targets.extend(neighbours.iter().copied().filter(|&n| is_dual(n)));
             }
         }
-        targets.retain(|&c| origin[c - layer_cells].1.len() > 1);
+        targets.retain(|&c| origin[slot(c)].1.len() > 1);
         if crate::trace_enabled() {
             eprintln!(
                 "kofl trace: split again: {} cells fail as exported, {} core cells to split",
@@ -1000,12 +1054,12 @@ pub fn build_volume_dual(
         let split: std::collections::BTreeSet<usize> = targets.clone();
         front.boundary.retain(|b| !split.contains(&b.owner));
         for c in targets {
-            let (d, group) = origin[c - layer_cells].clone();
+            let (d, group) = origin[slot(c)].clone();
             let cell = &dual[d];
             let earlier: Vec<Vec<usize>> = cells_of[d]
                 .iter()
                 .filter(|&&o| o != c)
-                .map(|&o| origin[o - layer_cells].1.clone())
+                .map(|&o| origin[slot(o)].1.clone())
                 .collect();
             let half = group.iter().map(|&k| cell.corners[k].volume).sum::<f64>() / 2.;
             let pieces = split_invalid(p, cell, group, &earlier, &split_quads, Some(half));
@@ -1021,7 +1075,7 @@ pub fn build_volume_dual(
                 if k == 0 {
                     exported.remove(c, &front.cells[c].element);
                     front.cells[c] = built;
-                    origin[c - layer_cells].1 = piece;
+                    origin[slot(c)].1 = piece;
                 } else {
                     front.cells.push(built);
                     cells_of[d].push(id);
@@ -1032,6 +1086,8 @@ pub fn build_volume_dual(
         }
         exported.recheck(p, &front.cells);
     }
+    // the splits above re-add the dual triangles on the shell as boundary
+    front.boundary.retain(|b| !is_hex(b.patch));
     compact_points(p, &mut front.cells, &mut front.boundary);
     let measurements = verify::check_with_interface_count(
         &surface,

@@ -6,6 +6,7 @@ use crate::{
     artifact::{digest, require_schema, sha256, vector},
 };
 use mesh_algorithms::duct::{self, Region};
+use mesh_algorithms::hexcore::{self, HexCore};
 use mesh_algorithms::sizing::surface::SurfaceGeometry;
 use mesh_algorithms::{remesh, scaffold as scaffold_build};
 use mesh_geometry::{StlOptions, import_closed_stl};
@@ -61,6 +62,9 @@ pub struct ScaffoldConfig {
     /// How the wall layers meet the Voronoi core.
     #[serde(default, skip_serializing_if = "WallJoinKind::is_default")]
     pub wall_join: WallJoinKind,
+    /// Settings of the hex core.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hex_core: Option<HexCoreConfig>,
 }
 
 /// How the wall layers meet the Voronoi core.
@@ -182,6 +186,22 @@ pub enum CoreKind {
     /// a tet mesh is in production polyhedral meshers.
     #[default]
     MedianDual,
+    /// Octree cubes in the bulk, the median dual between them and the wall
+    /// layers ("hex core with layers", prototype; research/hex-core.md).
+    /// Needs a built scaffold.
+    HexCore,
+}
+
+/// Settings of the hex core (`"core": "hex_core"`).
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct HexCoreConfig {
+    /// Cube edge over the local scaffold spacing (default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_factor: Option<f64>,
+    /// Gap between the layer stack and the cubes, in cube edges (default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub margin: Option<f64>,
 }
 
 impl CoreKind {
@@ -409,7 +429,8 @@ pub fn generate(
         if !limit.is_finite() || !(0.0..1.0).contains(&limit) {
             return Err(invalid("invalid scaffold geometry error limit"));
         }
-        let (input, built) = load_scaffold(&surface, &patches, spec, scaffold_data)?;
+        let (input, built, hex) =
+            load_scaffold(&surface, &patches, spec, scaffold_data, steps.iter().sum())?;
         let deviation = wall_deviation(&surface, &patches, &input);
         if let Some(max) = spec.max_wall_deviation {
             if !max.is_finite() || max <= 0.0 {
@@ -434,6 +455,12 @@ pub fn generate(
         let retry_input = input.clone();
         let (mesh, shell) = match spec.core {
             CoreKind::MedianDual => duct::build_volume_dual(input, &steps).map_err(validated)?,
+            CoreKind::HexCore => {
+                let core = hex
+                    .as_ref()
+                    .ok_or_else(|| invalid("the hex core needs a built scaffold"))?;
+                duct::build_volume_dual_hex(input, &steps, core).map_err(validated)?
+            }
             CoreKind::Voronoi => {
                 let lloyd_iterations = spec
                     .lloyd_iterations
@@ -595,7 +622,7 @@ pub fn generate(
     let report = json!({
         "schema_version": 1,
         "grading": grading,
-        "algorithm": if voronoi.is_some() {"volume_clipped_voronoi_cvt_v1"} else if scaffold_volume.is_some() {"volume_median_dual_v2"} else if polyhedra > 0 {"stl_partitioned_dual_v1"} else {"stl_partitioned_star_v1"},
+        "algorithm": if voronoi.is_some() {"volume_clipped_voronoi_cvt_v1"} else if plan.volume_scaffold.as_ref().is_some_and(|s| s.core == CoreKind::HexCore) {"volume_hex_core_v1"} else if scaffold_volume.is_some() {"volume_median_dual_v2"} else if polyhedra > 0 {"stl_partitioned_dual_v1"} else {"stl_partitioned_star_v1"},
         "mode": mode,
         "source_sha256": source_digest,
         "config_sha256": digest(&(patch_map, plan, mode))?,
@@ -913,6 +940,7 @@ pub fn setup(
             core: CoreKind::default(),
             lloyd_iterations: None,
             wall_join: WallJoinKind::default(),
+            hex_core: None,
         }),
         first_thickness: round(first_thickness),
         growth,
@@ -1081,7 +1109,12 @@ pub fn cell_count(
         ));
     }
     if let (Mode::Polyhedral, Some(config)) = (mode, &plan.volume_scaffold) {
-        let (scaffold, _) = load_scaffold(&surface, &patches, config, scaffold_data)?;
+        let height = if plan.growth == 1.0 {
+            plan.first_thickness * layers as f64
+        } else {
+            plan.first_thickness * (plan.growth.powi(layers as i32) - 1.) / (plan.growth - 1.)
+        };
+        let (scaffold, _, hex) = load_scaffold(&surface, &patches, config, scaffold_data, height)?;
         let walls = scaffold
             .boundary
             .iter()
@@ -1094,6 +1127,10 @@ pub fn cell_count(
         // layer bound the fixtures from above (elbow 0.8, Manifold 2.1).
         let (per_wall, core) = match config.core {
             CoreKind::MedianDual => (6, scaffold.points.len()),
+            CoreKind::HexCore => (
+                6,
+                scaffold.points.len() + hex.as_ref().map_or(0, |c| c.cubes.len()),
+            ),
             CoreKind::Voronoi => {
                 let mut used = vec![false; scaffold.points.len()];
                 for t in &scaffold.tetrahedra {
@@ -1156,7 +1193,8 @@ fn load_scaffold(
     patches: &[usize],
     spec: &ScaffoldConfig,
     data: Option<&[u8]>,
-) -> Result<(duct::Scaffold, Option<Value>), EngineError> {
+    layer_height: f64,
+) -> Result<(duct::Scaffold, Option<Value>, Option<HexCore>), EngineError> {
     let invalid = |s: &str| EngineError::new(ErrorCode::InvalidDomain, s);
     let validated = |e: String| EngineError::new(ErrorCode::ValidationFailed, e);
     match (&spec.file, &spec.build) {
@@ -1165,7 +1203,10 @@ fn load_scaffold(
             if spec.sha256.as_deref() != Some(sha256(bytes).as_str()) {
                 return Err(invalid("volume scaffold digest mismatch"));
             }
-            Ok((scaffold::read(bytes).map_err(validated)?, None))
+            if spec.core == CoreKind::HexCore {
+                return Err(invalid("the hex core needs a built scaffold"));
+            }
+            Ok((scaffold::read(bytes).map_err(validated)?, None, None))
         }
         (None, Some(b)) => {
             if spec.sha256.is_some() {
@@ -1237,10 +1278,47 @@ fn load_scaffold(
                     w.thickness_clamped
                 );
             }
-            let tags: Vec<usize> = wall.group.clone();
-            let (scaffold, st) = scaffold_build::build_graded(
-                &wall.vertices,
-                &wall.triangles,
+            let mut tags: Vec<usize> = wall.group.clone();
+            let mut vertices = wall.vertices.clone();
+            let mut triangles = wall.triangles.clone();
+            let hex_start = Instant::now();
+            let core = if spec.core == CoreKind::HexCore {
+                let c = spec.hex_core.unwrap_or(HexCoreConfig {
+                    size_factor: None,
+                    margin: None,
+                });
+                let defaults = hexcore::HexCoreOptions::default();
+                let core = hexcore::build(
+                    &wall.vertices,
+                    &wall.triangles,
+                    b.max_size,
+                    b.rate,
+                    field.as_ref(),
+                    layer_height,
+                    hexcore::HexCoreOptions {
+                        size_factor: c.size_factor.unwrap_or(defaults.size_factor),
+                        margin: c.margin.unwrap_or(defaults.margin),
+                        ..defaults
+                    },
+                )
+                .map_err(validated)?;
+                let offset = vertices.len();
+                vertices.extend_from_slice(&core.shell_points);
+                for t in &core.shell_triangles {
+                    triangles.push(t.map(|v| v + offset));
+                    tags.push(duct::HEX);
+                }
+                Some(core)
+            } else {
+                None
+            };
+            let hex_seconds = hex_start.elapsed().as_secs_f64();
+            let hole = core
+                .as_ref()
+                .map(|c| move |x: mesh_core::geometry::Vec3| c.contains(x));
+            let (scaffold, st) = scaffold_build::build_with_hole(
+                &vertices,
+                &triangles,
                 &tags,
                 scaffold_build::ScaffoldOptions {
                     max_size: b.max_size,
@@ -1249,12 +1327,24 @@ fn load_scaffold(
                     ..Default::default()
                 },
                 field.as_ref(),
+                hole.as_ref()
+                    .map(|h| h as &dyn Fn(mesh_core::geometry::Vec3) -> bool),
             )
             .map_err(validated)?;
             let w = wall.stats;
+            let hex_report = core.as_ref().map(|c| {
+                json!({
+                    "cubes": c.stats.cubes,
+                    "cube_sizes": c.stats.sizes.iter().map(|(e, n)| json!({"edge": e, "count": n})).collect::<Vec<_>>(),
+                    "removed_for_manifold_shell": c.stats.removed_for_manifold,
+                    "shell_triangles": c.stats.shell_triangles,
+                    "octree_seconds": hex_seconds,
+                })
+            });
             Ok((
                 scaffold,
                 Some(json!({
+                    "hex_core": hex_report,
                     "settings": b,
                     "wall_triangles": tags.iter().filter(|&&t| duct::is_wall(t)).count(),
                     "feature_edges": w.feature_edges,
@@ -1275,6 +1365,7 @@ fn load_scaffold(
                     "remesh_seconds": remesh_seconds,
                     "tetrahedralize_seconds": start.elapsed().as_secs_f64() - remesh_seconds,
                 })),
+                core,
             ))
         }
         _ => Err(invalid(
@@ -1302,7 +1393,7 @@ fn wall_deviation(
     let wall: Vec<[mesh_core::geometry::Vec3; 3]> = scaffold
         .boundary
         .iter()
-        .filter(|(_, p)| !duct::is_cap(*p))
+        .filter(|(_, p)| !duct::is_cap(*p) && !duct::is_hex(*p))
         .map(|(t, _)| t.map(|v| scaffold.points[v]))
         .collect();
     let one_way = |from: &[[mesh_core::geometry::Vec3; 3]],
