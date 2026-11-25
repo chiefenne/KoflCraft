@@ -34,6 +34,21 @@ pub struct Partition {
     /// own layers straight through down to them, with no mitre.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layers_yield: Vec<String>,
+    /// Zero-thickness shells inside the fluid (baffles, plates, fins), cut
+    /// into the finished mesh as walls with two sides.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shells: Vec<ShellConfig>,
+}
+
+/// A planar zero-thickness shell: a convex polygon, its corners
+/// counter-clockwise about the side named `name` (the other side is
+/// `<name>_back`). A shell that should span the duct may reach past the
+/// wall; the part outside the fluid is ignored.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ShellConfig {
+    pub name: String,
+    pub polygon: Vec<[f64; 3]>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -550,6 +565,7 @@ pub fn generate(
     let mut mesh = mesh;
     mesh.patches = names.clone();
     unmark_slip(&mut mesh, names.len());
+    let shells = imprint_shells(&mut mesh, &plan.shells)?;
     let unlayered: Vec<usize> = patches
         .iter()
         .filter(|&&p| duct::is_slip(p))
@@ -563,7 +579,8 @@ pub fn generate(
         source_areas[duct::patch_index(tag) - 1] += f.normalized_area * scale * scale;
     }
     let m = &mesh.measurements;
-    let walls_of = |a: &[f64]| a.iter().skip(duct::WALL - 1).sum::<f64>();
+    // the walls of the STL; shells are reported on their own
+    let walls_of = |a: &[f64]| a.iter().take(names.len()).skip(duct::WALL - 1).sum::<f64>();
     let patch_list: Vec<Value> = names
         .iter()
         .enumerate()
@@ -595,6 +612,7 @@ pub fn generate(
     let report = json!({
         "schema_version": 1,
         "grading": grading,
+        "shells": shells,
         "algorithm": if voronoi.is_some() {"volume_clipped_voronoi_cvt_v1"} else if scaffold_volume.is_some() {"volume_median_dual_v2"} else if polyhedra > 0 {"stl_partitioned_dual_v1"} else {"stl_partitioned_star_v1"},
         "mode": mode,
         "source_sha256": source_digest,
@@ -730,6 +748,42 @@ fn prepare(
 
 /// Drop the [`duct::SLIP`] mark of the patches without layers from the
 /// boundary faces and the measured areas of a built mesh with `n` patches.
+/// Cut the shells into the finished mesh, in their order; the report entry
+/// of each.
+fn imprint_shells(
+    mesh: &mut duct::DuctMesh,
+    shells: &[ShellConfig],
+) -> Result<Vec<Value>, EngineError> {
+    let mut out = Vec::with_capacity(shells.len());
+    for s in shells {
+        let shell = duct::PlanarShell {
+            name: s.name.clone(),
+            polygon: s
+                .polygon
+                .iter()
+                .map(|&[x, y, z]| mesh_core::geometry::Vec3::new(x, y, z))
+                .collect(),
+        };
+        let st = duct::imprint_planar_shell(mesh, &shell)
+            .map_err(|e| EngineError::new(ErrorCode::InvalidDomain, e))?;
+        out.push(json!({
+            "name": s.name,
+            "patches": {"front": {"id": st.patches[0], "name": s.name},
+                        "back": {"id": st.patches[1], "name": format!("{}_back", s.name)}},
+            "polygon_area": st.polygon_area,
+            "front_area": st.front_area,
+            "back_area": st.back_area,
+            "front_faces": st.front_faces,
+            "back_faces": st.back_faces,
+            "cut_cells": st.cut_cells,
+            "through_cuts": st.through_cuts,
+            "snapped_vertices": st.snapped_vertices,
+            "doubled_vertices": st.doubled_vertices,
+        }));
+    }
+    Ok(out)
+}
+
 fn unmark_slip(mesh: &mut duct::DuctMesh, n: usize) {
     for face in &mut mesh.boundary {
         face.patch = duct::patch_index(face.patch);
@@ -887,6 +941,7 @@ pub fn setup(
         (v * digits).round() / digits
     };
     let plan = Partition {
+        shells: Vec::new(),
         schema_version: 1,
         source_sha256: sha256(data),
         regions: Vec::new(),

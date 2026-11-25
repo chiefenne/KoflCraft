@@ -5,6 +5,7 @@ mod convex;
 mod front;
 mod intersection;
 mod polyhedral;
+mod shell;
 mod symbolic;
 mod verify;
 mod volume_dual;
@@ -21,6 +22,7 @@ use mesh_geometry::ClosedSurface;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub use polyhedral::Polyhedron;
+pub use shell::{PlanarShell, ShellStats, imprint_planar_shell};
 pub use verify::Measurements;
 pub use yield_layers::{YieldPlane, extrude as extrude_yielding, shorten as shorten_yielding};
 
