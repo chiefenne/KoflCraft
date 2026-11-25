@@ -3,6 +3,7 @@
 mod columns;
 mod convex;
 mod front;
+mod hex_join;
 mod intersection;
 mod polyhedral;
 mod symbolic;
@@ -11,7 +12,7 @@ mod volume_dual;
 mod voronoi_core;
 mod wall_seeds;
 mod yield_layers;
-pub use volume_dual::{Scaffold, build_volume_dual};
+pub use volume_dual::{Scaffold, build_volume_dual, build_volume_dual_hex};
 pub use voronoi_core::{
     DEFAULT_LLOYD_ITERATIONS, VoronoiOptions, VoronoiStats, WallJoin, build_voronoi_core,
 };
@@ -111,7 +112,16 @@ pub fn is_wall(patch: usize) -> bool {
 
 /// Whether a patch id is a wall patch without layers (see [`SLIP`]).
 pub fn is_slip(patch: usize) -> bool {
-    patch >= SLIP
+    (SLIP..HEX).contains(&patch)
+}
+
+/// Scaffold boundary tag of the shell of a hex core ([`crate::hexcore`]):
+/// an inner boundary of the scaffold that the cubes replace, no patch.
+pub const HEX: usize = crate::hexcore::HEX;
+
+/// Whether a scaffold boundary tag is the shell of a hex core.
+pub fn is_hex(patch: usize) -> bool {
+    patch == HEX
 }
 
 /// Whether a patch id is an inlet or outlet cap (1 or 2).
