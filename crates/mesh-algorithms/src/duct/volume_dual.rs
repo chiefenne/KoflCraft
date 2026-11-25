@@ -839,15 +839,28 @@ pub fn build_volume_dual(
     scaffold: Scaffold,
     steps: &[f64],
 ) -> Result<(DuctMesh, ClosedSurface), String> {
+    let mut stage = std::time::Instant::now();
+    let mut lap = |name: &str| {
+        if crate::trace_enabled() {
+            eprintln!(
+                "kofl trace: dual {name}: {:.2} s",
+                stage.elapsed().as_secs_f64()
+            );
+        }
+        stage = std::time::Instant::now();
+    };
     let Prepared {
         surface,
         patches,
         mut front,
         surface_ids,
     } = prepare(&scaffold, steps)?;
+    lap("layers");
     let mut cuts = Subdivision::default();
     split_layers(&mut front, &mut cuts)?;
+    lap("layer split");
     let mapped = map_scaffold(&scaffold, &surface_ids, &mut front)?;
+    lap("interior offset");
     let p = &mut front.points;
     let mut dual: Vec<Dual> = (0..mapped.len()).map(|_| Dual::default()).collect();
     for (index, t) in scaffold.tetrahedra.iter().enumerate() {
@@ -919,6 +932,7 @@ pub fn build_volume_dual(
             dual[t[j / 2]].boundary.push((nodes, patch, sorted(t)));
         }
     }
+    lap("dual pieces");
     // Wall prisms of the innermost layer by their inner end triangle.
     let mut prisms = HashMap::new();
     for (index, cell) in front.cells.iter().enumerate() {
@@ -975,7 +989,9 @@ pub fn build_volume_dual(
     // into halves by volume, until it passes or is a single corner piece.
     // After the first check of the whole mesh only the cells near a split
     // are checked again (verify::ExportedCheck), with the same verdicts.
+    lap("dual cells");
     let mut exported = verify::ExportedCheck::new(p, &front.cells)?;
+    lap("first check");
     loop {
         let failing = exported.failing();
         let mut targets = std::collections::BTreeSet::new();
@@ -1032,7 +1048,9 @@ pub fn build_volume_dual(
         }
         exported.recheck(p, &front.cells);
     }
+    lap("split again");
     compact_points(p, &mut front.cells, &mut front.boundary);
+    lap("compact");
     let measurements = verify::check_with_interface_count(
         &surface,
         &patches,
@@ -1042,6 +1060,7 @@ pub fn build_volume_dual(
         steps.len(),
         patches.iter().filter(|&&p| is_wall(p)).count() * 6,
     )?;
+    lap("final check");
     Ok((
         DuctMesh {
             points: front.points,
