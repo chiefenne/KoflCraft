@@ -828,6 +828,47 @@ fn generate_duct_reads_a_patch_map_like_a_port_file() {
     assert_eq!(b["patch_areas"]["inlet"], 1.0);
 }
 
+/// `layers_yield`: the furnace side walls keep their layers, and the tubes
+/// and the box walls run their own layers straight through them down to the
+/// side walls (a slab extruded off each side wall). The whole mesh passes
+/// the solver rules and the strict checks on the full domain. About 10
+/// seconds.
+#[test]
+fn yielding_side_walls_keep_layers_under_the_crossing_walls() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures/furnace");
+    let work = WorkDirectory::new();
+    let path = |f: &str| fixture.join(f).to_str().unwrap().to_string();
+    let partition = fs::read_to_string(fixture.join("partition.json"))
+        .unwrap()
+        .replace("\"no_layers\"", "\"layers_yield\"");
+    let yielding = work.path().join("partition.json");
+    fs::write(&yielding, partition).unwrap();
+    let report = work.run(&[
+        "generate-duct",
+        &path("furnace.stl"),
+        &path("furnace.patches.json"),
+        yielding.to_str().unwrap(),
+        "polyhedral",
+        "furnace",
+    ])["report"]
+        .clone();
+    let patches = report["patches"].as_array().unwrap();
+    assert!(patches.iter().all(|p| p["layered"] == true));
+    let area = |name: &str| {
+        let p = patches.iter().find(|p| p["name"] == name).unwrap();
+        p["area"].as_f64().unwrap() / p["stl_area"].as_f64().unwrap()
+    };
+    // the side walls are flat: the slab gives back their whole area
+    assert!((area("sides") - 1.).abs() < 0.001, "{}", area("sides"));
+    assert!((area("walls") - 1.).abs() < 1e-6, "{}", area("walls"));
+    assert!((area("tubes") - 1.).abs() < 0.03, "{}", area("tubes"));
+    let volume = report["volume"].as_f64().unwrap();
+    assert!((volume / report["source_volume"].as_f64().unwrap() - 1.).abs() < 0.001);
+    // more cells than with sides under no_layers: the side walls' layers
+    let cells = report["polyhedra"].as_i64().unwrap() + report["prisms"].as_i64().unwrap();
+    assert!(cells > 60_000, "{cells}");
+}
+
 /// The box furnace (FoehnCraft gallery 259) with one tube: its burner disc
 /// and its outlet opening are flush with their walls, so they cannot
 /// contract in their planes as a pipe-end cap does; they grow wall layers
