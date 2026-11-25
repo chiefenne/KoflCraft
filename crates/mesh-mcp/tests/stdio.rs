@@ -162,8 +162,10 @@ fn stdio_tools_run_the_shared_engine_and_bound_writes() {
     assert!(work.path().join("elbow/mesh.vtm").is_file());
     let poly = &responses[14]["result"]["structuredContent"]["result"]["report"];
     assert_eq!(poly["tetrahedra"], 0);
-    // median dual core (default since 2026-11-25)
-    assert_eq!(poly["polyhedra"], 238);
+    // median dual core (default since 2026-11-25) and the polygon prisms
+    // of its wall layers
+    assert_eq!(poly["polyhedra"], 238 + 816);
+    assert_eq!(poly["layer_polyhedra"], 816);
     assert!(
         responses[15]["result"]["structuredContent"]["result"]["report"]["core_cells"]
             .as_u64()

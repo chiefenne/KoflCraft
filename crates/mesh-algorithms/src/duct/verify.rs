@@ -277,7 +277,7 @@ fn fan_volume_centre(p: &[Vec3], rings: &Rings) -> (f64, Vec3) {
 /// A face's vertex set, sorted, with its hash: every cell that uses the face
 /// makes the same key. Triangles and quadrilaterals need no allocation.
 #[derive(Clone, PartialEq, Eq)]
-pub(super) struct FaceKey {
+pub struct FaceKey {
     hash: u64,
     vertices: KeyVertices,
 }
@@ -307,7 +307,7 @@ fn avalanche(mut x: u64) -> u64 {
 }
 
 impl FaceKey {
-    pub(super) fn new(ring: &[usize]) -> Self {
+    pub fn new(ring: &[usize]) -> Self {
         let small = ring.len() <= 4 && ring.iter().all(|&v| v < u32::MAX as usize);
         if small {
             let mut vertices = [u32::MAX; 4];
@@ -338,7 +338,7 @@ impl FaceKey {
 
 /// Hands the precomputed [`FaceKey`] hash to the map.
 #[derive(Default)]
-struct KeyHasher(u64);
+pub struct KeyHasher(u64);
 
 impl std::hash::Hasher for KeyHasher {
     fn finish(&self) -> u64 {
@@ -354,7 +354,10 @@ impl std::hash::Hasher for KeyHasher {
     }
 }
 
-type KeyMap<V> = HashMap<FaceKey, V, std::hash::BuildHasherDefault<KeyHasher>>;
+/// A map by face vertex set.
+pub type KeyMap<V> = HashMap<FaceKey, V, std::hash::BuildHasherDefault<KeyHasher>>;
+/// A set of face vertex sets.
+pub type KeySet = std::collections::HashSet<FaceKey, std::hash::BuildHasherDefault<KeyHasher>>;
 
 /// The cells that use one face, ascending (a cell that lists the face twice
 /// appears twice): the order in which a pass over the cells meets them.
@@ -670,6 +673,8 @@ fn non_orthogonality(d: Vec3, area: Vec3) -> (f64, bool) {
 
 /// Cells per chunk of the parallel checks.
 const CHECK_CHUNK: usize = 2048;
+/// Cells per chunk of a re-check after splits (a few thousand cells).
+const RECHECK_CHUNK: usize = 256;
 
 /// The solver rules and each cell's volume as the solver takes it (the sum
 /// of its face pyramids), with the failing cells and the cells they share a
@@ -808,7 +813,19 @@ pub(super) struct ExportedCheck {
 impl ExportedCheck {
     pub(super) fn new(p: &[Vec3], cells: &[Cell]) -> Result<Self, String> {
         let table = FaceTable::new(cells)?;
-        let (_, _, failing) = solver_rules_on(p, cells, &table)?;
+        let (rules, _, failing) = solver_rules_on(p, cells, &table)?;
+        if crate::trace_enabled() && rules.failing_cells > 0 {
+            eprintln!(
+                "kofl trace: first check: {} of {} cells fail ({} in layers; open {}, volume {}, pyramids {}, turned away {})",
+                rules.failing_cells,
+                rules.cells,
+                rules.failing_layer_cells,
+                rules.open_cells,
+                rules.nonpositive_volume,
+                rules.negative_pyramids,
+                rules.faces_turned_away
+            );
+        }
         Ok(Self {
             table,
             failing: failing.into_iter().collect(),
@@ -835,61 +852,75 @@ impl ExportedCheck {
     }
 
     /// Checks again every cell whose verdict the changes since the last call
-    /// can have changed.
-    pub(super) fn recheck(&mut self, p: &[Vec3], cells: &[Cell]) {
-        let mut buffer = Rings::default();
-        let touched = std::mem::take(&mut self.touched);
-        let mut dirty = touched.clone();
-        for &s in &touched {
-            dirty.extend(self.table.neighbours(s, &cells[s].element, &mut buffer));
-        }
-        let mut cache: HashMap<usize, (Verdict, Vec<MergedFace>)> = HashMap::new();
-        let mut exported = Exported::default();
+    /// can have changed, on all cores.
+    pub(super) fn recheck(&mut self, p: &[Vec3], cells: &[Cell]) -> Result<(), String> {
+        let touched: Vec<usize> = std::mem::take(&mut self.touched).into_iter().collect();
         let table = &self.table;
-        let mut verdict = |id: usize| {
-            cache.entry(id).or_insert_with(|| {
-                let v = exported.evaluate(p, table, id, &cells[id].element);
-                let faces = exported
-                    .across
+        // the face neighbours of each cell of `ids`, in that order
+        let around = |ids: &[usize]| -> Result<Vec<Vec<usize>>, String> {
+            let parts = chunked(ids.len(), RECHECK_CHUNK, |range| {
+                let mut buffer = Rings::default();
+                ids[range]
                     .iter()
-                    .zip(&exported.geometry)
-                    .map(|(&n, &(area, c))| (n, area, c))
-                    .collect();
-                (v, faces)
-            });
+                    .map(|&s| table.neighbours(s, &cells[s].element, &mut buffer))
+                    .collect::<Vec<_>>()
+            })?;
+            Ok(parts.into_iter().flatten().collect())
         };
-        for &x in &dirty {
-            verdict(x);
-            for y in table.neighbours(x, &cells[x].element, &mut buffer) {
-                verdict(y);
-            }
-        }
-        for &x in &dirty {
-            let (own, faces) = &cache[&x];
+        let mut dirty: BTreeSet<usize> = touched.iter().copied().collect();
+        dirty.extend(around(&touched)?.into_iter().flatten());
+        let dirty: Vec<usize> = dirty.into_iter().collect();
+        let next = around(&dirty)?;
+        let mut needed: BTreeSet<usize> = dirty.iter().copied().collect();
+        needed.extend(next.iter().flatten().copied());
+        let needed: Vec<usize> = needed.into_iter().collect();
+        let parts = chunked(needed.len(), RECHECK_CHUNK, |range| {
+            let mut exported = Exported::default();
+            needed[range]
+                .iter()
+                .map(|&id| {
+                    let v = exported.evaluate(p, table, id, &cells[id].element);
+                    let faces: Vec<MergedFace> = exported
+                        .across
+                        .iter()
+                        .zip(&exported.geometry)
+                        .map(|(&n, &(area, c))| (n, area, c))
+                        .collect();
+                    (v, faces)
+                })
+                .collect::<Vec<_>>()
+        })?;
+        let verdicts: Vec<(Verdict, Vec<MergedFace>)> = parts.into_iter().flatten().collect();
+        let verdict = |id: usize| needed.binary_search(&id).ok().map(|i| &verdicts[i]);
+        for (&x, neighbours) in dirty.iter().zip(next) {
+            let Some((own, faces)) = verdict(x) else {
+                return Err(format!("cell {x} missing from the re-check"));
+            };
             let mut fails = own.bad();
             for &(n, area, c) in faces {
                 fails |= match n {
                     None => non_orthogonality(c - own.centre, area).1,
-                    Some(y) if y > x => non_orthogonality(cache[&y].0.centre - own.centre, area).1,
+                    Some(y) if y > x => verdict(y).is_none_or(|(theirs, _)| {
+                        non_orthogonality(theirs.centre - own.centre, area).1
+                    }),
                     Some(_) => false,
                 };
             }
             // faces whose owner is a neighbour with a lower id
-            for y in table.neighbours(x, &cells[x].element, &mut buffer) {
-                if y < x {
-                    let (theirs, their_faces) = &cache[&y];
-                    fails |= their_faces.iter().any(|&(n, area, _)| {
+            for &y in neighbours.iter().filter(|&&y| y < x) {
+                fails |= verdict(y).is_none_or(|(theirs, their_faces)| {
+                    their_faces.iter().any(|&(n, area, _)| {
                         n == Some(x) && non_orthogonality(own.centre - theirs.centre, area).1
-                    });
-                }
+                    })
+                });
             }
             if fails {
-                let neighbours = table.neighbours(x, &cells[x].element, &mut buffer);
                 self.failing.insert(x, neighbours);
             } else {
                 self.failing.remove(&x);
             }
         }
+        Ok(())
     }
 }
 
@@ -1089,6 +1120,72 @@ fn boundary_area(p: &[Vec3], nodes: &[usize]) -> f64 {
         * 0.5
 }
 
+/// Pairs every face: each boundary face with its owner and the same winding,
+/// each interior face with exactly one other cell and the opposite winding.
+/// Returns the number of faces between a layer cell and a core cell. The
+/// faces are split into shards by hash, one thread each.
+fn pair_faces(cells: &[Cell], boundary: &[BoundaryFace]) -> Result<usize, String> {
+    let shards = threads();
+    // sized for every face up front: growing the maps cost more than the
+    // lookups on a million-cell mesh
+    let faces: usize = cells.iter().map(|c| face_count(&c.element)).sum();
+    let results = chunked(shards, 1, |range| -> Result<usize, String> {
+        let shard = range.start;
+        let mine = |k: &FaceKey| FaceTable::shard_of(k.hash, shards) == shard;
+        let mut exterior: KeyMap<&BoundaryFace> = KeyMap::default();
+        for face in boundary {
+            let k = FaceKey::new(&face.nodes);
+            if mine(&k) && exterior.insert(k, face).is_some() {
+                return Err("duplicate outer boundary face".into());
+            }
+        }
+        // (cell, face index, layer) of a face met once so far
+        let mut pending: KeyMap<(usize, usize, usize)> =
+            KeyMap::with_capacity_and_hasher(faces / 8 / shards + 16, Default::default());
+        let mut complete =
+            KeySet::with_capacity_and_hasher(faces / 2 / shards + 16, Default::default());
+        let (mut rings, mut earlier) = (Rings::default(), Rings::default());
+        let mut prism_core_faces = 0;
+        for (id, cell) in cells.iter().enumerate() {
+            rings.load(&cell.element);
+            for (index, ring) in rings.iter().enumerate() {
+                let k = FaceKey::new(ring);
+                if !mine(&k) {
+                    continue;
+                }
+                if complete.contains(&k) {
+                    return Err("too many incidences on one face".into());
+                }
+                if let Some(face) = exterior.remove(&k) {
+                    complete.insert(k);
+                    if id != face.owner || !same_ring(&face.nodes, ring, false) {
+                        return Err("incorrect boundary owner or winding".into());
+                    }
+                } else if let Some((previous, at, other_layer)) = pending.remove(&k) {
+                    if (other_layer == 0) != (cell.layer == 0) {
+                        prism_core_faces += 1;
+                    }
+                    complete.insert(k);
+                    if !same_ring(
+                        ring_of(&cells[previous].element, at, &mut earlier),
+                        ring,
+                        true,
+                    ) {
+                        return Err("interior face has inconsistent winding".into());
+                    }
+                } else {
+                    pending.insert(k, (id, index, cell.layer));
+                }
+            }
+        }
+        if !pending.is_empty() || !exterior.is_empty() {
+            return Err("unpaired interior or missing exterior face".into());
+        }
+        Ok(prism_core_faces)
+    })?;
+    results.into_iter().sum()
+}
+
 pub(super) fn check_with_interface_count(
     surface: &ClosedSurface,
     patches: &[usize],
@@ -1132,14 +1229,11 @@ pub(super) fn check_with_interface_count(
             solver_rules.faces_turned_away
         ));
     }
-    let mut exterior: KeyMap<&BoundaryFace> = KeyMap::default();
+    let ruled = std::time::Instant::now();
     let ids = patches.iter().copied().max().unwrap_or(0).max(super::WALL);
     let mut areas = vec![0.; ids];
     let mut port_layer_areas = [vec![0.; layers + 1], vec![0.; layers + 1]];
     for face in boundary {
-        if exterior.insert(FaceKey::new(&face.nodes), face).is_some() {
-            return Err("duplicate outer boundary face".into());
-        }
         let area = boundary_area(p, &face.nodes);
         *areas
             .get_mut(face.patch.wrapping_sub(1))
@@ -1164,16 +1258,6 @@ pub(super) fn check_with_interface_count(
             ));
         }
     }
-    // (cell, face index, layer) of a face met once so far
-    // sized for every face up front: growing the maps cost more than the
-    // lookups on a million-cell mesh
-    let faces: usize = cells.iter().map(|c| face_count(&c.element)).sum();
-    let mut pending: KeyMap<(usize, usize, usize)> =
-        KeyMap::with_capacity_and_hasher(faces / 8 + 16, Default::default());
-    let mut prism_core_faces = 0;
-    let mut complete: std::collections::HashSet<FaceKey, std::hash::BuildHasherDefault<KeyHasher>> =
-        std::collections::HashSet::with_capacity_and_hasher(faces / 2 + 16, Default::default());
-    let (mut rings, mut earlier) = (Rings::default(), Rings::default());
     // The solver rules decided above; the element measures are quality
     // reports only, taken on all cores.
     struct Report {
@@ -1197,8 +1281,16 @@ pub(super) fn check_with_interface_count(
             match cell.element {
                 Element::Polyhedron(ref poly) if poly.prism.is_some() => {
                     for w in poly.prism.iter().flatten() {
-                        let (jac, _, _) = wedge(w.map(|v| p[v]));
+                        let (jac, _, range) = wedge(w.map(|v| p[v]));
                         r.minimum_j = r.minimum_j.min(jac);
+                        if let Some(t) = cell
+                            .layer
+                            .checked_sub(1)
+                            .and_then(|l| r.normal_thickness_ranges.get_mut(l))
+                        {
+                            t[0] = t[0].min(range[0]);
+                            t[1] = t[1].max(range[1]);
+                        }
                     }
                 }
                 Element::Polyhedron(ref poly) => {
@@ -1255,8 +1347,7 @@ pub(super) fn check_with_interface_count(
     let measured = std::time::Instant::now();
     let mut minimum_volume = f64::INFINITY;
     let mut volume = 0.;
-    for (id, cell) in cells.iter().enumerate() {
-        let value = solver_volumes[id];
+    for (id, &value) in solver_volumes.iter().enumerate() {
         if !value.is_finite() || value <= 0. {
             return Err(format!(
                 "nonpositive or unrepresentable volume at cell {id}"
@@ -1264,41 +1355,12 @@ pub(super) fn check_with_interface_count(
         }
         volume += value;
         minimum_volume = minimum_volume.min(value);
-        rings.load(&cell.element);
-        for (index, ring) in rings.iter().enumerate() {
-            let k = FaceKey::new(ring);
-            if complete.contains(&k) {
-                return Err("too many incidences on one face".into());
-            }
-            if let Some(face) = exterior.remove(&k) {
-                complete.insert(k);
-                if id != face.owner || !same_ring(&face.nodes, ring, false) {
-                    return Err("incorrect boundary owner or winding".into());
-                }
-            } else if let Some((previous, at, other_layer)) = pending.remove(&k) {
-                if (other_layer == 0) != (cell.layer == 0) {
-                    prism_core_faces += 1;
-                }
-                complete.insert(k);
-                if !same_ring(
-                    ring_of(&cells[previous].element, at, &mut earlier),
-                    ring,
-                    true,
-                ) {
-                    return Err("interior face has inconsistent winding".into());
-                }
-            } else {
-                pending.insert(k, (id, index, cell.layer));
-            }
-        }
     }
-    if !pending.is_empty() || !exterior.is_empty() {
-        return Err("unpaired interior or missing exterior face".into());
-    }
+    let prism_core_faces = pair_faces(cells, boundary)?;
     if crate::trace_enabled() {
         eprintln!(
             "kofl trace: measures {:.2} s, face pairing {:.2} s",
-            (measured - started).as_secs_f64(),
+            (measured - ruled).as_secs_f64(),
             measured.elapsed().as_secs_f64()
         );
     }
@@ -1674,7 +1736,7 @@ mod tests {
         check.remove(3, &cells[3].element);
         cells[3].element = Element::Tet([o, b, a, c]);
         check.insert(3, &cells[3].element);
-        check.recheck(&p, &cells);
+        check.recheck(&p, &cells).unwrap();
         assert!(!local(&check).is_empty());
         assert_eq!(local(&check), whole(&p, &cells));
         // split another at an edge midpoint: a new cell, faces that no
@@ -1689,7 +1751,7 @@ mod tests {
         check.insert(5, &cells[5].element);
         cells.push(cell(Element::Tet([m, a, b, c])));
         check.insert(cells.len() - 1, &cells[cells.len() - 1].element);
-        check.recheck(&p, &cells);
+        check.recheck(&p, &cells).unwrap();
         assert_eq!(local(&check), whole(&p, &cells));
         // and back: the inverted cell restored
         check.remove(3, &cells[3].element);
@@ -1698,7 +1760,7 @@ mod tests {
         };
         cells[3].element = Element::Tet(restored);
         check.insert(3, &cells[3].element);
-        check.recheck(&p, &cells);
+        check.recheck(&p, &cells).unwrap();
         assert_eq!(local(&check), whole(&p, &cells));
     }
 }

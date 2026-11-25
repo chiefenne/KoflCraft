@@ -124,6 +124,261 @@ fn split_layers(front: &mut front::Front, cuts: &mut Subdivision) -> Result<(), 
     Ok(())
 }
 
+/// Where a cell of the mesh comes from: a wall layer cell and its
+/// sub-wedges, or a core cell, its dual cell and its corner pieces.
+#[derive(Clone)]
+enum Origin {
+    /// Sub-wedges and column (see `merge_layer_prisms`).
+    Layer(Vec<[usize; 6]>, usize),
+    Core(usize, Vec<usize>),
+    /// A cube of a hex core: no dual part, never split.
+    Cube,
+}
+
+fn sorted_ring(ring: &[usize]) -> Vec<usize> {
+    let mut key = ring.to_vec();
+    key.sort_unstable();
+    key
+}
+
+/// Wall triangles around a wall vertex whose normals differ by more than
+/// this angle (cos 30°), or that lie on different patches, get separate
+/// polygon prisms: the prism stays on one side of a feature line.
+const PRISM_SECTOR_COS: f64 = 0.866_025_403_784_438_6;
+
+/// One layer cell made of sub-wedges that share side faces: its faces are
+/// the sub-wedge faces not shared inside it, and the sub-wedges stay its
+/// exact prism decomposition.
+fn prism_cell(p: &[Vec3], pieces: Vec<[usize; 6]>, layer: usize) -> Cell {
+    if let [w] = pieces[..] {
+        return Cell {
+            element: Element::Wedge(w),
+            layer,
+            region: 0,
+        };
+    }
+    // the side quadrilaterals two sub-wedges share are inside the cell (end
+    // triangles never are); faces in the order of `Element::faces`
+    let sides = |[a, b, c, d, e, f]: [usize; 6]| [[a, b, e, d], [b, c, f, e], [c, a, d, f]];
+    let mut keys: Vec<[usize; 4]> = pieces
+        .iter()
+        .flat_map(|&w| sides(w))
+        .map(|mut q| {
+            q.sort_unstable();
+            q
+        })
+        .collect();
+    keys.sort_unstable();
+    let inside = |q: &[usize; 4]| {
+        let mut key = *q;
+        key.sort_unstable();
+        let at = keys.partition_point(|k| *k < key);
+        keys.get(at + 1) == Some(&key)
+    };
+    let mut faces: Vec<Vec<usize>> = Vec::with_capacity(3 * pieces.len() + 2);
+    for &w in &pieces {
+        let [a, b, c, d, e, f] = w;
+        faces.push(vec![a, c, b]);
+        faces.push(vec![d, e, f]);
+        faces.extend(sides(w).iter().filter(|q| !inside(q)).map(|q| q.to_vec()));
+    }
+    let volume: f64 = pieces
+        .iter()
+        .map(|w| verify::wedge(w.map(|i| p[i])).1)
+        .sum();
+    let interior =
+        pieces.iter().flatten().fold(Vec3::ZERO, |s, &v| s + p[v]) / (6 * pieces.len()) as f64;
+    let mut poly = Polyhedron::new(faces, interior, None, volume);
+    poly.prism = Some(pieces);
+    Cell {
+        element: Element::Polyhedron(Box::new(poly)),
+        layer,
+        region: 0,
+    }
+}
+
+/// The polygon prisms of one wall layer: the corners of the wall triangles
+/// (corner `j` of triangle `k` is `3 k + j`) grouped by wall vertex into
+/// sectors, so that the triangles of a sector lie on one patch and each
+/// turns by less than 30° from its neighbour across their shared edge. A
+/// triangle without a patch stays apart. Returns each corner's sector, named
+/// by its first corner; the number of polygon prisms per layer is the
+/// number of corners that name their own sector.
+pub fn prism_sectors(
+    points: &[Vec3],
+    triangles: &[[usize; 3]],
+    patches: &[Option<usize>],
+) -> Vec<usize> {
+    let normal = |t: [usize; 3]| {
+        let [a, b, c] = t.map(|v| points[v]);
+        let n = (b - a).cross(c - a);
+        n / n.length()
+    };
+    // union-find over the corners
+    let mut parent: Vec<usize> = (0..3 * triangles.len()).collect();
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    let mut edges: Vec<([usize; 2], usize)> = Vec::with_capacity(3 * triangles.len());
+    for (k, t) in triangles.iter().enumerate() {
+        for j in 0..3 {
+            edges.push((sorted([t[j], t[(j + 1) % 3]]), k));
+        }
+    }
+    edges.sort_unstable();
+    for pair in edges.chunk_by(|a, b| a.0 == b.0) {
+        let [(edge, k), (_, l)] = pair[..] else {
+            continue;
+        };
+        let patch = patches.get(k).copied().flatten();
+        let smooth = normal(triangles[k]).dot(normal(triangles[l])) >= PRISM_SECTOR_COS;
+        if patch.is_none() || patch != patches.get(l).copied().flatten() || !smooth {
+            continue;
+        }
+        let (tk, tl) = (triangles[k], triangles[l]);
+        for v in edge {
+            let (Some(i), Some(j)) = (
+                tk.iter().position(|&x| x == v),
+                tl.iter().position(|&x| x == v),
+            ) else {
+                continue;
+            };
+            let (a, b) = (find(&mut parent, 3 * k + i), find(&mut parent, 3 * l + j));
+            parent[a.max(b)] = a.min(b);
+        }
+    }
+    (0..parent.len()).map(|x| find(&mut parent, x)).collect()
+}
+
+/// Polygon prisms, as the prism layers of production dual meshers: the
+/// sub-wedges of one layer around one wall vertex (two per wall triangle,
+/// see `split_layers`) become one cell, one per smooth sector of the
+/// vertex's wall triangles. Every wall layer column then matches the dual
+/// cell of its wall vertex instead of six slivers per wall prism. A cell
+/// keeps its sub-wedges as its exact prism decomposition (`prism`), so a
+/// merged cell that fails the solver rules can be split back. Returns the
+/// sub-wedges of every cell, in cell order, and its column (the sector of
+/// wall triangles it stands on, the same in every layer).
+fn merge_layer_prisms(front: &mut front::Front) -> Vec<(Vec<[usize; 6]>, usize)> {
+    let wedges: Option<Vec<[usize; 6]>> = front
+        .cells
+        .iter()
+        .map(|c| match c.element {
+            Element::Wedge(n) => Some(n),
+            _ => None,
+        })
+        .collect();
+    let identity = |front: &front::Front| -> Vec<(Vec<[usize; 6]>, usize)> {
+        front
+            .cells
+            .iter()
+            .enumerate()
+            .map(|(id, c)| match c.element {
+                Element::Wedge(n) => (vec![n], usize::MAX - id),
+                _ => (Vec::new(), usize::MAX - id),
+            })
+            .collect()
+    };
+    let Some(wedges) = wedges else {
+        return identity(front);
+    };
+    // six sub-wedges per wall prism, the prisms layer after layer in the
+    // same wall-triangle order (front::advance)
+    let coarse = wedges.len() / 6;
+    let layer_of = |k: usize| front.cells[6 * k].layer;
+    let per_layer = (0..coarse).take_while(|&k| layer_of(k) == 1).count();
+    if wedges.len() % 6 != 0
+        || per_layer == 0
+        || coarse % per_layer != 0
+        || (0..coarse).any(|k| {
+            layer_of(k) != k / per_layer + 1
+                || (1..6).any(|i| front.cells[6 * k + i].layer != layer_of(k))
+        })
+    {
+        return identity(front);
+    }
+    // corner j of wall prism k: sub-wedges 2j and 2j + 1 stand on it
+    let corners = |k: usize| [0, 1, 2].map(|j| wedges[6 * k + 2 * j][0]);
+    let p = &front.points;
+    let mut patch = vec![None; per_layer];
+    for face in &front.boundary {
+        if face.nodes.len() == 3 && face.owner < 6 * per_layer {
+            patch[face.owner / 6] = Some(face.patch);
+        }
+    }
+    let triangles: Vec<[usize; 3]> = (0..per_layer).map(corners).collect();
+    let sector_of = prism_sectors(p, &triangles, &patch);
+    // one cell per (layer, sector), in the order the sub-wedges come
+    let mut group_of: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut sectors: Vec<usize> = Vec::new();
+    for k in 0..coarse {
+        for j in 0..3 {
+            let sector = sector_of[3 * (k % per_layer) + j];
+            let g = *group_of.entry((layer_of(k), sector)).or_insert_with(|| {
+                groups.push(Vec::new());
+                sectors.push(sector);
+                groups.len() - 1
+            });
+            groups[g].extend([6 * k + 2 * j, 6 * k + 2 * j + 1]);
+        }
+    }
+    // Where the first-layer prism's centre lies behind one of its wall
+    // triangles (a curved wall under a thin first layer), the merged cells
+    // would fail the solver rules as exported: that column starts as the
+    // prisms of each wall-triangle corner (see the split in
+    // `build_volume_dual`, which still checks every cell).
+    let behind = |group: &[usize]| {
+        let (mut volume, mut moment) = (0.0, Vec3::ZERO);
+        for &s in group {
+            let w = wedges[s].map(|v| p[v]);
+            let v = verify::wedge(w).1;
+            volume += v;
+            moment = moment + w.iter().fold(Vec3::ZERO, |m, &x| m + x) * (v / 6.0);
+        }
+        let centre = moment / volume;
+        group.iter().any(|&s| {
+            let [a, b, c] = [0, 1, 2].map(|i| p[wedges[s][i]]);
+            // outward normal of the wall face [a, c, b]
+            (centre - a).dot((c - a).cross(b - a)) >= 0.0
+        })
+    };
+    let cornered: std::collections::BTreeSet<usize> = groups
+        .iter()
+        .zip(&sectors)
+        .filter(|(group, _)| front.cells[group[0]].layer == 1 && behind(group))
+        .map(|(_, &sector)| sector)
+        .collect();
+    let mut new_id = vec![0; wedges.len()];
+    let mut cells = Vec::with_capacity(groups.len());
+    let mut parts = Vec::with_capacity(groups.len());
+    for (group, sector) in groups.iter().zip(&sectors) {
+        let layer = front.cells[group[0]].layer;
+        let size = if cornered.contains(sector) {
+            2
+        } else {
+            group.len()
+        };
+        for part in group.chunks(size) {
+            let pieces: Vec<[usize; 6]> = part.iter().map(|&s| wedges[s]).collect();
+            for &s in part {
+                new_id[s] = cells.len();
+            }
+            cells.push(prism_cell(p, pieces.clone(), layer));
+            parts.push((pieces, *sector));
+        }
+    }
+    for face in &mut front.boundary {
+        face.owner = new_id[face.owner];
+    }
+    front.cells = cells;
+    parts
+}
+
 /// The part of one scaffold tetrahedron nearest one of its vertices: the
 /// vertex, three edge midpoints, three face centroids and the centroid.
 #[derive(Default)]
@@ -1114,7 +1369,8 @@ fn build_dual(
     lap("layers");
     let mut cuts = Subdivision::default();
     split_layers(&mut front, &mut cuts)?;
-    lap("layer split");
+    let layer_parts = merge_layer_prisms(&mut front);
+    lap("layer split and polygon prisms");
     let mapped = map_scaffold(&scaffold, &surface_ids, &mut front)?;
     lap("interior offset");
     let p = &mut front.points;
@@ -1205,11 +1461,16 @@ fn build_dual(
         .collect();
     // Dual quadrilaterals of cells already split, by the part that owns them.
     let mut split_quads: HashMap<[usize; 4], usize> = HashMap::new();
-    let layer_cells = front.cells.len();
-    // Per core cell: its dual cell and corner pieces; per dual cell: its cells.
-    let mut origin: Vec<(usize, Vec<usize>)> = Vec::new();
-    // cells that are no dual part (the cubes of a hex core) from here on
-    let mut not_dual = usize::MAX;
+    // Per cell: its sub-wedges or its dual cell and corner pieces; per dual
+    // cell: its cells.
+    let mut columns: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (id, (_, column)) in layer_parts.iter().enumerate() {
+        columns.entry(*column).or_default().push(id);
+    }
+    let mut origin: Vec<Origin> = layer_parts
+        .into_iter()
+        .map(|(pieces, column)| Origin::Layer(pieces, column))
+        .collect();
     let mut cells_of: Vec<Vec<usize>> = vec![Vec::new(); dual.len()];
     let layered = !steps.is_empty();
     for (id, cell) in dual.iter().enumerate() {
@@ -1251,7 +1512,7 @@ fn build_dual(
             front.cells.push(built);
             front.boundary.extend(boundary);
             cells_of[id].push(owner_offset + part);
-            origin.push((id, group));
+            origin.push(Origin::Core(id, group));
         }
     }
     // Repeat the split until the mesh as exported passes the solver rules:
@@ -1261,52 +1522,119 @@ fn build_dual(
     // are checked again (verify::ExportedCheck), with the same verdicts.
     lap("dual cells");
     if let Some(core) = core {
-        not_dual = front.cells.len();
         super::hex_join::join(core, p, &mut front.cells, &mut front.boundary)?;
     }
-    let cubes = core.map_or(0, |c| c.cubes.len());
-    // index in `origin` of a dual cell: the cubes sit between the first
-    // dual cells and those added by the splits below
-    let slot = |c: usize| {
-        if c >= not_dual {
-            c - layer_cells - cubes
-        } else {
-            c - layer_cells
-        }
-    };
+    // the cubes of a hex core sit between the first dual cells and those
+    // added by the splits below
+    origin.resize(front.cells.len(), Origin::Cube);
     let mut exported = verify::ExportedCheck::new(p, &front.cells)?;
     lap("first check");
     loop {
         let failing = exported.failing();
-        let mut targets = std::collections::BTreeSet::new();
-        let is_dual = |c: usize| c >= layer_cells && !(not_dual..not_dual + cubes).contains(&c);
+        let mut split_core = std::collections::BTreeSet::new();
+        let mut split_layer = std::collections::BTreeSet::new();
         for (id, neighbours) in failing {
-            if is_dual(*id) {
-                targets.insert(*id);
-            } else {
-                targets.extend(neighbours.iter().copied().filter(|&n| is_dual(n)));
+            match &origin[*id] {
+                Origin::Core(..) => {
+                    split_core.insert(*id);
+                }
+                // A polygon prism that fails splits its whole column into
+                // the prisms of each wall-triangle corner (two sub-wedges,
+                // whose faces keep the wall vertex); one of those that fails
+                // goes back to its two sub-wedges.
+                Origin::Layer(pieces, column) if pieces.len() > 2 => {
+                    split_layer.extend(
+                        columns[column]
+                            .iter()
+                            .filter(|&&c| matches!(&origin[c], Origin::Layer(p, _) if p.len() > 2)),
+                    );
+                }
+                Origin::Layer(pieces, _) if pieces.len() == 2 => {
+                    split_layer.insert(*id);
+                }
+                // a single sub-wedge or a cube of a hex core: its core
+                // neighbours split
+                Origin::Layer(..) | Origin::Cube => split_core.extend(
+                    neighbours
+                        .iter()
+                        .filter(|&&n| matches!(origin[n], Origin::Core(..))),
+                ),
             }
         }
-        targets.retain(|&c| origin[slot(c)].1.len() > 1);
+        split_core.retain(|&c| matches!(&origin[c], Origin::Core(_, group) if group.len() > 1));
         if crate::trace_enabled() {
             eprintln!(
-                "kofl trace: split again: {} cells fail as exported, {} core cells to split",
+                "kofl trace: split again: {} cells fail as exported, {} core cells to split, {} layer prisms to split",
                 failing.len(),
-                targets.len()
+                split_core.len(),
+                split_layer.len()
             );
         }
-        if targets.is_empty() {
+        if split_core.is_empty() && split_layer.is_empty() {
             break;
         }
-        let split: std::collections::BTreeSet<usize> = targets.clone();
-        front.boundary.retain(|b| !split.contains(&b.owner));
-        for c in targets {
-            let (d, group) = origin[slot(c)].clone();
+        let mut owned: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (i, b) in front.boundary.iter().enumerate() {
+            if split_layer.contains(&b.owner) {
+                owned.entry(b.owner).or_default().push(i);
+            }
+        }
+        for c in split_layer {
+            let Origin::Layer(pieces, column) = origin[c].clone() else {
+                continue;
+            };
+            let groups: Vec<Vec<[usize; 6]>> = if pieces.len() > 2 {
+                pieces.chunks(2).map(<[_]>::to_vec).collect()
+            } else {
+                pieces.iter().map(|&w| vec![w]).collect()
+            };
+            exported.remove(c, &front.cells[c].element);
+            let level = front.cells[c].layer;
+            let mut ids = Vec::with_capacity(groups.len());
+            for (k, group) in groups.iter().enumerate() {
+                let cell = prism_cell(p, group.clone(), level);
+                let id = if k == 0 {
+                    front.cells[c] = cell;
+                    origin[c] = Origin::Layer(group.clone(), column);
+                    c
+                } else {
+                    front.cells.push(cell);
+                    origin.push(Origin::Layer(group.clone(), column));
+                    let id = front.cells.len() - 1;
+                    columns.entry(column).or_default().push(id);
+                    id
+                };
+                exported.insert(id, &front.cells[id].element);
+                ids.push(id);
+            }
+            // each boundary face of the prism goes to the part that has it
+            for &i in owned.get(&c).into_iter().flatten() {
+                let key = sorted_ring(&front.boundary[i].nodes);
+                if let Some(k) = groups.iter().position(|group| {
+                    group.iter().any(|&w| {
+                        Element::Wedge(w)
+                            .faces()
+                            .iter()
+                            .any(|f| sorted_ring(f) == key)
+                    })
+                }) {
+                    front.boundary[i].owner = ids[k];
+                }
+            }
+        }
+        front.boundary.retain(|b| !split_core.contains(&b.owner));
+        for c in split_core {
+            let Origin::Core(d, group) = origin[c].clone() else {
+                continue;
+            };
             let cell = &dual[d];
             let earlier: Vec<Vec<usize>> = cells_of[d]
                 .iter()
                 .filter(|&&o| o != c)
-                .map(|&o| origin[slot(o)].1.clone())
+                .filter_map(|&o| match &origin[o] {
+                    Origin::Core(_, g) => Some(g.clone()),
+                    Origin::Layer(..) | Origin::Cube => None,
+                })
                 .collect();
             let half = group.iter().map(|&k| cell.corners[k].volume).sum::<f64>() / 2.;
             let pieces = split_invalid(p, cell, group, &earlier, &split_quads, Some(half));
@@ -1322,16 +1650,16 @@ fn build_dual(
                 if k == 0 {
                     exported.remove(c, &front.cells[c].element);
                     front.cells[c] = built;
-                    origin[slot(c)].1 = piece;
+                    origin[c] = Origin::Core(d, piece);
                 } else {
                     front.cells.push(built);
                     cells_of[d].push(id);
-                    origin.push((d, piece));
+                    origin.push(Origin::Core(d, piece));
                 }
                 exported.insert(id, &front.cells[id].element);
             }
         }
-        exported.recheck(p, &front.cells);
+        exported.recheck(p, &front.cells)?;
     }
     lap("split again");
     // the splits above re-add the dual triangles on the shell as boundary
@@ -1363,6 +1691,74 @@ fn build_dual(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Keep rule (SW-18). Invariant: a polygon prism takes the corners of a
+    /// wall vertex whose triangles lie on one patch and turn by less than
+    /// 30°; a crease or a patch border separates them. Joining across a
+    /// crease or a patch border breaks this (a layer cell would then reach
+    /// round an edge, or carry two patches); only this test checks the
+    /// sectors apart from a built mesh.
+    #[test]
+    fn sectors_part_at_creases_and_patch_borders() {
+        // four triangles around vertex 0; vertex 4 is folded up by 45°
+        let points = [
+            Vec3::new(0., 0., 0.),
+            Vec3::new(1., 0., 0.),
+            Vec3::new(0., 1., 0.),
+            Vec3::new(-1., 0., 0.),
+            Vec3::new(0., -0.7, 0.7),
+        ];
+        let triangles = [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 1]];
+        // corner 0 of each triangle stands on vertex 0
+        let at_zero = |patches: &[Option<usize>]| {
+            let sectors = prism_sectors(&points, &triangles, patches);
+            [0, 1, 2, 3].map(|k| sectors[3 * k])
+        };
+        let one = [Some(3); 4];
+        assert_eq!(at_zero(&one), [0, 0, 6, 6]);
+        let two = [Some(3), Some(4), Some(3), Some(3)];
+        assert_eq!(at_zero(&two), [0, 3, 6, 6]);
+        let none = [Some(3), None, Some(3), Some(3)];
+        assert_eq!(at_zero(&none), [0, 3, 6, 6]);
+        // flat: one sector all round
+        let mut flat = points;
+        flat[4] = Vec3::new(0., -1., 0.);
+        let sectors = prism_sectors(&flat, &triangles, &one);
+        assert_eq!([0, 1, 2, 3].map(|k| sectors[3 * k]), [0; 4]);
+    }
+
+    /// Keep rule (SW-18). Invariant: a polygon prism's faces are the faces of
+    /// its sub-wedges except the side quadrilaterals two of them share, its
+    /// volume is theirs, and the sub-wedges stay its prism decomposition.
+    /// Keeping a shared quadrilateral leaves a face inside the cell; only
+    /// this test checks the cell apart from the solver rules of a whole mesh.
+    #[test]
+    fn polygon_prism_drops_the_shared_sides() {
+        // a unit square split into two triangles, extruded by 1
+        let base = [[0., 0.], [1., 0.], [1., 1.], [0., 1.]];
+        let points: Vec<Vec3> = [0., 1.]
+            .iter()
+            .flat_map(|&z| base.map(|[x, y]| Vec3::new(x, y, z)))
+            .collect();
+        let pieces = vec![[0, 1, 2, 4, 5, 6], [0, 2, 3, 4, 6, 7]];
+        let cell = prism_cell(&points, pieces.clone(), 1);
+        let Element::Polyhedron(poly) = &cell.element else {
+            panic!("two sub-wedges make a polyhedron");
+        };
+        assert_eq!(poly.faces.len(), 8);
+        assert!(
+            poly.faces
+                .iter()
+                .all(|f| sorted_ring(f) != vec![0, 2, 4, 6])
+        );
+        assert!((poly.expected_volume - 1.).abs() < 1e-12);
+        assert_eq!(poly.prism.as_ref(), Some(&pieces));
+        let shell = verify::cell_shell(&points, &poly.faces);
+        assert!(!shell.open && (shell.volume - 1.).abs() < 1e-12);
+        // one sub-wedge stays a wedge
+        let single = prism_cell(&points, vec![pieces[0]], 1);
+        assert!(matches!(single.element, Element::Wedge(_)));
+    }
 
     /// Four tetrahedra round the edge ab; the shell triangle abc ends at
     /// the free edge ab.

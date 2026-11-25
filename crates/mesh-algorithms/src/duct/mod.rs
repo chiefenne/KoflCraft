@@ -14,7 +14,7 @@ mod voronoi_core;
 mod wall_seeds;
 mod yield_layers;
 pub use volume_dual::{
-    CrackStats, Scaffold, build_volume_dual, build_volume_dual_hex, crack_shells,
+    CrackStats, Scaffold, build_volume_dual, build_volume_dual_hex, crack_shells, prism_sectors,
 };
 pub use voronoi_core::{
     DEFAULT_LLOYD_ITERATIONS, VoronoiOptions, VoronoiStats, WallJoin, build_voronoi_core,
@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub use polyhedral::Polyhedron;
 pub use shell::{PlanarShell, ShellStats, imprint_planar_shell};
-pub use verify::Measurements;
+pub use verify::{FaceKey, KeyHasher, KeyMap, KeySet, Measurements};
 pub use yield_layers::{YieldPlane, extrude as extrude_yielding, shorten as shorten_yielding};
 
 pub struct Region {

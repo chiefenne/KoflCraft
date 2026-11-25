@@ -776,6 +776,8 @@ pub fn generate(
     let mut tetrahedra = 0;
     let mut prisms = 0;
     let mut polyhedra = 0;
+    // wall layer cells written as polyhedra: polygon prisms, wall columns
+    let mut layer_polyhedra = 0;
     let mut face_range = [usize::MAX, 0];
     for cell in &mesh.cells {
         match &cell.element {
@@ -783,6 +785,7 @@ pub fn generate(
             duct::Element::Wedge(_) => prisms += 1,
             duct::Element::Polyhedron(p) => {
                 polyhedra += 1;
+                layer_polyhedra += usize::from(cell.layer > 0);
                 face_range[0] = face_range[0].min(p.faces.len());
                 face_range[1] = face_range[1].max(p.faces.len());
             }
@@ -807,6 +810,7 @@ pub fn generate(
         "source_facets": surface.facets().len(),
         "tetrahedra": tetrahedra,
         "polyhedra": polyhedra,
+        "layer_polyhedra": layer_polyhedra,
         "core_sphericity": m.core_sphericity.map(|[min,p05,median]| json!({"minimum":min,"p05":p05,"median":median})),
         "polyhedron_face_range": (polyhedra > 0).then_some(face_range),
         "prism_core_faces":m.prism_core_faces,
@@ -1425,17 +1429,29 @@ pub fn cell_count(
             .iter()
             .filter(|(_, p)| duct::is_wall(*p))
             .count();
-        // median dual: six subprisms per wall triangle and layer; Voronoi
-        // core: one wedge (or split-cap polyhedron) per wall triangle and
-        // layer, one cell per site (the scaffold nodes the tetrahedra use).
-        // Wall columns follow the built core: two per wall triangle and
-        // layer bound the fixtures from above (elbow 0.8, Manifold 2.1).
+        // median dual: one polygon prism per sector of a wall vertex and
+        // layer, one cell per scaffold node (and per cube of a hex core);
+        // Voronoi core: one wedge (or
+        // split-cap polyhedron) per wall triangle and layer, one cell per
+        // site (the scaffold nodes the tetrahedra use). Wall columns follow
+        // the built core: two per wall triangle and layer bound the
+        // fixtures from above (elbow 0.8, Manifold 2.1).
         let (per_wall, core) = match config.core {
-            CoreKind::MedianDual => (6, scaffold.points.len()),
-            CoreKind::HexCore => (
-                6,
-                scaffold.points.len() + hex.as_ref().map_or(0, |c| c.cubes.len()),
-            ),
+            CoreKind::MedianDual | CoreKind::HexCore => {
+                let (triangles, patches): (Vec<[usize; 3]>, Vec<Option<usize>>) = scaffold
+                    .boundary
+                    .iter()
+                    .filter(|(_, p)| duct::is_wall(*p))
+                    .map(|&(t, p)| (t, Some(p)))
+                    .unzip();
+                let sectors = duct::prism_sectors(&scaffold.points, &triangles, &patches);
+                let prisms = (0..sectors.len()).filter(|&i| sectors[i] == i).count();
+                let cubes = hex.as_ref().map_or(0, |c| c.cubes.len());
+                return prisms
+                    .checked_mul(layers)
+                    .and_then(|v| v.checked_add(scaffold.points.len() + cubes))
+                    .ok_or_else(|| invalid("cell count overflow"));
+            }
             CoreKind::Voronoi => {
                 let mut used = vec![false; scaffold.points.len()];
                 for t in &scaffold.tetrahedra {
@@ -1981,7 +1997,7 @@ fn voronoi_json(v: &duct::VoronoiStats) -> Value {
     out
 }
 
-/// GRD-08 for the duct path: per grading source, the core cells (no prism)
+/// GRD-08 for the duct path: per grading source, the core cells (no layer cell)
 /// whose centroid lies in its zone (within its distance; inside a region)
 /// where it sets the size, and their achieved cbrt(volume); with the median
 /// of the other core cells for contrast.
@@ -1994,7 +2010,7 @@ fn grading_evidence(field: &mesh_algorithms::sizing::SizeField, mesh: &duct::Duc
         cells
             .into_iter()
             .zip(&mesh.cells)
-            .filter(|(_, c)| !matches!(c.element, duct::Element::Wedge(_)))
+            .filter(|(_, c)| c.layer == 0)
             .map(|(m, _)| m)
             .collect()
     } else {

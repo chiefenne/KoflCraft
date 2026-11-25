@@ -462,9 +462,18 @@ fn median_dual_core_stays_available_and_valid_on_the_elbow() {
     ];
     let report = work.run(&args)["report"].clone();
     assert_eq!(report["algorithm"], "volume_median_dual_v2");
-    // 237 before cells failing the solver rules were split into valid parts
-    assert_eq!(report["polyhedra"], 238);
-    assert_eq!(report["prisms"], 6768);
+    // Keep: the wall layers are polygon prisms, one per sector of a wall
+    // vertex and layer (272 per layer), and the 6 of them that fail the
+    // solver rules as exported split into their corner prisms (24 more);
+    // the 6,768 sub-wedges were each a cell before. Dropping the merge or
+    // splitting more than the failing columns changes the count, and only
+    // this test pins it on a mesh small enough for the fast run.
+    let layer = report["layer_polyhedra"].as_i64().unwrap();
+    assert_eq!(layer, 816);
+    assert_eq!(report["prisms"], 0);
+    // core: 237 before cells failing the solver rules were split into
+    // valid parts
+    assert_eq!(report["polyhedra"].as_i64().unwrap() - layer, 238);
     let evidence: Value =
         serde_json::from_slice(&fs::read(work.path().join("median/mesh-evidence.json")).unwrap())
             .unwrap();
@@ -476,10 +485,11 @@ fn nonconvex_elbow_preserves_volume_and_exposes_each_port_layer() {
     nonconvex_duct_preserves_volume_and_exposes_each_port_layer("elbow");
 }
 
-/// About four minutes in a release build (scaffold, 108k Voronoi cells,
-/// 116k prisms), so it runs only in the full CI run (`--include-ignored`).
+/// About 70 seconds in a release build (2026-11-25: scaffold, 49k core
+/// cells, 88k polygon prisms), so it runs only in the full CI run
+/// (`--include-ignored`).
 #[test]
-#[ignore = "full run: Manifold builds three duct meshes (about 4 minutes)"]
+#[ignore = "full run: Manifold builds three duct meshes (about 70 seconds)"]
 fn nonconvex_manifold_preserves_volume_and_exposes_each_port_layer() {
     nonconvex_duct_preserves_volume_and_exposes_each_port_layer("manifold");
 }
@@ -532,13 +542,14 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
                 _ => wedges,
             };
             if (mode, dir) == ("polyhedral", "manifold") {
-                // Manifold builds its scaffold in Rust; the median dual
-                // splits every wall prism into the six of its fine wall
-                // triangles (1,020,168 on 2026-11-25, 55,717 core cells).
-                assert!(
-                    (1_000_000..1_040_000).contains(&wall_prisms),
-                    "{wall_prisms}"
-                );
+                // Manifold builds its scaffold in Rust; the median dual's
+                // wall layers are polygon prisms, one per sector of a wall
+                // vertex and layer (88,410 on 2026-11-25, 49,254 core cells;
+                // 1,020,168 sub-wedges before), the few that fail as
+                // exported split into their corner prisms.
+                let layer = report["layer_polyhedra"].as_i64().unwrap();
+                assert!((86_000..91_000).contains(&layer), "{layer}");
+                assert!(wall_prisms < 1_000, "{wall_prisms}");
                 // Keep: the scaffold wall follows the STL to the chord
                 // tolerance both ways (the Gmsh scaffold was 0.54 off).
                 // Building the wall at a fixed coarse size, dropping the
@@ -558,17 +569,18 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
                 // rules decide (2026-11-25); the Voronoi core is on hold
                 // (`voronoi_core_wall_joins_against_the_solver_rules`).
                 assert_eq!(report["algorithm"], "volume_median_dual_v2");
+                // polygon prisms of the wall layers and the core cells
                 let polyhedra = report["polyhedra"].as_i64().unwrap();
-                let expected = if dir == "elbow" {
+                let core = polyhedra - report["layer_polyhedra"].as_i64().unwrap();
+                if dir == "elbow" {
                     // Keep: 237 before the cells that break the solver rules
                     // were split into valid parts (one on the elbow).
-                    assert_eq!(polyhedra, 238);
+                    assert_eq!(core, 238);
                     assert!(report["minimum_cell_volume"].as_f64().unwrap() > 1e-4);
-                    238
                 } else {
-                    assert!((48_500..50_500).contains(&polyhedra), "{polyhedra}");
-                    polyhedra
-                };
+                    assert!((48_500..50_500).contains(&core), "{core}");
+                }
+                let expected = polyhedra;
                 let shape = &report["core_sphericity"];
                 // Median dual (2026-11-25): elbow 0.476, 0.566, 0.762.
                 let thresholds = if dir == "elbow" {
@@ -865,8 +877,9 @@ fn yielding_side_walls_keep_layers_under_the_crossing_walls() {
     let volume = report["volume"].as_f64().unwrap();
     assert!((volume / report["source_volume"].as_f64().unwrap() - 1.).abs() < 0.001);
     // more cells than with sides under no_layers: the side walls' layers
+    // (polygon prisms, 2026-11-25: 38,321 here, 16,487 under no_layers)
     let cells = report["polyhedra"].as_i64().unwrap() + report["prisms"].as_i64().unwrap();
-    assert!(cells > 60_000, "{cells}");
+    assert!(cells > 30_000, "{cells}");
 }
 
 /// The box furnace (FoehnCraft gallery 259) with one tube: its burner disc
@@ -930,10 +943,12 @@ fn flush_openings_grow_layers_and_every_patch_keeps_its_name() {
             p["name"]
         );
     }
-    // no cap: every boundary face is the wall face of a layer prism
+    // no cap: every boundary face is the wall face of a layer prism (polygon
+    // prisms; the few single wedges left where one failed the solver rules
+    // vary with rounding between platforms)
     assert_eq!(report["patch_areas"]["inlet"], 0.0);
     assert_eq!(report["patch_areas"]["outlet"], 0.0);
-    assert!(report["prisms"].as_i64().unwrap() > 0);
+    assert!(report["layer_polyhedra"].as_i64().unwrap() > 0);
     let volume = report["volume"].as_f64().unwrap();
     assert!((volume / report["source_volume"].as_f64().unwrap() - 1.).abs() < 0.005);
     let out = work.path().join("furnace");
