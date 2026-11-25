@@ -262,6 +262,48 @@ pub static TOOLS: &[Tool] = &[
         run: patch::detect_ports,
     },
     Tool {
+        id: "patch.propose",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Propose the patches of a bare closed STL (BC-03): split it at feature edges into faces, say what each is (plane, cylinder with axis and radius, sphere, freeform), mark the openings (pipe ends) and the planes on the bounding box (`xmin` … `zmax`), and write a map with `opening_1`, …, the box sides and `walls`. Openings and box sides get no role: set it with patch.set_role.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: || {
+            schemas::input(
+                json!({"surface": schemas::path(), "output": schemas::path(),
+                       "feature_angle_deg": {"type": "number", "minimum": 1, "maximum": 90},
+                       "plane_angle_deg": {"type": "number", "minimum": 0, "maximum": 10},
+                       "fit_tolerance": {"type": "number", "minimum": 0, "maximum": 0.5},
+                       "merge_walls": {"type": "boolean"}}),
+                &[
+                    "feature_angle_deg",
+                    "plane_angle_deg",
+                    "fit_tolerance",
+                    "merge_walls",
+                ],
+            )
+        },
+        output_schema: schemas::patch_propose,
+        run: patch::propose,
+    },
+    Tool {
+        id: "bc.skeleton",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Write a FoehnCraft case skeleton (TOML) from a patch map (BC-05): one `[boundary.<patch>]` per patch with the FoehnCraft type of its role and `TODO` comments for the values FoehnCraft needs. KoflCraft sets no physical value; a patch without a role is left without a type.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: || {
+            schemas::input(
+                json!({"surface": schemas::path(), "patches": schemas::path(), "output": schemas::path(),
+                       "mesh": {"type": "string", "minLength": 1}}),
+                &["mesh"],
+            )
+        },
+        output_schema: schemas::bc_skeleton,
+        run: patch::bc_skeleton,
+    },
+    Tool {
         id: "patch.split",
         version: 1,
         action: Action::WriteFiles,

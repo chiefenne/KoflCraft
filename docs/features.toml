@@ -111,7 +111,7 @@ tests = [
   "crates/mesh-cli/tests/kofl.rs::patch_tools_define_a_boundary_that_meshes_and_replays",
 ]
 commands = ["cargo m1 --require-gmsh --require-foehn"]
-gaps = "Volume meshing with a map: convex STL and the duct path; proposals beyond pipe-end ports (BC-03), the boundary-condition skeleton (BC-05) and the shell role are open; the viewing VTU carries no patch names"
+gaps = "Volume meshing with a map: convex STL and the duct path; the shell role is open; the viewing VTU carries no patch names"
 
 [[feature]]
 id = "bare-stl-ports"
@@ -163,6 +163,23 @@ tests = [
 ]
 commands = []
 gaps = "Median dual core with a built scaffold only; each connected piece must be planar; walls within four layer heights of it must meet it at a right angle (within about 6 degrees); two yielding walls must not meet; one yield level, no general priority order"
+
+[[feature]]
+id = "patch-proposals"
+title = "Patch proposals and the FoehnCraft boundary-condition skeleton (BC-03, BC-05)"
+requirements = ["BC-03", "BC-05"]
+grade = "partial"
+how = "A round CAD pipe gives two openings and one cylinder with the analytic axis, radius and length (1e-9); an icosphere gives one sphere with the analytic centre and radius; the unit box gives its six sides by name; on the Manifold surface the openings are exactly the hand-recorded port caps and the four outer box faces are box sides; on the cooling jacket the openings are the two 96-gon pipe ends (not the square block faces) and the jacket walls fit cylinders of radius 60, 64 and 66; the skeleton parses as TOML, holds the FoehnCraft type of every role and no physical value; propose, roles and skeleton run through the registry and replay from the journal"
+tests = [
+  "crates/mesh-engine/tests/proposals.rs::a_round_pipe_is_two_openings_and_a_cylinder",
+  "crates/mesh-engine/tests/proposals.rs::a_sphere_and_a_box",
+  "crates/mesh-engine/tests/proposals.rs::manifold_openings_are_the_hand_recorded_ports",
+  "crates/mesh-engine/tests/proposals.rs::jacket_openings_and_cylinders",
+  "crates/mesh-engine/tests/proposals.rs::skeleton_names_types_and_leaves_values_to_foehncraft",
+  "crates/mesh-cli/tests/kofl.rs::propose_roles_and_skeleton_through_the_registry",
+]
+commands = []
+gaps = "Regions are split at feature edges only: a plane blended into a cylinder without a crease stays one freeform region; no cones or tori; openings are planar caps only (round ones, or caps of any section bounded by one wall); which opening is the inlet and what a box side is stays the engineer's call; the skeleton is not yet read by `foehn case check` in CI"
 
 [[feature]]
 id = "sweep"

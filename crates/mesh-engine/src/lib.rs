@@ -7,8 +7,10 @@ mod export;
 pub mod handoff;
 pub mod patches;
 pub mod ports;
+pub mod proposals;
 mod report;
 pub mod sizing;
+pub mod skeleton;
 mod stl;
 
 use std::fmt;
