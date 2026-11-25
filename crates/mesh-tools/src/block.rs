@@ -95,13 +95,17 @@ fn write_topology(ctx: &Context, output: &str, file: &TopologyFile) -> Result<Va
     let (dir, name) = ctx.target(output)?;
     dir.write_new(&name, &bytes)
         .map_err(|e| Diagnostic::new("io_error", e).with_path(output))?;
-    Ok(json!({
+    let mut result = json!({
         "format": BLOCK_RESULT_FORMAT,
         "format_version": crate::FORMAT_VERSION,
         "output": output,
         "files": [{ "path": output, "blake3": mesh_engine::file_digest(&bytes) }],
         "check": check,
-    }))
+    });
+    if let Some(layout) = file.reference.as_ref().and_then(|r| r.layout.as_ref()) {
+        result["layout"] = layout.clone();
+    }
+    Ok(result)
 }
 
 pub(crate) fn list(input: Value, ctx: &Context) -> Run {

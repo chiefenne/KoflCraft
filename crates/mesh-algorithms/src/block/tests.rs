@@ -731,18 +731,36 @@ fn multi_case(
 /// positive Jacobians, gets the box area minus the three sections (the
 /// spline walls are second-order close), places the flap at the asked
 /// gap from the main trailing edge, and works with the slat or the flap
-/// alone; it refuses overlapping elements and names the gap whose blocks
-/// fold.
+/// alone; its layout optimisation leaves no cell over 70° of
+/// non-orthogonality and reports what the written topology grids to; a
+/// slat whose trailing edge sits well above the main nose (the case that
+/// folded before the wall rings and the layout optimisation) meshes; it
+/// refuses overlapping elements and names the gap whose blocks still fold.
+/// A change that dropped the rings or the optimisation (max 86-90°, up to
+/// 433 cells over 70°) breaks it; no other test grids the template.
 #[test]
 fn multi_element_airfoil_places_and_conforms() {
     for (slat, flap, blocks) in [
-        (Some((25.0, 0.05, -0.04)), Some((30.0, 0.03, -0.02)), 22),
-        (None, Some((20.0, 0.025, -0.015)), 16),
-        (Some((15.0, 0.03, -0.025)), None, 16),
+        (Some((25.0, 0.05, -0.04)), Some((30.0, 0.03, -0.02)), 40),
+        (None, Some((20.0, 0.025, -0.015)), 28),
+        (Some((15.0, 0.03, -0.025)), None, 28),
+        (Some((20.0, 0.04, -0.03)), None, 28),
     ] {
         let t = multi_case(slat, flap).unwrap();
         let g = grid::build(&t.topology).unwrap();
         assert_eq!(g.blocks.len(), blocks);
+        let l = t.layout.as_ref().unwrap();
+        assert_eq!(l.after.cells_over_70, 0, "{slat:?} {flap:?} {l:?}");
+        assert_eq!(l.after.folded_corners, 0, "{l:?}");
+        assert!(
+            l.after.max_deg < 70.0 && l.after.max_deg < l.before.max_deg,
+            "{l:?}"
+        );
+        let again = super::layout::orthogonality(&t.topology).unwrap();
+        assert!(
+            (again.max_deg - l.after.max_deg).abs() < 1e-9,
+            "{again:?} {l:?}"
+        );
         assert_conforming(&g);
         let jmin = g
             .quality()
@@ -784,6 +802,6 @@ fn multi_element_airfoil_places_and_conforms() {
     assert!((gap - 0.025).abs() < 2e-3, "flap gap {gap}");
     let e = multi_case(None, Some((20.0, 0.025, 0.01))).err().unwrap();
     assert!(e.contains("negative overlap"), "{e}");
-    let e = multi_case(Some((20.0, 0.04, -0.03)), None).err().unwrap();
+    let e = multi_case(Some((10.0, 0.02, -0.005)), None).err().unwrap();
     assert!(e.contains("between the slat and the main element"), "{e}");
 }
