@@ -140,8 +140,8 @@ Requirements named by the maintainer on 2026-11-22. Candidate algorithms for eac
 | ID | Status | Requirement | Notes |
 |---|---|---|---|
 | GRD-01 | L | One scalar **size field** h(x) drives the mesh density of the core, combined from several sources by the minimum, with a global minimum and maximum size. | Implements ALG-05. The seeds follow it (density ∝ h⁻³) |
-| GRD-02 | L | **Datum objects** in the domain set a target size within a distance and a growth rate away from it: point, line segment, plane, box, sphere, cylinder, cone, and an STL surface or closed body. | Datum objects are not part of the fluid boundary |
-| GRD-03 | L | **Coordinate regions** set a size inside a region given by coordinate bounds (axis-aligned box, slab, cylinder in a named coordinate system). | — |
+| GRD-02 | L | **Datum objects** in the domain set a target size within a distance and a growth rate away from it: point, line segment, plane, box, sphere, cylinder, cone, and an STL surface or closed body. | Datum objects are not part of the fluid boundary. Duct path built 2026-11-25: `volume_scaffold.build.grading` and `grading.add/list/remove` ([doc](nonconvex-duct.md#local-sizes-datum-objects-and-coordinate-regions)) |
+| GRD-03 | L | **Coordinate regions** set a size inside a region given by coordinate bounds (axis-aligned box, slab, cylinder in a named coordinate system). | —. Duct path built 2026-11-25: `volume_scaffold.build.grading` and `grading.add/list/remove` ([doc](nonconvex-duct.md#local-sizes-datum-objects-and-coordinate-regions)) |
 | GRD-04 | L | Geometry-derived sizes: surface curvature, proximity of opposite walls (gap resolution with a minimum cell count across) and feature edges. | — |
 | GRD-05 | L | **Gradation limit**: neighbouring cells differ in size by at most a configured ratio; the size field is smoothed to satisfy it before seeding. | Candidates: gradient limiting, diffusion of the field (also by Walk on Spheres) |
 | GRD-06 | P | Anisotropic size (a metric tensor instead of a scalar), for wakes and near-wall Voronoi refinement. | Candidate Lp-CVT; links to BL-08, ALG-15 |

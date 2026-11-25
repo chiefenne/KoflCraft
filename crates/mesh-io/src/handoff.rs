@@ -606,6 +606,15 @@ impl HandoffMesh {
             .collect()
     }
 
+    /// Volume and centroid of every cell (the decomposition of
+    /// [`Self::inverted_faces`]).
+    pub fn cell_volumes(&self) -> Vec<(f64, Vec3)> {
+        self.cell_measures()
+            .into_iter()
+            .map(|(v, _, _, c)| (v, c))
+            .collect()
+    }
+
     /// Interior faces whose area vector does not point from the owner's
     /// centroid towards the neighbour's (S·d ≤ 0). FoehnCraft counts them
     /// as inverted and calls the mesh invalid.

@@ -430,6 +430,26 @@ pub(crate) fn patch_detect_ports() -> Value {
     schema
 }
 
+/// `grading.list`: the sources and frames of a partition.
+pub(crate) fn grading_listing() -> Value {
+    let field = size_field();
+    object_schema(json!({
+        "sources": field["properties"]["sources"],
+        "frames": field["properties"]["frames"],
+    }))
+}
+
+/// `grading.add` and `grading.remove`: the new partition and its sources.
+pub(crate) fn grading_result() -> Value {
+    let string = json!({ "type": "string" });
+    object_schema(json!({
+        "format": {"const": "koflcraft.grading-result"}, "format_version": string,
+        "output": string,
+        "files": { "type": "array", "items": object_schema(json!({ "path": string, "blake3": {"type": "string", "pattern": "^[a-f0-9]{64}$"} })) },
+        "grading": grading_listing()
+    }))
+}
+
 /// `patch.propose`: a patch result plus the classified regions.
 pub(crate) fn patch_propose() -> Value {
     let mut schema = patch_result();

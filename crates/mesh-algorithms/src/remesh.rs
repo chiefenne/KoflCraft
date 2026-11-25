@@ -26,6 +26,7 @@
 #![allow(clippy::needless_range_loop)] // parallel per-vertex and per-face arrays
 
 use crate::delaunay::{HashMap, HashSet};
+use crate::sizing::SizeField;
 use crate::sizing::surface::{
     Primitive, SurfaceGeometry, Weighted, WeightedSet, normal_cycle_curvature,
 };
@@ -304,6 +305,8 @@ struct Work<'a> {
     surface: &'a ClosestSet,
     lines: &'a ClosestSet,
     size: &'a WeightedSet,
+    /// A size field given by the user (datum objects, regions; GRD-02/03).
+    field: Option<&'a SizeField>,
     thin: Option<&'a WeightedSet>,
     opts: RemeshOptions,
     stats: RemeshStats,
@@ -346,12 +349,17 @@ impl Work<'_> {
             .size
             .envelope(x, self.opts.rate, 0.0, self.opts.max_size)
             .max(self.opts.min_size);
-        match (self.thin, self.opts.thickness) {
+        let h = match (self.thin, self.opts.thickness) {
             (Some(thin), Some(t)) => thin
                 .envelope(x, self.opts.rate, 0.0, h)
                 .max(t.min_size)
                 .min(h),
             _ => h,
+        };
+        // the user's field may ask for less than the remesh minimum
+        match self.field {
+            Some(f) => h.min(f.size(x)),
+            None => h,
         }
     }
 
@@ -826,19 +834,28 @@ pub fn remesh(
     keep: &[bool],
     opts: RemeshOptions,
 ) -> Result<Remeshed, String> {
-    remesh_grouped(vertices, triangles, keep, &vec![0; triangles.len()], opts)
+    remesh_grouped(
+        vertices,
+        triangles,
+        keep,
+        &vec![0; triangles.len()],
+        opts,
+        None,
+    )
 }
 
 /// [`remesh`] with a group per source facet (the named wall patches): the
 /// edges where two remeshed groups meet are kept as feature lines whatever
 /// their angle, so every new triangle lies in one group, and the result
-/// gives the group of each triangle.
+/// gives the group of each triangle. The edge targets are also bounded by
+/// a user size field when given (datum objects and regions, GRD-02/03).
 pub fn remesh_grouped(
     vertices: &[Vec3],
     triangles: &[[usize; 3]],
     keep: &[bool],
     group: &[usize],
     opts: RemeshOptions,
+    field: Option<&SizeField>,
 ) -> Result<Remeshed, String> {
     if keep.len() != triangles.len()
         || group.len() != triangles.len()
@@ -972,6 +989,7 @@ pub fn remesh_grouped(
         locked,
         feature,
         surface: &surface,
+        field,
         lines: &lines,
         size: &size,
         thin: thin.as_ref(),

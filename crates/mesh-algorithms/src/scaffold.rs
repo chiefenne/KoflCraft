@@ -24,6 +24,7 @@ use crate::delaunay::{Delaunay, FACES, NONE, Refused, circumsphere};
 use crate::delaunay::{HashMap, HashSet};
 use crate::duct::Scaffold;
 use crate::remesh::ClosestSet;
+use crate::sizing::SizeField;
 use crate::sizing::surface::{Primitive, Weighted, WeightedSet};
 use mesh_core::geometry::Vec3;
 use std::collections::VecDeque;
@@ -128,6 +129,19 @@ pub fn build(
     triangles: &[[usize; 3]],
     tags: &[usize],
     opts: ScaffoldOptions,
+) -> Result<(Scaffold, ScaffoldStats), String> {
+    build_graded(vertices, triangles, tags, opts, None)
+}
+
+/// [`build`] with the interior spacing also bounded by a user size field
+/// (datum objects and coordinate regions, GRD-02/03): the refinement splits
+/// a tetrahedron whose circumradius exceeds min(wall envelope, field).
+pub fn build_graded(
+    vertices: &[Vec3],
+    triangles: &[[usize; 3]],
+    tags: &[usize],
+    opts: ScaffoldOptions,
+    field: Option<&SizeField>,
 ) -> Result<(Scaffold, ScaffoldStats), String> {
     if triangles.len() != tags.len() || triangles.iter().flatten().any(|&v| v >= vertices.len()) {
         return Err("invalid scaffold surface".into());
@@ -270,7 +284,10 @@ pub fn build(
             .map(|(t, _)| Primitive::Triangle(t.map(|v| dt.points[v])))
             .collect(),
     );
-    let h = |x: Vec3| size.envelope(x, opts.rate, 0.0, opts.max_size);
+    let h = |x: Vec3| {
+        let wall = size.envelope(x, opts.rate, 0.0, opts.max_size);
+        field.map_or(wall, |f| wall.min(f.size(x)))
+    };
     let mut queue: VecDeque<usize> = (0..dt.tets.len()).filter(|&t| inside[t]).collect();
     let mut tried: HashSet<[usize; 4]> = HashSet::default();
     while let Some(t) = queue.pop_front() {

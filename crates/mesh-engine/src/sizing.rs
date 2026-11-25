@@ -123,6 +123,32 @@ pub enum SourceConfig {
 }
 
 impl SourceConfig {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Datum { name, .. }
+            | Self::Region { name, .. }
+            | Self::Curvature { name, .. }
+            | Self::Gap { name, .. }
+            | Self::FeatureEdges { name, .. } => name,
+        }
+    }
+
+    /// The frame a datum or region source is given in, when not global.
+    pub fn frame(&self) -> Option<&str> {
+        match self {
+            Self::Datum { frame, .. } | Self::Region { frame, .. } => frame.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// The target size of a datum or region source.
+    pub fn size(&self) -> Option<f64> {
+        match self {
+            Self::Datum { size, .. } | Self::Region { size, .. } => Some(*size),
+            _ => None,
+        }
+    }
+
     fn derived(&self) -> bool {
         matches!(
             self,
@@ -241,6 +267,25 @@ impl SizeFieldConfig {
     /// The field on `surface`; curvature, gap and feature-edge sources are
     /// derived from its facets (GRD-04).
     pub fn field(&self, surface: &ConvexSurface) -> Result<SizeField, EngineError> {
+        self.field_on(Some(surface))
+    }
+
+    /// The field without a convex surface: datum objects and coordinate
+    /// regions only (the nonconvex duct path, which sizes its walls itself).
+    pub fn explicit_field(&self) -> Result<SizeField, EngineError> {
+        if let Some(s) = self.sources.iter().find(|s| s.derived()) {
+            return Err(EngineError::new(
+                ErrorCode::InvalidSizeField,
+                format!(
+                    "size source {} is derived from a convex surface; here only datum and region sources apply (the wall sizes itself: curvature by the chord tolerance, gaps by `thickness`)",
+                    s.name()
+                ),
+            ));
+        }
+        self.field_on(None)
+    }
+
+    fn field_on(&self, surface: Option<&ConvexSurface>) -> Result<SizeField, EngineError> {
         let invalid = |message: String| EngineError::new(ErrorCode::InvalidSizeField, message);
         let mut frames: Vec<(&str, Frame)> = vec![("global", Frame::GLOBAL)];
         for frame in &self.frames {
@@ -272,7 +317,9 @@ impl SizeFieldConfig {
             .sources
             .iter()
             .any(SourceConfig::derived)
-            .then(|| SurfaceGeometry::new(surface));
+            .then_some(surface)
+            .flatten()
+            .map(|s| SurfaceGeometry::new(s));
         let (min, max) = (self.min_size, self.max_size);
         let derived = |name: &String, kind, items: Vec<_>, distance: f64, growth: Option<f64>| {
             let set = WeightedSet::new(items);
