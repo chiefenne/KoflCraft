@@ -9,7 +9,7 @@ pub mod hdf5;
 mod msh;
 pub mod vtkhdf;
 
-pub use directory::{BLOCK, Bundle, FILE_HASH, MeshDirectory, StreamError, file_digest};
+pub use directory::{BLOCK, Bundle, Content, FILE_HASH, MeshDirectory, StreamError, file_digest};
 pub use gmsh::{write_gmsh, write_gmsh_domain};
 pub use msh::GmshVersion;
 

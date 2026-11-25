@@ -123,6 +123,9 @@ impl MeshDirectory {
     }
 }
 
+/// The writer of one file's content for [`Bundle::stream_all`].
+pub type Content<'a> = Box<dyn FnOnce(&mut dyn Write) -> io::Result<()> + Send + 'a>;
+
 /// A new directory of files written one at a time. Unless [`Bundle::finish`]
 /// is called, the directory and its files are removed again: when a file
 /// fails, at once (and its error says if the cleanup failed too), and when
@@ -157,6 +160,56 @@ impl Bundle<'_> {
                 })
             }
         }
+    }
+
+    /// Stream several new files at once, each on its own thread (see
+    /// [`Bundle::stream`]), and record them in the given order. When any
+    /// file fails, the bundle is removed and the first failure in that
+    /// order is returned.
+    pub fn stream_all(&mut self, files: Vec<(&str, Content<'_>)>) -> Result<(), StreamError> {
+        let dir = &self.dir;
+        let results: Vec<(String, Result<String, StreamError>)> = thread::scope(|scope| {
+            let handles: Vec<_> = files
+                .into_iter()
+                .map(|(name, content)| {
+                    let name = name.to_string();
+                    let handle = scope.spawn({
+                        let name = name.clone();
+                        move || dir.stream_new(OsStr::new(&name), content)
+                    });
+                    (name, handle)
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|(name, h)| {
+                    let result = h.join().unwrap_or_else(|_| {
+                        Err(StreamError::Content(io::Error::other(
+                            "the thread writing the file stopped",
+                        )))
+                    });
+                    (name, result)
+                })
+                .collect()
+        });
+        let mut failure = None;
+        for (name, result) in results {
+            match result {
+                Ok(digest) => self.files.push((name, digest)),
+                Err(error) => {
+                    failure.get_or_insert(error);
+                }
+            }
+        }
+        let Some(error) = failure else {
+            return Ok(());
+        };
+        let cleanup = self.remove();
+        self.done = true;
+        Err(match error {
+            StreamError::Io(e) => StreamError::Io(with_cleanup(e, cleanup)),
+            StreamError::Content(e) => StreamError::Content(with_cleanup(e, cleanup)),
+        })
     }
 
     /// The files written so far with their BLAKE3 hash, in order.
@@ -455,5 +508,42 @@ mod tests {
         let files = bundle.finish();
         assert_eq!(files[0].1, file_digest(b"a"));
         assert_eq!(std::fs::read(scratch.0.join("b/a.txt")).unwrap(), b"a");
+    }
+
+    /// Invariant: files streamed at once are recorded in the given order,
+    /// and one failing file removes the whole bundle. Recording them in the
+    /// order they finish, or keeping the other files, breaks this; the
+    /// evidence lists the files in this order.
+    #[test]
+    fn files_streamed_at_once_keep_their_order() {
+        let scratch = Scratch::new("bundle-all");
+        let dir = scratch.dir();
+        let mut bundle = dir.bundle(OsStr::new("b")).unwrap();
+        let big = vec![7u8; 3 * BLOCK + 5];
+        let files: Vec<(&str, Content<'_>)> = vec![
+            (
+                "big.bin",
+                Box::new(|out: &mut dyn Write| out.write_all(&big)),
+            ),
+            (
+                "small.txt",
+                Box::new(|out: &mut dyn Write| out.write_all(b"s")),
+            ),
+        ];
+        bundle.stream_all(files).unwrap();
+        let names: Vec<&str> = bundle.files().iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["big.bin", "small.txt"]);
+        assert_eq!(bundle.files()[0].1, file_digest(&big));
+        let files: Vec<(&str, Content<'_>)> = vec![
+            ("c.txt", Box::new(|out: &mut dyn Write| out.write_all(b"c"))),
+            (
+                "d.txt",
+                Box::new(|_: &mut dyn Write| Err(io::Error::other("writer failed"))),
+            ),
+        ];
+        let error = bundle.stream_all(files).unwrap_err();
+        assert!(matches!(error, StreamError::Content(_)), "{error}");
+        drop(bundle);
+        assert!(!scratch.0.join("b").exists());
     }
 }
