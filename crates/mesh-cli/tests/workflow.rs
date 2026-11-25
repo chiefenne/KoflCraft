@@ -873,6 +873,7 @@ fn flush_openings_grow_layers_and_every_patch_keeps_its_name() {
             ("walls", "wall", true),
             ("front", "wall", true),
             ("tubes", "wall", true),
+            ("sides", "wall", false),
             ("burner", "inlet", true),
             ("outlet", "outlet", true),
         ]
@@ -902,6 +903,7 @@ fn flush_openings_grow_layers_and_every_patch_keeps_its_name() {
         "\"tubes\"",
         "\"burner\"",
         "\"outlet\"",
+        "\"sides\"",
         "\"fluid\"",
     ] {
         assert!(msh.contains(group), "{group}");
@@ -919,5 +921,8 @@ fn flush_openings_grow_layers_and_every_patch_keeps_its_name() {
         .filter_map(|b| b.parse::<u8>().ok())
         .map(|b| if b == 0 { ' ' } else { b as char })
         .collect();
-    assert_eq!(text.trim(), "0=walls 1=front 2=tubes 3=burner 4=outlet");
+    assert_eq!(
+        text.trim(),
+        "0=walls 1=front 2=tubes 3=sides 4=burner 5=outlet"
+    );
 }

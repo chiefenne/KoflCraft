@@ -473,7 +473,7 @@ fn build_part(
     let mut boundary = Vec::new();
     for i in used {
         let (nodes, patch, _) = cell.boundary[i];
-        if patch <= 2 || !layered {
+        if !is_wall(patch) || !layered {
             boundary.push(BoundaryFace {
                 nodes: nodes.to_vec(),
                 patch,
@@ -725,19 +725,28 @@ pub(super) fn prepare(scaffold: &Scaffold, steps: &[f64]) -> Result<Prepared, St
         &ts,
         surface.bounds().extent().max_abs_component(),
     )?;
-    let mut rims: [Vec<Edge>; 2] = Default::default();
+    let mut rims = BTreeMap::<usize, Vec<Edge>>::new();
     let mut port_edges = BTreeMap::new();
     for (&t, &tag) in ts.iter().zip(&patches) {
-        if tag <= 2 {
+        if !is_wall(tag) {
             for (u, v) in edges(t) {
-                if port_edges.remove(&(v, u)).is_none() {
-                    port_edges.insert((u, v), tag);
+                match port_edges.remove(&(v, u)) {
+                    None => {
+                        port_edges.insert((u, v), tag);
+                    }
+                    Some(other) if other != tag && !(is_slip(other) && is_slip(tag)) => {
+                        return Err(
+                            "two patches without layers (inlet, outlet or no_layers) share an edge"
+                                .into(),
+                        );
+                    }
+                    Some(_) => {}
                 }
             }
         }
     }
     for ((a, b), tag) in port_edges {
-        rims[tag - 1].push((b, a));
+        rims.entry(tag).or_default().push((b, a));
     }
     // Squeeze the layers further where the wall offset would turn a
     // scaffold tetrahedron over or flatten it (thin ribs, tight corners).

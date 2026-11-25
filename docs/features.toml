@@ -141,6 +141,18 @@ commands = []
 gaps = "Polyhedral mode with a built scaffold only (bulk and layered take the classic three patches); the median dual core can still fail a few cells where a tube meets a wall (six at 0.12 m on the gallery furnace); six layer prisms per wall triangle make layer-heavy meshes; openings that are neither caps nor flush (partly flush rims) are treated as caps"
 
 [[feature]]
+id = "no-layers"
+title = "Wall patches without layers: layers run straight into them (BC-01)"
+requirements = ["BC-01"]
+grade = "partial"
+how = "`no_layers` in the partition names planar wall patches that grow no layers; the layers of the walls around end on them, their side faces in that plane, and the patch's own facets slide in its plane to make room (harmonic in-plane offset). The furnace fixture's side walls: tube layers end on them, every patch area within 1% (tube 3%) of the STL; the seven-tube furnace with about 24 faces around each tube has 1,895,630 cells, passes the solver rules, and FoehnCraft reads it as valid (max non-orthogonality 74.9°)"
+tests = [
+  "crates/mesh-cli/tests/workflow.rs::flush_openings_grow_layers_and_every_patch_keeps_its_name",
+]
+commands = []
+gaps = "Median dual core only; each connected piece must be planar; two such patches meet only in one plane and never at an inlet or outlet cap; no priority yet between two layered walls that meet (the tube still mitres into a layered wall)"
+
+[[feature]]
 id = "sweep"
 title = "Swept block and pipe with prism layers"
 requirements = ["BL-01", "BL-03"]
