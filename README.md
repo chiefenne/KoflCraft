@@ -31,7 +31,7 @@ how they were made is in [tools/readme-tour](tools/readme-tour/README.md).</sub>
 
 [![CI](https://github.com/chiefenne/KoflCraft/actions/workflows/m1.yml/badge.svg)](https://github.com/chiefenne/KoflCraft/actions/workflows/m1.yml)
 [![Release](https://img.shields.io/github/v/release/chiefenne/KoflCraft)](https://github.com/chiefenne/KoflCraft/releases)
-[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](Cargo.toml)
+[![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](#install)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ## What it is for
@@ -95,10 +95,63 @@ The guiding targets are:
   and write roots), JSON in and out, journal and replay, an exact estimate
   before every build and approvals for large ones ([docs/tools.md](docs/tools.md)).
 
+## Install
+
+### Download a release
+
+*Coming soon.* Ready-to-run programs for macOS, Linux and Windows will be
+attached to the [releases](https://github.com/chiefenne/KoflCraft/releases).
+Until then, build KoflCraft from source as below.
+
+### Build from source
+
+KoflCraft needs no system libraries; you need:
+
+- Rust 1.88 or newer, installed with [rustup](https://rustup.rs)
+  (`rustup update stable` brings an older one up to date).
+- A C compiler and linker for Rust: on macOS the Xcode Command Line Tools
+  (`xcode-select --install`), on Linux (Ubuntu) `sudo apt install
+  build-essential`.
+- Git.
+- Optional: [Gmsh](https://gmsh.info) on the `PATH` (`brew install gmsh`
+  on macOS, `sudo apt install gmsh` on Ubuntu) for the extra check of the
+  acceptance run.
+
+Then, in a terminal:
+
+```
+git clone https://github.com/chiefenne/KoflCraft.git
+cd KoflCraft
+cargo build --release --locked -p mesh-cli -p mesh-mcp
+target/release/kofl generate test-fixtures/box-4.json box.mesh.json
+target/release/kofl check box.mesh.json
+```
+
+This builds three programs into `target/release/`: `kofl` (the command
+line; `kofl mcp` is the MCP server), `mesh-cli` (the same commands under
+its older name) and `mesh-mcp` (the MCP server on its own). To call `kofl`
+from any folder, install it into `~/.cargo/bin`, which rustup puts on your
+`PATH`:
+
+```
+cargo install --locked --path crates/mesh-cli
+kofl commands
+```
+
+To update, pull and build again:
+
+```
+git pull --ff-only
+cargo build --release --locked -p mesh-cli -p mesh-mcp   # and cargo install ... again if you installed it
+```
+
+CI builds and tests on Linux (Ubuntu); macOS and Windows builds are not
+checked by CI yet.
+
 ## Build and run
 
-Needs Rust 1.85 or newer. Gmsh on the `PATH` is optional; the acceptance run
-uses it for an extra check.
+With the prerequisites of [Install](#install) in place (Gmsh only for
+`--require-gmsh`):
 
 ```
 cargo test --release --workspace
