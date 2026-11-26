@@ -1,3 +1,0 @@
-- Block mesher (MB1f): `block.grid` with `{"kind": "elliptic", "wall_sliding": true}` lets wall nodes slide along curved walls toward orthogonal grid lines, block vertices included. Sharp corners such as trailing edges stay fixed.
-  - **Extruded sections:** nodes slide along the section contour. On the NACA 2412 C-grid, FoehnCraft's max non-orthogonality drops from 47.0° to 44.7°.
-  - **Cylinder and torus walls:** the block-edge nodes slide on the surface and the face nodes follow. The pipe and the elbow stay at their quality.

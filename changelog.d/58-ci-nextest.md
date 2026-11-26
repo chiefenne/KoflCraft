@@ -1,1 +1,0 @@
-- **Faster CI**: the tests run with cargo-nextest, which runs the test binaries side by side instead of one after the other. Locally the fast suite went from 97 s to 48 s.

@@ -1,1 +1,0 @@
-- Journal and replay (AG-13): `kofl --journal FILE` or `KOFL_JOURNAL` records every tool call in a `koflcraft.journal` file; `kofl run --script FILE [--keep-going]` (tool `journal.replay`) runs it again and reports each call whose status, exit code or result digest differs (TOOL005). `mesh.export` results now name the format and the SHA-256 of every written file.

@@ -1,1 +1,0 @@
-- README slideshow: three pictures of the Manifold mesh (patches, cell types under a clip plane, non-orthogonality) made by MurmelCraft's headless `export.image`, an animated WebP near the top of the README with alt text, the stills with captions in [docs/gallery.md](../docs/gallery.md), and the recipe in [tools/readme-tour](../tools/readme-tour/README.md).

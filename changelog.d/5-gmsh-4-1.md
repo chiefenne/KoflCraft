@@ -1,1 +1,0 @@
-- Gmsh export writes MSH 4.1 ASCII by default, the version FoehnCraft reads (FC-01, OPEN-11). `gmsh-2.2` keeps the old version. Box, STL, channel, sweep and duct meshes share one element model, so both versions carry the same elements. The M1 acceptance runner reads 4.1 independently.

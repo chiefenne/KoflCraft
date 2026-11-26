@@ -19,14 +19,18 @@ how they were made is in [tools/readme-tour](tools/readme-tour/README.md).</sub>
 
 ---
 
-> **Status: milestone M1 done (clipped Voronoi polyhedra in a box, validated,
-> exported to VTU and Gmsh, driven from a CLI and an MCP server), M2 under way.**
-> STL import, convex STL meshing, prism boundary layers on swept and channel
-> geometries, and a first nonconvex duct mesher with layers carried out to the
-> ports exist as prototypes. The milestone plan and every decision are in
+> **Status: release 0.1.0 (tag `v0.1.0`), the first release.** Milestone M1
+> is done and verified: clipped Voronoi polyhedra in a box, validated,
+> exported to VTU, Gmsh, OpenFOAM and FoehnCraft, driven from a CLI and an
+> MCP server. Convex STL meshing with size control (M2), nonconvex ducts with
+> prism layers carried out to the ports (M3 to M5) and a block-structured
+> mesher (MB1) work as prototypes, each graded with its gaps on the
+> [status page](docs/status.md). What changed is in
+> [CHANGELOG.md](CHANGELOG.md); the milestone plan and every decision are in
 > [docs/requirements.md](docs/requirements.md).
 
 [![CI](https://github.com/chiefenne/KoflCraft/actions/workflows/m1.yml/badge.svg)](https://github.com/chiefenne/KoflCraft/actions/workflows/m1.yml)
+[![Release](https://img.shields.io/github/v/release/chiefenne/KoflCraft)](https://github.com/chiefenne/KoflCraft/releases)
 [![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](Cargo.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -57,6 +61,40 @@ The guiding targets are:
 - **Clean room.** Algorithms implemented from published papers and documented
   formats, MIT licensed, no copyleft code.
 
+## What works today
+
+- **Box meshes (M1, verified).** Clipped Voronoi cells from 16 to 256,000
+  sites, clipped by their nearest sites with a completeness test, every
+  cell closed, every interior face matched, volume and patch areas
+  conserved; repeatable to the bit.
+- **Convex STL domains (M2).** STL import and checks, size fields from
+  datum objects (points, planes, boxes, spheres, cylinders, cones) and
+  coordinate regions, sizes from wall curvature, gaps and feature edges,
+  density-weighted CVT seeding.
+- **Boundary patches.** `patch.*` tools on any closed STL (planes, boxes,
+  normals, feature-angle growing, split, merge, rename, roles), port
+  detection on a bare STL, patch proposals, and a FoehnCraft case skeleton
+  with the type of every boundary.
+- **Nonconvex ducts (M3 to M5, prototypes).** A Rust scaffold (wall remesh,
+  Delaunay tetrahedra, boundary recovery), a Voronoi or median-dual
+  polyhedral core, prism layers that end on the inlet and outlet planes,
+  named wall patches and flush openings, walls without layers or with
+  yielding layers, zero-thickness baffles and plates, polygon-prism layers,
+  grading, an opt-in hex core; validity by the rules of production
+  finite-volume codes. The seven-tube furnace of FoehnCraft's gallery
+  builds with 1.9 million cells.
+- **Block-structured meshes (MB1).** Templates for a channel, a pipe, an
+  elbow, an airfoil C-grid and a multi-element airfoil, TFI and elliptic
+  smoothing with wall orthogonality and sliding wall nodes, edit tools and
+  a layout optimiser ([docs/block-mesher.md](docs/block-mesher.md)).
+- **Hand-off.** `foehncraft.vtkhdf` (blocked VTKHDF, default) or
+  `foehncraft.vtu`, Gmsh MSH 4.1, OpenFOAM `polyMesh`, with
+  `mesh-evidence.json` and a BLAKE3 hash of every file. FoehnCraft reads
+  every acceptance mesh back in CI; MurmelCraft shows them.
+- **For agents.** One tool registry behind `kofl` and the MCP server (read
+  and write roots), JSON in and out, journal and replay, an exact estimate
+  before every build and approvals for large ones ([docs/tools.md](docs/tools.md)).
+
 ## Build and run
 
 Needs Rust 1.85 or newer. Gmsh on the `PATH` is optional; the acceptance run
@@ -80,6 +118,10 @@ cargo m1 --require-gmsh
 | STL input | [docs/m2-stl.md](docs/m2-stl.md) |
 | Block and pipe meshes with wall layers | [docs/analytic-development.md](docs/analytic-development.md) |
 | Nonconvex ducts with exposed prism layers | [docs/nonconvex-duct.md](docs/nonconvex-duct.md) |
+| Block-structured meshes (templates, smoothing, edit tools) | [docs/block-mesher.md](docs/block-mesher.md) |
+| Verification grade and gaps of every feature | [docs/status.md](docs/status.md) |
+| Tools of the CLI and the MCP server | [docs/tools.md](docs/tools.md) |
+| Changes and releases | [CHANGELOG.md](CHANGELOG.md), [docs/release.md](docs/release.md) |
 | Colour maps shared with FoehnCraft and MurmelCraft | [docs/colour-maps.md](docs/colour-maps.md) |
 | Rules for agents and contributors | [AGENTS.md](AGENTS.md), [docs/pitfalls.md](docs/pitfalls.md) |
 

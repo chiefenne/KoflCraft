@@ -1,1 +1,0 @@
-- **Wall patches without layers** (`no_layers` in the partition): the layers of the walls around run straight into a planar patch that grows none, so on the furnace the tube layers end on the side walls as rings around each tube. The patch's own facets slide in its plane to make room. The furnace fixture names its side walls `sides`.
