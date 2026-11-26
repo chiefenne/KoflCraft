@@ -1,1 +1,0 @@
-- `mesh.report` version 2 (AG-16): over MCP it returns a summary (counts and extremes of the cell and face metrics) with one page of rows and a `next_cursor`; pages hold at most 500 rows (`page_size`). The command line keeps the full report. The acceptance runner follows the cursors and compares the reassembled rows with the CLI report.

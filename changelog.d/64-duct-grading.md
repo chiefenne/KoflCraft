@@ -1,1 +1,0 @@
-- Grading on the duct path (GRD-02, GRD-03, GRD-08): `volume_scaffold.build.grading` refines the wall and the core with datum objects and coordinate regions, the report gives each source's achieved cell sizes, and `grading.add`, `grading.list` and `grading.remove` edit the sources of a partition by name.

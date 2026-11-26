@@ -1,1 +1,0 @@
-- **Walls whose layers yield** (`layers_yield` in the partition): a planar wall keeps its layers, and the walls that cross it run their own layers straight through them down to it, with no mitre. On the furnace, `"layers_yield": ["sides"]` keeps the side walls' layers and lets the tube layers win at the junction: a ring of (tube layer x side layer) hexahedra around each tube.

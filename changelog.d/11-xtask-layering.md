@@ -1,1 +1,0 @@
-- `cargo xtask layering` (SW-19) checks the crate layers of requirements section 6 and that the front ends reach the engine only through `mesh-tools`. CI gains a `checks` job: format, layering, clippy with `-D warnings` and the test suite. Requirements section 1a and the M1b status are updated.

@@ -1,1 +1,0 @@
-- Multi-region meshing strategy decided on decision cards: `research/multi-region-strategy.md`, requirements v1.1 MD-20 to MD-27 (one scaffold for all polyhedral regions, region mesher menu and defaults, thin swept prisms, conformal block–poly joining, proposal table, hex-core track); MD-05 sliding after M5b.

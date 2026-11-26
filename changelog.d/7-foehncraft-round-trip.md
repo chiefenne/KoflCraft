@@ -1,1 +1,0 @@
-- `cargo m1 --require-foehn` reads every acceptance mesh exported for FoehnCraft with `foehn mesh` and compares counts, volume, patch areas, closure and inverted faces with KoflCraft's summary (FC-06). CI builds FoehnCraft and runs it.
