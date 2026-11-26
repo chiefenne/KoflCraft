@@ -105,17 +105,27 @@ Until then, build KoflCraft from source as below.
 
 ### Build from source
 
-KoflCraft needs no system libraries; you need:
+KoflCraft needs no system libraries, no CMake and no Gmsh; you need Rust
+1.88 or newer ([rustup](https://rustup.rs); `rustup update stable` brings
+an older one up to date), a C compiler and linker, and Git:
 
-- Rust 1.88 or newer, installed with [rustup](https://rustup.rs)
-  (`rustup update stable` brings an older one up to date).
-- A C compiler and linker for Rust: on macOS the Xcode Command Line Tools
-  (`xcode-select --install`), on Linux (Ubuntu) `sudo apt install
-  build-essential`.
-- Git.
-- Optional: [Gmsh](https://gmsh.info) on the `PATH` (`brew install gmsh`
-  on macOS, `sudo apt install gmsh` on Ubuntu) for the extra check of the
-  acceptance run.
+| System | Commands |
+|---|---|
+| macOS | `xcode-select --install`, then rustup |
+| Ubuntu, Debian | `sudo apt install build-essential git curl`, then rustup |
+| Fedora | `sudo dnf install gcc make git curl`, then rustup |
+| Windows | Visual Studio C++ Build Tools, rustup and Git with `winget install --id ...` (the commands are in the guide) |
+
+The rustup command on macOS and Linux is
+`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`.
+
+Optional: the [Gmsh](https://gmsh.info) program on the `PATH` for the
+extra check of the acceptance run (`cargo m1 --require-gmsh`):
+`brew install gmsh` (macOS), `sudo apt install gmsh` (Ubuntu),
+`sudo dnf install gmsh` (Fedora), the zip from gmsh.info (Windows).
+KoflCraft writes `.msh` files itself and does not need Gmsh otherwise.
+The step-by-step guide for each system is
+[docs/install.md](docs/install.md).
 
 Then, in a terminal:
 
