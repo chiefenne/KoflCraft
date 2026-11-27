@@ -1,0 +1,1 @@
+{"surface": "shell_side.stl", "patches": "ports-1.json", "from": "outlet", "to": "air_outlet", "output": "patches.json"}
