@@ -223,7 +223,7 @@ checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
 
 [[package]]
 name = "koflcraft"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mesh-algorithms",
  "mesh-core",
@@ -259,7 +259,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mesh-acceptance"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mesh-core",
  "mesh-engine",
@@ -269,7 +269,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-algorithms"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mesh-core",
  "mesh-geometry",
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "mesh-mcp",
@@ -288,11 +288,11 @@ dependencies = [
 
 [[package]]
 name = "mesh-core"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "mesh-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mesh-algorithms",
  "mesh-core",
@@ -307,7 +307,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-geometry"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mesh-core",
  "serde",
@@ -317,7 +317,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-io"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "cap-std",
@@ -329,7 +329,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mesh-engine",
  "mesh-tools",
@@ -340,7 +340,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-quality"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mesh-core",
  "mesh-geometry",
@@ -348,7 +348,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mesh-engine",
  "serde",
@@ -714,7 +714,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "toml",

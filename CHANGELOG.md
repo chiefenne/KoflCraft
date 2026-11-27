@@ -8,7 +8,95 @@ Nothing yet.
 
 | Version | Milestone | Highlights |
 |---|---|---|
+| 0.2.0 (2026-11-27) | Galleries and install guide | Example gallery (eight block-mesher and eleven polyhedral entries), recipes and an application gallery (heat exchanger shell side, seven-tube furnace, three-element airfoil), every entry with its exact commands, checked numbers and a MurmelCraft picture; install guide for macOS, Linux and Windows. No change to the mesher, its file formats or its tools. |
 | 0.1.0 (2026-11-26) | M1 done, M2 to M5 and MB1 as prototypes | First release. Clipped Voronoi polyhedra in a box (M1, verified), convex STL meshing with size fields, geometry-derived sizes and boundary patch tools (M2), nonconvex ducts on a Rust scaffold with prism layers to the ports, named wall patches, flush openings, zero-thickness shells, polygon-prism layers and the solver rules of production codes (M3 to M5 prototypes), a block-structured mesher with templates (pipe, elbow, airfoil C-grid, multi-element airfoil), edit tools, elliptic smoothing and a layout optimiser (MB1), the blocked VTKHDF hand-off read by FoehnCraft and MurmelCraft, and one tool registry behind the CLI and the MCP server. **Every mesh checked before it is written; FoehnCraft reads every acceptance mesh back in CI; the seven-tube furnace (1.9 million cells) passes the solver rules.** |
+
+## 0.2.0 (2026-11-27) – example gallery, application gallery and install guide
+
+**In one paragraph.** KoflCraft 0.2.0 shows what the mesher does and how to
+run it. The new [example gallery](docs/gallery.md) has eight block-mesher
+and eleven polyhedral entries, the [recipes](docs/recipes.md) the steps
+behind them and the [application gallery](docs/applications.md) three
+engineering cases (the shell side of a shell-and-tube heat exchanger from
+its STEP file, the seven-tube furnace of FoehnCraft's gallery and a
+three-element airfoil). Every entry carries the exact commands that made it,
+its checked numbers and a picture made headless by MurmelCraft, and a script
+in `tools/gallery/` makes every entry again. The README has an install
+section and [docs/install.md](docs/install.md) a step-by-step guide for
+macOS, Linux and Windows. The mesher itself, its file formats and its tools
+are unchanged from 0.1.0.
+
+### Highlights
+
+- **Example gallery and recipes.** Block meshes (channel, pipe O-grid and
+  split, elbow, NACA C-grid, multi-element airfoil, triangle splits) shown
+  with their blocks coloured and exploded; polyhedral meshes from a box to
+  the Manifold, the furnace and a pipe with a baffle, a plate and a probe.
+- **Application gallery.** Heat exchanger shell side (177,994 cells),
+  seven-tube furnace (222,715 cells) and three-element airfoil, each
+  stopping at the checked mesh.
+- **Install guide.** Prerequisites and commands per system; Gmsh is
+  optional.
+
+### Corrections
+
+- The 0.1.0 notes give the seven-tube furnace as 1.9 million cells. Since
+  the polygon-prism layers of BL-11 (#69, part of 0.1.0) it builds with
+  222,715 cells; the README now says so.
+
+### Known limits
+
+- Unchanged from 0.1.0. The tube side and the solids of the heat exchanger
+  need the multi-domain mesher (MD-06 to MD-18), which is not built; the
+  STEP file is read through Gmsh in the gallery script, since KoflCraft has
+  no STEP reader yet.
+- No prebuilt binaries yet: build from source.
+
+### All changes
+
+#### Documents
+
+- **Install section in the README.** How to build KoflCraft from source
+  (prerequisites, clone, build, the three programs in `target/release/`,
+  `cargo install`, update), with a placeholder for release downloads. The
+  minimum Rust is corrected from 1.85 to 1.88 (`sha2` 0.11 needs 1.88).
+- **Install guide for macOS, Linux and Windows.** `docs/install.md` lists
+  the tools with the install commands per system (Xcode tools; apt and dnf;
+  winget and Chocolatey), makes clear that Gmsh is optional (only the
+  `gmsh -check` of `cargo m1 --require-gmsh`; KoflCraft writes `.msh` files
+  itself) with the Gmsh install per system, and how to point the
+  acceptance run at Foehncraft. The README's install section gives the
+  short version per system.
+
+#### Galleries and recipes
+
+- **Example gallery, recipes and application gallery.** `docs/gallery.md`
+  with a page per topic (first: eight block-mesher entries, each with its
+  `kofl call` commands, checked numbers and a MurmelCraft picture of the
+  blocks coloured and exploded), `docs/recipes.md` with the matching
+  recipes, `docs/applications.md` (entries to come), linked from a bar at
+  the top of the README. `tools/gallery/block_gallery.py` makes every
+  entry and picture again; the README slideshow stills moved to
+  `docs/gallery/readme-tour.md`.
+- **Polyhedral gallery.** `docs/gallery/polyhedral.md` with eleven
+  entries (a box, a layered channel, analytic sweeps, a convex STL with a
+  size field, an elbow in three modes, the Manifold by hand and from a
+  bare STL, the furnace with one and seven tubes, yielding layers and a
+  hex core, and a pipe with a baffle, a plate and a probe made tool by
+  tool), each with its commands, checked numbers and a MurmelCraft
+  picture; `docs/recipes/polyhedral.md` with six recipes;
+  `tools/gallery/poly_gallery.py` makes them again.
+- **Application gallery.** `docs/applications.md` with three entries, each
+  with its commands, checks and a MurmelCraft picture: the shell side of the
+  shell-and-tube heat exchanger from its STEP file (the fluid prepared with
+  Gmsh as a separate process, then ports, setup and the polyhedral duct in
+  KoflCraft: 177,994 cells), the seven-tube furnace of FoehnCraft's gallery
+  259 (222,715 cells) and the three-element airfoil. Every entry stops at
+  the mesh. `tools/gallery/app_gallery.py` makes them again.
+- **README.** The status block points to the galleries, the furnace cell
+  count is corrected, the build commands use `kofl`, Leif Kobbelt is named
+  with the graphics principle and the install guide is in the
+  documentation table.
 
 ## 0.1.0 (2026-11-26) – first release: polyhedral and block-structured meshes for FoehnCraft
 
