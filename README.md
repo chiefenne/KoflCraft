@@ -28,13 +28,16 @@ how they were made is in [tools/readme-tour](tools/readme-tour/README.md).</sub>
 
 ---
 
-> **Status: release 0.1.0 (tag `v0.1.0`), the first release.** Milestone M1
+> **Status: release 0.2.0 (tag `v0.2.0`).** Milestone M1
 > is done and verified: clipped Voronoi polyhedra in a box, validated,
 > exported to VTU, Gmsh, OpenFOAM and FoehnCraft, driven from a CLI and an
 > MCP server. Convex STL meshing with size control (M2), nonconvex ducts with
 > prism layers carried out to the ports (M3 to M5) and a block-structured
 > mesher (MB1) work as prototypes, each graded with its gaps on the
-> [status page](docs/status.md). What changed is in
+> [status page](docs/status.md). Every example of the
+> [example gallery](docs/gallery.md) and the
+> [application gallery](docs/applications.md) carries the exact commands
+> that made it. What changed is in
 > [CHANGELOG.md](CHANGELOG.md); the milestone plan and every decision are in
 > [docs/requirements.md](docs/requirements.md).
 
@@ -65,8 +68,8 @@ The guiding targets are:
   version, timings and validation.
 - **Graphics-grade geometry.** Algorithms come first from the computer
   graphics and geometry processing community, above all the work of Keenan
-  Crane (CMU) and Bruno Lévy (INRIA), and are benchmarked before they are
-  adopted.
+  Crane (CMU), Bruno Lévy (INRIA) and Leif Kobbelt (RWTH Aachen), and are
+  benchmarked before they are adopted.
 - **Clean room.** Algorithms implemented from published papers and documented
   formats, MIT licensed, no copyleft code.
 
@@ -91,7 +94,8 @@ The guiding targets are:
   yielding layers, zero-thickness baffles and plates, polygon-prism layers,
   grading, an opt-in hex core; validity by the rules of production
   finite-volume codes. The seven-tube furnace of FoehnCraft's gallery
-  builds with 1.9 million cells.
+  builds with 222,715 cells in about 80 s
+  ([application gallery](docs/applications.md)).
 - **Block-structured meshes (MB1).** Templates for a channel, a pipe, an
   elbow, an airfoil C-grid and a multi-element airfoil, TFI and elliptic
   smoothing with wall orthogonality and sliding wall nodes, edit tools and
@@ -174,10 +178,10 @@ With the prerequisites of [Install](#install) in place (Gmsh only for
 
 ```
 cargo test --release --workspace
-cargo build --release -p mesh-cli -p mesh-mcp
-target/release/mesh-cli generate test-fixtures/box-4.json box.mesh.json
-target/release/mesh-cli check box.mesh.json
-target/release/mesh-cli export box.mesh.json vtu box.vtu
+cargo build --release --locked -p mesh-cli -p mesh-mcp
+target/release/kofl generate test-fixtures/box-4.json box.mesh.json
+target/release/kofl check box.mesh.json
+target/release/kofl export box.mesh.json vtu box.vtu
 cargo m1 --require-gmsh
 ```
 
@@ -185,6 +189,7 @@ cargo m1 --require-gmsh
 
 | Kind | Where |
 |---|---|
+| Install on macOS, Linux and Windows | [docs/install.md](docs/install.md) |
 | Requirements, decisions and status | [docs/requirements.md](docs/requirements.md) |
 | Box meshing, CLI and MCP | [docs/m1-usage.md](docs/m1-usage.md) |
 | STL input | [docs/m2-stl.md](docs/m2-stl.md) |
