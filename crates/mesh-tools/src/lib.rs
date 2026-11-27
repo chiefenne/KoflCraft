@@ -763,7 +763,7 @@ pub static TOOLS: &[Tool] = &[
         id: "block.split_triangle",
         version: 1,
         action: Action::WriteFiles,
-        summary: "Split a block whose cross-section is a triangle (a corner of at least 120° at `vertex`) into three blocks around a centre of valence 3, the tri-center map (MB1h): the side from corner i to corner j gets n_i + n_j cells. The new count enters as a row of `cells` cells (from the triangle's spacing when absent) that runs from two of the triangle's sides through the neighbouring blocks to the boundary, cutting each in two on its own grid. Extruded topologies (one layer of blocks). Writes a new checked topology.",
+        summary: "Split a block whose cross-section is a triangle (a corner of at least 120° at `vertex`) into three blocks around a centre of valence 3, the tri-center map (MB1h): the side from corner i to corner j gets n_i + n_j cells. The new count enters as a row of `cells` cells (from the triangle's spacing when absent) that runs from two of the triangle's sides through the neighbouring blocks to the boundary, cutting each in two on its own grid. In 3D the flat corner is a block edge (from `vertex` to `along`, the flattest edge at `vertex` when absent): every block stacked along it becomes three too and the row is a sheet through the neighbours. Writes a new checked topology.",
         legacy_name: None,
         outputs: &["output"],
         input_schema: schemas::block_split_triangle,

@@ -138,46 +138,70 @@ pub struct TriangleSplit {
     /// Cells of the new row (n_C) and the blocks it cut.
     pub row_cells: usize,
     pub row_blocks: Vec<usize>,
-    /// The three blocks of the triangle.
-    pub blocks: [usize; 3],
+    /// The blocks stacked along the flat edge, from its first end; each
+    /// became three.
+    pub column: Vec<usize>,
+    /// The three blocks of every block of the column, in its order.
+    pub blocks: Vec<usize>,
 }
 
 /// Split block `b0` at its flat corner `vertex` (BS-03); `cells` is the
 /// count of the new row, chosen from the triangle's spacing when absent.
+///
+/// The flat corner is the block edge from `vertex` to `along` (the edge
+/// at `vertex` whose cross-section corner is flattest when absent). In 3D
+/// the triangle runs along that edge: every block stacked on `b0` across
+/// the faces at the two ends of the edge (its column) becomes three blocks
+/// too, so the faces stay point-matched, and the new row of n_C cells is a
+/// sheet that runs from the column through the neighbouring blocks to the
+/// boundary.
 pub(crate) fn split_triangle(
     file: &mut TopologyFile,
     b0: usize,
     vertex: usize,
+    along: Option<usize>,
     cells: Option<usize>,
     change: &mut Change,
 ) -> Result<TriangleSplit, EngineError> {
     if b0 >= file.blocks.len() {
         return Err(refused(format!("there is no block {b0}")));
     }
-    let old = file.blocks[b0].clone();
-    let Some(slot) = old.vertices.iter().position(|&v| v == vertex) else {
+    let Some(slot) = file.blocks[b0].vertices.iter().position(|&v| v == vertex) else {
         return Err(refused(format!(
             "vertex {vertex} is no corner of block {b0}"
         )));
     };
-    let f = slot % 4;
-    for side in [4, 5] {
-        let k = face_key(face_vertices(&old.vertices, side));
-        let users = file
-            .blocks
-            .iter()
-            .filter(|b| (0..6).any(|g| face_key(face_vertices(&b.vertices, g)) == k))
-            .count();
-        if users > 1 {
-            return Err(refused(format!(
-                "block {b0} has a neighbour across its k = {} face; the triangle split works on one \
-                 layer of blocks (an extruded topology)",
-                side - 4
-            )));
+    let axis = match along {
+        Some(w) => {
+            let Some(s2) = file.blocks[b0].vertices.iter().position(|&v| v == w) else {
+                return Err(refused(format!("vertex {w} is no corner of block {b0}")));
+            };
+            let (c1, c2) = (corner_of(slot), corner_of(s2));
+            let diff: Vec<usize> = (0..3).filter(|&d| c1[d] != c2[d]).collect();
+            if diff.len() != 1 {
+                return Err(refused(format!(
+                    "vertices {vertex} and {w} are not joined by an edge of block {b0}"
+                )));
+            }
+            diff[0]
         }
-    }
+        None => {
+            let grid0 = algo::build(&file.topology()?).map_err(issues)?;
+            let deg = |a: usize| cross_angle(&grid0, file, b0, slot, a);
+            (0..3)
+                .max_by(|&x, &y| deg(x).total_cmp(&deg(y)))
+                .unwrap_or(2)
+        }
+    };
+    let cols = column(file, b0, axis, slot)?;
+    let colset: BTreeSet<usize> = cols.iter().copied().collect();
     let grid = algo::build(&file.topology()?).map_err(issues)?;
-    let corner_deg = corner_angles(&grid, file, b0)[f];
+    let old = file.blocks[b0].clone();
+    let f = old.vertices[..4]
+        .iter()
+        .position(|&v| v == vertex)
+        .expect("the column puts the vertex at k = 0");
+    let corner_deg = corner_angles(&grid, file, b0, 0)[f].min(corner_angles(&grid, file, b0, 1)[f]);
     if corner_deg < MIN_CORNER {
         return Err(refused(format!(
             "the corner of block {b0} at vertex {vertex} is {corner_deg:.1}°; a triangle split \
@@ -185,16 +209,30 @@ pub(crate) fn split_triangle(
              triangle)"
         )));
     }
-    // the triangle A, B, C with the flat corner M on side AB, both layers
+    // the triangle A, B, C with the flat corner M on side AB, every layer
+    // of the column from the bottom
     let (ia, im, ib, ic) = ((f + 3) % 4, f, (f + 1) % 4, (f + 2) % 4);
-    let v = old.vertices;
-    let lay = |i: usize, k: usize| v[i + 4 * k];
+    let mut layv: Vec<[usize; 4]> = cols
+        .iter()
+        .map(|&o| {
+            let v = file.blocks[o].vertices;
+            [v[0], v[1], v[2], v[3]]
+        })
+        .collect();
+    let top = file.blocks[*cols.last().expect("the column holds b0")].vertices;
+    layv.push([top[4], top[5], top[6], top[7]]);
+    let layers = layv.len();
+    let k0 = cols
+        .iter()
+        .position(|&o| o == b0)
+        .expect("the column holds b0");
+    let lay = |i: usize, k: usize| layv[k][i];
     let (n_b, n_a) = (old.cells[ia % 2], old.cells[im % 2]);
     let n_c = match cells {
         Some(0) => return Err(refused("the new row needs at least one cell")),
         Some(c) => c,
         None => {
-            let p = |i: usize| v3(file.vertices[lay(i, 0)]);
+            let p = |i: usize| v3(file.vertices[lay(i, k0)]);
             let centre = (p(ia) + p(ib) + p(ic)) / 3.0;
             let h = ((p(im) - p(ia)).length() / n_b as f64 + (p(ib) - p(im)).length() / n_a as f64)
                 / 2.0;
@@ -213,7 +251,7 @@ pub(crate) fn split_triangle(
         at: 0.0,
         old: Vec::new(),
     };
-    for k in 0..2 {
+    for k in 0..layers {
         row.insert(
             key(lay(ib, k), lay(ic, k)),
             start(lay(ib, k), lay(ic, k), n_b),
@@ -243,7 +281,7 @@ pub(crate) fn split_triangle(
     loop {
         let mut grew = false;
         for (o, b) in file.blocks.iter().enumerate() {
-            if o == b0 || crossed.contains_key(&o) {
+            if colset.contains(&o) || crossed.contains_key(&o) {
                 continue;
             }
             for a in 0..3 {
@@ -293,12 +331,14 @@ pub(crate) fn split_triangle(
             }
         }
     }
-    for g in 0..3 {
-        for (p, q) in along(&old, g) {
-            if row.contains_key(&key(p, q)) && !own.contains(&key(p, q)) {
-                return Err(refused(format!(
-                    "the new row would come back into block {b0}; split by hand"
-                )));
+    for &o in &cols {
+        for g in 0..3 {
+            for (p, q) in along(&file.blocks[o], g) {
+                if row.contains_key(&key(p, q)) && !own.contains(&key(p, q)) {
+                    return Err(refused(format!(
+                        "the new row would come back into block {o} of the triangle; split by hand"
+                    )));
+                }
             }
         }
     }
@@ -487,9 +527,10 @@ pub(crate) fn split_triangle(
         change.blocks.push(o);
         change.added_blocks.push(file.blocks.len() - 1);
     }
-    // the triangle: three blocks around the centre O
+    // the triangle: three blocks around the centre O, in every block of
+    // the column
     let m = |i: usize, j: usize, k: usize| row[&key(lay(i, k), lay(j, k))].vertex;
-    let mut centre = [0usize; 2];
+    let mut centre = vec![0usize; layers];
     for (k, c) in centre.iter_mut().enumerate() {
         let p = |i: usize| v3(file.vertices[lay(i, k)]);
         file.vertices.push(a3((p(ia) + p(ib) + p(ic)) / 3.0));
@@ -501,50 +542,59 @@ pub(crate) fn split_triangle(
             q[0][0], q[1][0], q[2][0], q[3][0], q[0][1], q[1][1], q[2][1], q[3][1],
         ]
     };
-    let at = |i: usize| [lay(i, 0), lay(i, 1)];
-    let (mbc, mca) = ([m(ib, ic, 0), m(ib, ic, 1)], [m(ia, ic, 0), m(ia, ic, 1)]);
-    let nk = old.cells[2];
-    let qa = BlockFile {
-        vertices: quad([at(ia), at(im), centre, mca]),
-        cells: [n_b, n_c, nk],
-        domain: old.domain.clone(),
-    };
-    let qb = BlockFile {
-        vertices: quad([at(ib), mbc, centre, at(im)]),
-        cells: [n_c, n_a, nk],
-        domain: old.domain.clone(),
-    };
-    let qc = BlockFile {
-        vertices: quad([at(ic), mca, centre, mbc]),
-        cells: [n_a, n_b, nk],
-        domain: old.domain.clone(),
-    };
     let new_vertices: BTreeMap<(usize, usize), usize> =
         row.iter().map(|(&k, r)| (k, r.vertex)).collect();
-    for g in 0..6 {
-        let face = face_vertices(&old.vertices, g);
-        let mut on: BTreeSet<usize> = face.iter().copied().collect();
-        for w in 0..4 {
-            if let Some(&nv) = new_vertices.get(&key(face[w], face[(w + 1) % 4])) {
-                on.insert(nv);
+    let mut blocks = Vec::new();
+    for (ci, &o) in cols.iter().enumerate() {
+        let ob = file.blocks[o].clone();
+        let at = |i: usize| [lay(i, ci), lay(i, ci + 1)];
+        let cen = [centre[ci], centre[ci + 1]];
+        let (mbc, mca) = (
+            [m(ib, ic, ci), m(ib, ic, ci + 1)],
+            [m(ia, ic, ci), m(ia, ic, ci + 1)],
+        );
+        let nk = ob.cells[2];
+        let qa = BlockFile {
+            vertices: quad([at(ia), at(im), cen, mca]),
+            cells: [n_b, n_c, nk],
+            domain: ob.domain.clone(),
+        };
+        let qb = BlockFile {
+            vertices: quad([at(ib), mbc, cen, at(im)]),
+            cells: [n_c, n_a, nk],
+            domain: ob.domain.clone(),
+        };
+        let qc = BlockFile {
+            vertices: quad([at(ic), mca, cen, mbc]),
+            cells: [n_a, n_b, nk],
+            domain: ob.domain.clone(),
+        };
+        for g in 0..6 {
+            let face = face_vertices(&ob.vertices, g);
+            let mut on: BTreeSet<usize> = face.iter().copied().collect();
+            for w in 0..4 {
+                if let Some(&nv) = new_vertices.get(&key(face[w], face[(w + 1) % 4])) {
+                    on.insert(nv);
+                }
             }
+            if BLOCK_FACES[g].0 == 2 {
+                on.insert(cen[BLOCK_FACES[g].1]);
+            }
+            let parts: Vec<[usize; 4]> = [&qa, &qb, &qc]
+                .iter()
+                .flat_map(|q| (0..6).map(|h| face_vertices(&q.vertices, h)))
+                .filter(|fv| fv.iter().all(|x| on.contains(x)))
+                .collect();
+            faces_split.insert(face_key(face), parts);
         }
-        if BLOCK_FACES[g].0 == 2 {
-            on.insert(centre[BLOCK_FACES[g].1]);
-        }
-        let parts: Vec<[usize; 4]> = [&qa, &qb, &qc]
-            .iter()
-            .flat_map(|q| (0..6).map(|h| face_vertices(&q.vertices, h)))
-            .filter(|fv| fv.iter().all(|x| on.contains(x)))
-            .collect();
-        faces_split.insert(face_key(face), parts);
+        file.blocks[o] = qa;
+        file.blocks.push(qb);
+        file.blocks.push(qc);
+        let n = file.blocks.len();
+        blocks.extend([o, n - 2, n - 1]);
+        change.blocks.push(o);
+        change.added_blocks.extend([n - 2, n - 1]);
     }
-    file.blocks[b0] = qa;
-    file.blocks.push(qb);
-    file.blocks.push(qc);
-    let blocks = [b0, file.blocks.len() - 2, file.blocks.len() - 1];
-    change.blocks.push(b0);
-    change.added_blocks.extend([blocks[1], blocks[2]]);
     file.edges.extend(new_edges);
     let replace = |faces: &mut Vec<[usize; 4]>| {
         *faces = faces
@@ -567,6 +617,7 @@ pub(crate) fn split_triangle(
         corner_deg,
         row_cells: n_c,
         row_blocks: crossed.keys().copied().collect(),
+        column: cols,
         blocks,
     })
 }
@@ -581,25 +632,193 @@ fn issues(issues: Vec<algo::Issue>) -> EngineError {
     )
 }
 
-/// The four in-plane corner angles (degrees) of block `b` at k = 0,
-/// between its two edges, measured on the first cells of the TFI grid.
-fn corner_angles(grid: &algo::BlockGrid, file: &TopologyFile, b: usize) -> [f64; 4] {
-    let [ni, nj, _] = file.blocks[b].cells;
-    let at = |i: usize, j: usize| grid.points[grid.block_corner(b, i, j, 0)];
-    let mut out = [0.0; 4];
-    for (c, o) in out.iter_mut().enumerate() {
-        let [ci, cj, _] = corner_of(c);
-        let (i, j) = (ci * ni, cj * nj);
-        let di = if ci == 0 { i + 1 } else { i - 1 };
-        let dj = if cj == 0 { j + 1 } else { j - 1 };
-        let p = at(i, j);
-        let (u, w) = (at(di, j) - p, at(i, dj) - p);
-        *o = (u.dot(w) / (u.length() * w.length()))
-            .clamp(-1.0, 1.0)
-            .acos()
-            .to_degrees();
+/// The angle (degrees) at the corner `slot` of block `b` between its two
+/// grid lines across `axis`, on the first cells of the TFI grid: the
+/// corner of the block's cross-section normal to `axis`.
+fn cross_angle(
+    grid: &algo::BlockGrid,
+    file: &TopologyFile,
+    b: usize,
+    slot: usize,
+    axis: usize,
+) -> f64 {
+    let n = file.blocks[b].cells;
+    let c = corner_of(slot);
+    let idx = [c[0] * n[0], c[1] * n[1], c[2] * n[2]];
+    let at = |x: [usize; 3]| grid.points[grid.block_corner(b, x[0], x[1], x[2])];
+    let p = at(idx);
+    let step = |d: usize| {
+        let mut x = idx;
+        x[d] = if c[d] == 0 { x[d] + 1 } else { x[d] - 1 };
+        at(x) - p
+    };
+    let (u, w) = (step((axis + 1) % 3), step((axis + 2) % 3));
+    (u.dot(w) / (u.length() * w.length()))
+        .clamp(-1.0, 1.0)
+        .acos()
+        .to_degrees()
+}
+
+/// The four in-plane corner angles (degrees) of block `b` at k = 0 or
+/// k = nk (`layer` 0 or 1), between its two edges, measured on the first
+/// cells of the TFI grid.
+fn corner_angles(grid: &algo::BlockGrid, file: &TopologyFile, b: usize, layer: usize) -> [f64; 4] {
+    [0, 1, 2, 3].map(|c| cross_angle(grid, file, b, c + 4 * layer, 2))
+}
+
+/// The 24 rotations of a block's local frame (right-handed ones only):
+/// new axis d is old axis `p[d]`, reversed when `s[d]`.
+fn rotations() -> Vec<([usize; 3], [bool; 3])> {
+    let perms = [
+        [0, 1, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [0, 2, 1],
+        [2, 1, 0],
+        [1, 0, 2],
+    ];
+    let mut out = Vec::new();
+    for (n, p) in perms.iter().enumerate() {
+        for m in 0..8u8 {
+            let s = [m & 1 != 0, m & 2 != 0, m & 4 != 0];
+            let flips = s.iter().filter(|&&x| x).count();
+            if (n < 3) == (flips % 2 == 0) {
+                out.push((*p, s));
+            }
+        }
     }
     out
+}
+
+/// The same block in a rotated local frame (see [`rotations`]).
+fn rotated(b: &BlockFile, p: [usize; 3], s: [bool; 3]) -> BlockFile {
+    let mut v = [0usize; 8];
+    for (slot, x) in v.iter_mut().enumerate() {
+        let c = corner_of(slot);
+        let mut o = [0usize; 3];
+        for d in 0..3 {
+            o[p[d]] = if s[d] { 1 - c[d] } else { c[d] };
+        }
+        *x = b.vertices[corner_slot(o[0], o[1], o[2])];
+    }
+    BlockFile {
+        vertices: v,
+        cells: [b.cells[p[0]], b.cells[p[1]], b.cells[p[2]]],
+        domain: b.domain.clone(),
+    }
+}
+
+/// The column of blocks through block `b0` along its local `axis`: `b0`
+/// turned so that `axis` is its k axis with the corner `slot` at k = 0,
+/// and every block stacked on it across its k faces turned to the same
+/// frame (bottom face on the top face below, corner by corner), from the
+/// bottom up. The blocks are rewritten in `file` in their new frames.
+fn column(
+    file: &mut TopologyFile,
+    b0: usize,
+    axis: usize,
+    slot: usize,
+) -> Result<Vec<usize>, EngineError> {
+    let vertex = file.blocks[b0].vertices[slot];
+    let mut c = corner_of(slot);
+    c[axis] = 1 - c[axis];
+    let other = file.blocks[b0].vertices[corner_slot(c[0], c[1], c[2])];
+    let r = rotations()
+        .into_iter()
+        .map(|(p, s)| rotated(&file.blocks[b0], p, s))
+        .find(|b| {
+            b.vertices[..4]
+                .iter()
+                .position(|&x| x == vertex)
+                .is_some_and(|i| b.vertices[i + 4] == other)
+        })
+        .expect("a rotation puts any block edge along k");
+    file.blocks[b0] = r;
+    let mut cols = vec![b0];
+    for up in [true, false] {
+        let mut cur = b0;
+        loop {
+            let v = file.blocks[cur].vertices;
+            let face: [usize; 4] = if up {
+                [v[4], v[5], v[6], v[7]]
+            } else {
+                [v[0], v[1], v[2], v[3]]
+            };
+            let k = face_key(face);
+            let next = (0..file.blocks.len()).find(|&o| {
+                o != cur
+                    && (0..6).any(|g| face_key(face_vertices(&file.blocks[o].vertices, g)) == k)
+            });
+            let Some(o) = next else { break };
+            if cols.contains(&o) {
+                return Err(refused(format!(
+                    "the blocks stacked along the flat edge of block {b0} close into a ring; \
+                     split by hand"
+                )));
+            }
+            let Some(r) = rotations()
+                .into_iter()
+                .map(|(p, s)| rotated(&file.blocks[o], p, s))
+                .find(|b| {
+                    if up {
+                        b.vertices[..4] == face
+                    } else {
+                        b.vertices[4..] == face
+                    }
+                })
+            else {
+                return Err(refused(format!(
+                    "block {o} meets block {cur} on a face it does not share corner by corner"
+                )));
+            };
+            file.blocks[o] = r;
+            if up {
+                cols.push(o);
+            } else {
+                cols.insert(0, o);
+            }
+            cur = o;
+        }
+    }
+    Ok(cols)
+}
+
+/// A block edge whose cross-section corner is flatter than `min_deg` at
+/// both of its ends: the block is a prism whose cross-section is a
+/// triangle along this edge (3D, any orientation).
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct FlatEdge {
+    pub block: usize,
+    /// The edge from `vertex` to `along`.
+    pub vertex: usize,
+    pub along: usize,
+    /// The flatter end's corner is not counted: the less flat of the two.
+    pub corner_deg: f64,
+}
+
+/// The flat edges of every block (3D), flattest first.
+pub fn flat_edges(file: &TopologyFile, min_deg: f64) -> Result<Vec<FlatEdge>, EngineError> {
+    let grid = algo::build(&file.topology()?).map_err(issues)?;
+    let mut out = Vec::new();
+    for (b, block) in file.blocks.iter().enumerate() {
+        for (axis, c) in block_edges() {
+            let mut e = c;
+            e[axis] = 1;
+            let (s0, s1) = (corner_slot(c[0], c[1], c[2]), corner_slot(e[0], e[1], e[2]));
+            let deg =
+                cross_angle(&grid, file, b, s0, axis).min(cross_angle(&grid, file, b, s1, axis));
+            if deg >= min_deg {
+                out.push(FlatEdge {
+                    block: b,
+                    vertex: block.vertices[s0],
+                    along: block.vertices[s1],
+                    corner_deg: deg,
+                });
+            }
+        }
+    }
+    out.sort_by(|x, y| y.corner_deg.total_cmp(&x.corner_deg));
+    Ok(out)
 }
 
 /// A block corner flatter than `min_deg`: the block is a triangle.
@@ -616,7 +835,7 @@ pub fn flat_corners(file: &TopologyFile, min_deg: f64) -> Result<Vec<FlatCorner>
     let grid = algo::build(&file.topology()?).map_err(issues)?;
     let mut out = Vec::new();
     for (b, block) in file.blocks.iter().enumerate() {
-        let angles = corner_angles(&grid, file, b);
+        let angles = corner_angles(&grid, file, b, 0);
         for (c, &deg) in angles.iter().enumerate() {
             if deg >= min_deg {
                 out.push(FlatCorner {
@@ -811,6 +1030,7 @@ fn trial(
         c.block,
         c.vertex,
         None,
+        None,
         &mut Change::default(),
     )
     .map_err(|e| e.message)?;
@@ -970,6 +1190,7 @@ mod tests {
             &Edit::SplitTriangle {
                 block: 0,
                 vertex: 1,
+                along: None,
                 cells: Some(3),
             },
         )
@@ -1081,7 +1302,7 @@ mod tests {
     #[test]
     fn the_growth_hold_keeps_the_size_ratio() {
         let mut s = open_wedge();
-        split_triangle(&mut s, 0, 1, None, &mut Change::default()).unwrap();
+        split_triangle(&mut s, 0, 1, None, None, &mut Change::default()).unwrap();
         let growth = |hold: bool| {
             let (o, _) = optimized(&s, hold).unwrap();
             let (q, _) = measure(&o).unwrap();
@@ -1096,16 +1317,17 @@ mod tests {
 
     /// Invariant (BS-03): a split by hand is refused, with nothing
     /// changed, at a corner below 120° (a quadrilateral, no triangle) and
-    /// in a block with a neighbour across its k faces (more than one layer).
-    /// Dropping either check breaks it.
+    /// along an edge that is not one of the block's. Dropping either check
+    /// breaks it.
     #[test]
-    fn a_split_is_refused_off_a_triangle_or_layer() {
+    fn a_split_is_refused_off_a_triangle() {
         let f = wedge();
         let e = apply(
             &f,
             &Edit::SplitTriangle {
                 block: 1,
                 vertex: 4,
+                along: None,
                 cells: None,
             },
         )
@@ -1115,17 +1337,150 @@ mod tests {
             "{}",
             e.message
         );
-        // a second layer on top of the triangle
+        let e = apply(
+            &f,
+            &Edit::SplitTriangle {
+                block: 0,
+                vertex: 1,
+                along: Some(9),
+                cells: None,
+            },
+        )
+        .unwrap_err();
+        assert!(e.message.contains("not joined by an edge"), "{}", e.message);
+    }
+
+    /// The wedge with a second layer of blocks on top (z 0.1 to 0.2).
+    fn two_layers() -> TopologyFile {
         let mut g = wedge();
         let top: Vec<[f64; 3]> = (6..12)
             .map(|v| [g.vertices[v][0], g.vertices[v][1], 0.2])
             .collect();
         g.vertices.extend(top);
-        let mut upper = g.blocks[0].clone();
-        upper.vertices = [6, 7, 8, 9, 12, 13, 14, 15];
-        g.blocks.push(upper);
-        let e = crate::block_triangle::split_triangle(&mut g, 0, 1, None, &mut Change::default())
-            .unwrap_err();
-        assert!(e.message.contains("one layer of blocks"), "{}", e.message);
+        for b in 0..2 {
+            let mut upper = g.blocks[b].clone();
+            let v = upper.vertices;
+            upper.vertices = [
+                v[4],
+                v[5],
+                v[6],
+                v[7],
+                v[4] + 6,
+                v[5] + 6,
+                v[6] + 6,
+                v[7] + 6,
+            ];
+            g.blocks.push(upper);
+        }
+        // the old top faces are interior now; the new top faces are symmetry
+        let sym = g.patches.iter_mut().find(|p| p.name == "symmetry").unwrap();
+        sym.faces.retain(|f| f.iter().all(|&v| v < 6));
+        for b in &g.blocks[2..4] {
+            let v = b.vertices;
+            sym.faces.push([v[4], v[5], v[6], v[7]]);
+        }
+        let side = |p: usize, q: usize| [p + 6, q + 6, q + 12, p + 12];
+        for (name, sides) in [
+            ("wall", vec![side(0, 1), side(1, 2), side(3, 0)]),
+            ("outlet", vec![side(2, 4), side(4, 5), side(5, 3)]),
+        ] {
+            g.patches
+                .iter_mut()
+                .find(|p| p.name == name)
+                .unwrap()
+                .faces
+                .extend(sides);
+        }
+        check(&g).unwrap();
+        g
+    }
+
+    /// Invariant (BS-03, BS-05, 3D): in a topology with two layers the
+    /// triangle runs through the whole column along its flat edge: both
+    /// stacked blocks become three, the row is a sheet that cuts both
+    /// neighbours, the volume stays, every corner has a positive Jacobian
+    /// and the result checks. The old one-layer limit, or a split that
+    /// stops at the first block, breaks it (an unmatched face between the
+    /// layers fails the check).
+    #[test]
+    fn a_triangle_runs_through_its_column() {
+        let f = two_layers();
+        let found = flat_edges(&f, FLAT_CORNER).unwrap();
+        assert!(
+            found
+                .iter()
+                .any(|e| e.block == 0 && e.vertex == 1 && e.along == 7),
+            "{found:?}"
+        );
+        let mut g = f.clone();
+        let s = split_triangle(&mut g, 2, 13, Some(7), Some(3), &mut Change::default()).unwrap();
+        // from vertex 13 at the top down to vertex 1
+        assert_eq!(s.column, vec![2, 0]);
+        assert_eq!(s.blocks.len(), 6);
+        assert_eq!(s.row_blocks, vec![1, 3]);
+        assert_eq!(g.blocks.len(), 4 + 4 + 2);
+        let checked = check(&g).unwrap();
+        let cells: usize = g
+            .blocks
+            .iter()
+            .map(|b| b.cells.iter().product::<usize>())
+            .sum();
+        assert_eq!(checked["cells"].as_u64().unwrap() as usize, cells);
+        let vol = |t: &TopologyFile| {
+            algo::build(&t.topology().unwrap())
+                .unwrap()
+                .volumes()
+                .iter()
+                .sum::<f64>()
+        };
+        assert!((vol(&g) - vol(&f)).abs() < 1e-12 * vol(&f));
+        let grid = algo::build(&g.topology().unwrap()).unwrap();
+        let jmin = grid
+            .quality()
+            .iter()
+            .map(|q| q.min_jacobian)
+            .fold(f64::INFINITY, f64::min);
+        assert!(jmin > 0.0, "{jmin}");
+    }
+
+    /// The wedge turned so that its flat edge runs along x, with the
+    /// blocks' local frames turned too (k is no longer the edge).
+    fn turned(f: &TopologyFile) -> TopologyFile {
+        let mut g = f.clone();
+        for v in &mut g.vertices {
+            *v = [v[2], v[0], v[1]];
+        }
+        for b in &mut g.blocks {
+            *b = rotated(b, [2, 0, 1], [false; 3]);
+        }
+        check(&g).unwrap();
+        g
+    }
+
+    /// Invariant (BS-03, 3D): the split does not depend on the blocks'
+    /// local frames or on the edge's direction in space: the wedge turned
+    /// so that the flat edge runs along x (and the blocks' k axes do not)
+    /// splits into the same cell count and volume as the original. A split
+    /// that assumes the flat edge along k breaks it.
+    #[test]
+    fn the_split_works_in_any_frame() {
+        let f = two_layers();
+        let g0 = turned(&f);
+        let mut a = f.clone();
+        let mut b = g0.clone();
+        let sa = split_triangle(&mut a, 0, 1, None, Some(3), &mut Change::default()).unwrap();
+        let sb = split_triangle(&mut b, 0, 1, None, Some(3), &mut Change::default()).unwrap();
+        assert_eq!(sa.column, sb.column);
+        let cells = |t: &TopologyFile| check(t).unwrap()["cells"].as_u64().unwrap();
+        assert_eq!(cells(&a), cells(&b));
+        let vol = |t: &TopologyFile| {
+            algo::build(&t.topology().unwrap())
+                .unwrap()
+                .volumes()
+                .iter()
+                .sum::<f64>()
+        };
+        assert!((vol(&b) - vol(&g0)).abs() < 1e-12 * vol(&g0));
+        assert!((vol(&a) - vol(&b)).abs() < 1e-12 * vol(&a));
     }
 }

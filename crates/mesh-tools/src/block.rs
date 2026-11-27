@@ -339,6 +339,8 @@ pub struct SplitTriangleInput {
     pub block: usize,
     pub vertex: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub along: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cells: Option<usize>,
 }
 
@@ -347,6 +349,7 @@ pub(crate) fn split_triangle(input: Value, ctx: &Context) -> Run {
     let e = Edit::SplitTriangle {
         block: i.block,
         vertex: i.vertex,
+        along: i.along,
         cells: i.cells,
     };
     edit(ctx, &i.topology, &i.output, e)
