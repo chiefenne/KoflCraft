@@ -2,7 +2,7 @@
 use super::*;
 use mesh_core::geometry::PatchId;
 use mesh_geometry::SurfaceTriangle;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scaffold {
@@ -1246,11 +1246,14 @@ pub(super) fn prepare(scaffold: &Scaffold, steps: &[f64]) -> Result<Prepared, St
                 }
             }
         }
+        // tetrahedra still turned over after their own wall vertices yielded
+        let mut stuck: HashSet<usize> = HashSet::new();
         for round in 0..OFFSET_ROUNDS {
             let displacement = offset_interior(scaffold, &surface_ids, &front)?;
             let mut scale = front.scale.clone();
             let mut bad = 0usize;
-            for t in &scaffold.tetrahedra {
+            let mut now_bad: HashSet<usize> = HashSet::new();
+            for (index, t) in scaffold.tetrahedra.iter().enumerate() {
                 let [a, b, c, d] = t.map(|n| scaffold.points[n]);
                 let [e, f, g, h] = t.map(|n| scaffold.points[n] + displacement[n]);
                 let before = (b - a).cross(c - a).dot(d - a);
@@ -1259,8 +1262,19 @@ pub(super) fn prepare(scaffold: &Scaffold, steps: &[f64]) -> Result<Prepared, St
                     continue;
                 }
                 bad += 1;
+                now_bad.insert(index);
                 // the wall vertices of the tetrahedron, or the nearest ones
                 let mut ring: Vec<usize> = t.to_vec();
+                // Still turned over a round later: an interior corner moves
+                // with walls the tetrahedron does not touch (the third wall
+                // at a box corner), so those yield too.
+                if stuck.contains(&index) {
+                    for &n in t {
+                        if !surface_ids.contains_key(&n) {
+                            ring.extend(neighbours[n].iter().copied());
+                        }
+                    }
+                }
                 for _ in 0..4 {
                     if ring.iter().any(|n| surface_ids.contains_key(n)) {
                         break;
@@ -1286,6 +1300,7 @@ pub(super) fn prepare(scaffold: &Scaffold, steps: &[f64]) -> Result<Prepared, St
             if bad == 0 || scale == front.scale {
                 break;
             }
+            stuck = now_bad;
             front = front::advance(
                 &surface,
                 &patches,

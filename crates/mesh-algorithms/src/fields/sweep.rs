@@ -1377,6 +1377,199 @@ pub fn fill(
     })
 }
 
+/// The cap a cut gives the polyhedral mesher of the region behind it
+/// (MD-25, BS-17): the cut section from the layer top inwards, each quad
+/// split by its Delaunay diagonal (Lawson's angle test), as the planar port
+/// cap of that region. A split about the quad centre would give the thin
+/// wall rows flat triangles whose circles hold the next row, which no
+/// tetrahedralization has as faces: the boundary recovery of the scaffold
+/// then splits them without end.
+///
+/// The polyhedral mesher shrinks a port cap by one in-plane similarity
+/// about the mean c of its rim to make room for the wall layers: every cap
+/// point x goes to c + (x - c) s with s = 1 - H / r (H the layer stack, r
+/// the smallest distance of c from a rim edge), and the layer nodes of a
+/// rim point w at height h lie at c + (w - c) (1 - h / r). The cap built
+/// here is the preimage of the cut section under that similarity, and the
+/// layer rows of the cut section are moved to the mesher's layer nodes, so
+/// both sides meet in the same points.
+#[derive(Clone, Debug)]
+pub struct CutCap {
+    /// 0: the start of the sweep, 1: its end.
+    pub end: usize,
+    /// Unit normal out of the region behind the cut (into the sweep).
+    pub normal: Vec3,
+    /// Mean of the rim points.
+    pub center: Vec3,
+    /// Smallest distance of the centre from a rim edge.
+    pub radius: f64,
+    /// Rim points first (the wall nodes of the cut, in order), then the
+    /// inner points, before the similarity.
+    pub points: Vec<Vec3>,
+    /// The rim points.
+    pub rim: usize,
+    /// Triangles outward of the region behind the cut.
+    pub triangles: Vec<[usize; 3]>,
+    /// The sweep node of every cap point.
+    pub node: Vec<usize>,
+}
+
+impl SweepMesh {
+    fn layout(&self) -> Layout {
+        Layout {
+            n: self.section[0] / 4,
+            rows: self.section[1],
+        }
+    }
+
+    /// The nodes of station `k`: `points[k * per..(k + 1) * per]`.
+    pub fn per_station(&self) -> usize {
+        self.layout().count()
+    }
+
+    /// Prepare the cut at `end` (0 start, 1 end) for the polyhedral region
+    /// behind it: move its layer rows onto the polyhedral mesher's layer
+    /// nodes and return the cap (see [`CutCap`]).
+    pub fn cut_cap(&mut self, end: usize) -> Result<CutCap, String> {
+        if end > 1 || self.ends[end] != End::Cut {
+            return Err("only a cut gets a cap".into());
+        }
+        let layout = self.layout();
+        let (n, rows) = (layout.n, layout.rows);
+        let layers = self.layer_heights.len() - 1;
+        if layers >= rows {
+            return Err("the layer rows fill the whole section".into());
+        }
+        let station = if end == 0 { 0 } else { self.stations.len() - 1 };
+        let base = station * layout.count();
+        let sweep_normal = self.stations[station].normal;
+        let normal = if end == 0 {
+            sweep_normal
+        } else {
+            sweep_normal * -1.0
+        };
+        let wall: Vec<usize> = (0..4)
+            .flat_map(|m| (0..n).map(move |i| layout.ring(m, i, 0)))
+            .collect();
+        let rim: Vec<Vec3> = wall.iter().map(|&v| self.points[base + v]).collect();
+        let center = rim.iter().fold(Vec3::ZERO, |s, &p| s + p) / rim.len() as f64;
+        let mut radius = f64::INFINITY;
+        for i in 0..rim.len() {
+            let (a, b) = (rim[i], rim[(i + 1) % rim.len()]);
+            let e = b - a;
+            radius = radius.min((center - a).cross(e).length() / e.length());
+        }
+        let stack = self.layer_heights[layers];
+        let shrink = 1.0 - stack / radius;
+        if !(shrink > 0.1 && radius.is_finite()) {
+            return Err(format!(
+                "the layer stack ({stack:.3e}) closes the cut (inner radius {radius:.3e})"
+            ));
+        }
+        // the layer rows of the cut: the mesher's layer nodes
+        for m in 0..4 {
+            for i in 0..n {
+                let w = self.points[base + layout.ring(m, i, 0)];
+                for k in 1..=layers {
+                    let t = 1.0 - self.layer_heights[k] / radius;
+                    self.points[base + layout.ring(m, i, k)] = center + (w - center) * t;
+                }
+            }
+        }
+        // cap points: the rim, then the section inside the layer top (before
+        // the similarity); each quad split by its Delaunay diagonal
+        let section: Vec<Vec3> = self.points[base..base + layout.count()].to_vec();
+        let mut quads: Vec<([usize; 4], [usize; 4])> = Vec::new();
+        for m in 0..4 {
+            for i in 0..n {
+                for k in layers..rows {
+                    let post = [
+                        layout.ring(m, i, k),
+                        layout.ring(m, i + 1, k),
+                        layout.ring(m, i + 1, k + 1),
+                        layout.ring(m, i, k + 1),
+                    ];
+                    // the layer top is the rim before the similarity
+                    let pre = if k == layers {
+                        [
+                            layout.ring(m, i, 0),
+                            layout.ring(m, i + 1, 0),
+                            post[2],
+                            post[3],
+                        ]
+                    } else {
+                        post
+                    };
+                    quads.push((pre, post));
+                }
+            }
+        }
+        for a in 0..n {
+            for b in 0..n {
+                let q = [
+                    layout.core(a, b),
+                    layout.core(a + 1, b),
+                    layout.core(a + 1, b + 1),
+                    layout.core(a, b + 1),
+                ];
+                quads.push((q, q));
+            }
+        }
+        let before = |x: Vec3| center + (x - center) / shrink;
+        let mut points: Vec<Vec3> = rim.clone();
+        let mut node: Vec<usize> = wall.iter().map(|&v| base + v).collect();
+        let mut index: HashMap<usize, usize> =
+            wall.iter().enumerate().map(|(j, &v)| (v, j)).collect();
+        let mut triangles = Vec::with_capacity(2 * quads.len());
+        for (pre, _) in quads {
+            let mut ids = [0; 4];
+            for (c, &v) in pre.iter().enumerate() {
+                ids[c] = match index.get(&v) {
+                    Some(&j) => j,
+                    None => {
+                        points.push(before(section[v]));
+                        node.push(base + v);
+                        index.insert(v, points.len() - 1);
+                        points.len() - 1
+                    }
+                };
+            }
+            // diagonal 0-2 unless the angles at 1 and 3 sum to more than pi
+            let angle = |c: usize| {
+                let (p, a, b) = (
+                    points[ids[c]],
+                    points[ids[(c + 3) % 4]],
+                    points[ids[(c + 1) % 4]],
+                );
+                let (u, w) = (a - p, b - p);
+                u.cross(w).length().atan2(u.dot(w))
+            };
+            if angle(1) + angle(3) <= angle(0) + angle(2) {
+                triangles.push([ids[0], ids[1], ids[2]]);
+                triangles.push([ids[0], ids[2], ids[3]]);
+            } else {
+                triangles.push([ids[0], ids[1], ids[3]]);
+                triangles.push([ids[1], ids[2], ids[3]]);
+            }
+        }
+        if end == 1 {
+            for t in triangles.iter_mut() {
+                t.swap(1, 2);
+            }
+        }
+        Ok(CutCap {
+            end,
+            normal,
+            center,
+            radius,
+            points,
+            rim: wall.len(),
+            triangles,
+            node,
+        })
+    }
+}
+
 /// Connected sharp wall edges that run across the flow, with the range and
 /// mean of the potential on their nodes.
 struct Chain {

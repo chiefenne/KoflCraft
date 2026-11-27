@@ -7,6 +7,7 @@ pub mod channel;
 mod export;
 pub mod fill;
 pub mod handoff;
+mod join;
 pub mod patches;
 pub mod ports;
 pub mod proposals;

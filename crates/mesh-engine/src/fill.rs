@@ -11,17 +11,23 @@
 
 use std::time::Instant;
 
+use mesh_algorithms::duct::{self, DuctMesh};
 use mesh_algorithms::fields::Role;
 use mesh_algorithms::fields::regions::{self, Kind};
-use mesh_algorithms::fields::sweep::{self, End, Side, SweepMesh, SweepOptions};
+use mesh_algorithms::fields::remainder::{self, Source};
+use mesh_algorithms::fields::sweep::{self, CutCap, End, Side, SweepMesh, SweepOptions};
 use mesh_algorithms::remesh::ClosestSet;
 use mesh_algorithms::sizing::surface::Primitive;
 use mesh_core::geometry::Vec3;
 use mesh_io::handoff::{CellFaces, HandoffMesh, Patch, PatchRole};
 use serde_json::{Value, json};
 
+use crate::duct::{ScaffoldBuild, mesh_surface};
+use crate::join;
 use crate::regions::{Analysis, RegionOptions, analyse};
 use crate::{EngineError, ErrorCode};
+use mesh_core::geometry::PatchId;
+use mesh_geometry::{ClosedSurface, SurfaceTriangle};
 
 pub const FILL_FORMAT: &str = "koflcraft.sweep-fill";
 pub const FILL_ALGORITHM: &str = "sweep_potential_ogrid_v1";
@@ -41,6 +47,9 @@ pub struct FillOptions {
     pub core_fraction: f64,
     /// Axial cell length; `None`: the wall spacing around the section.
     pub axial_size: Option<f64>,
+    /// Mesh the region behind the cuts with polyhedra and join it to the
+    /// sweeps (MD-25).
+    pub join: bool,
 }
 
 impl Default for FillOptions {
@@ -57,6 +66,7 @@ impl Default for FillOptions {
             first_height: None,
             core_fraction: s.core_fraction,
             axial_size: None,
+            join: true,
         }
     }
 }
@@ -93,26 +103,33 @@ fn share(a: f64, b: f64) -> f64 {
 }
 
 /// Largest angle between an interior face's normal and the line joining
-/// its two cell centroids, in degrees, and the count above 70°.
-pub fn non_orthogonality(mesh: &HandoffMesh) -> (f64, usize) {
+/// its two cell centroids, in degrees, and the count above 70°, for the
+/// faces between swept cells (the first `swept_cells`), between the others
+/// and between one of each (the cuts).
+pub fn non_orthogonality(mesh: &HandoffMesh, swept_cells: usize) -> [(f64, usize); 3] {
     let cells = mesh.cell_volumes();
-    let mut worst: f64 = 0.0;
-    let mut over = 0;
+    let mut out = [(0.0_f64, 0usize); 3];
     for f in 0..mesh.neighbour.len() {
         let ring = mesh.face(f);
         let mut n = Vec3::ZERO;
         for k in 0..ring.len() {
             n = n + mesh.points[ring[k]].cross(mesh.points[ring[(k + 1) % ring.len()]]);
         }
-        let d = cells[mesh.neighbour[f]].1 - cells[mesh.owner[f]].1;
+        let (o, m) = (mesh.owner[f], mesh.neighbour[f]);
+        let d = cells[m].1 - cells[o].1;
         let c = n.dot(d) / (n.length() * d.length());
         let angle = c.clamp(-1.0, 1.0).acos().to_degrees();
-        worst = worst.max(angle);
+        let kind = match (o < swept_cells, m < swept_cells) {
+            (true, true) => 0,
+            (false, false) => 1,
+            _ => 2,
+        };
+        out[kind].0 = out[kind].0.max(angle);
         if angle > 70.0 {
-            over += 1;
+            out[kind].1 += 1;
         }
     }
-    (worst, over)
+    out
 }
 
 /// Fill the sweep regions of an STL with its patch map.
@@ -139,26 +156,64 @@ pub fn fill(stl: &[u8], map: &Value, opts: FillOptions) -> Result<Filled, Engine
         .collect();
     let stl_walls = ClosestSet::new(walls);
     let t2 = Instant::now();
-    let mut sweeps: Vec<(usize, SweepMesh)> = Vec::new();
-    let mut skipped: Vec<Value> = Vec::new();
-    for (i, r) in c.regions.iter().enumerate() {
-        if r.kind != Kind::Sweep {
-            continue;
+    let run = |first: Option<f64>| -> (Vec<(usize, SweepMesh)>, Vec<Value>) {
+        let mut sweeps = Vec::new();
+        let mut skipped = Vec::new();
+        for (i, r) in c.regions.iter().enumerate() {
+            if r.kind != Kind::Sweep {
+                continue;
+            }
+            let region: Vec<bool> = c.tet_region.iter().map(|&t| t == i).collect();
+            let s = SweepOptions {
+                cells_around: opts.cells_around,
+                first_height: first.unwrap_or(f64::NAN),
+                growth: opts.growth,
+                layers: opts.layers,
+                radial_cells: None,
+                core_fraction: opts.core_fraction,
+                axial_size: opts.axial_size,
+                ..SweepOptions::default()
+            };
+            match sweep::fill(&a.mesh, &a.p, &region, &a.adjacent, &stl_walls, s) {
+                Ok(m) => sweeps.push((i, m)),
+                Err(e) => skipped.push(json!({"region": i, "reason": e})),
+            }
         }
-        let region: Vec<bool> = c.tet_region.iter().map(|&t| t == i).collect();
-        let s = SweepOptions {
-            cells_around: opts.cells_around,
-            first_height: opts.first_height.unwrap_or(f64::NAN),
-            growth: opts.growth,
-            layers: opts.layers,
-            radial_cells: None,
-            core_fraction: opts.core_fraction,
-            axial_size: opts.axial_size,
-            ..SweepOptions::default()
+        (sweeps, skipped)
+    };
+    let (mut sweeps, skipped) = run(opts.first_height);
+    // the region behind the cuts grows one layer stack, so every sweep
+    // takes the smallest first height
+    let join =
+        opts.join && opts.layers > 0 && sweeps.iter().any(|(_, m)| m.ends.contains(&End::Cut));
+    let first = |m: &SweepMesh| m.layer_heights.get(1).copied().unwrap_or(0.0);
+    let lowest = sweeps
+        .iter()
+        .map(|(_, m)| first(m))
+        .fold(f64::INFINITY, f64::min);
+    let (mut sweeps, skipped) =
+        if join && opts.first_height.is_none() && sweeps.iter().any(|(_, m)| first(m) != lowest) {
+            run(Some(lowest))
+        } else {
+            (std::mem::take(&mut sweeps), skipped)
         };
-        match sweep::fill(&a.mesh, &a.p, &region, &a.adjacent, &stl_walls, s) {
-            Ok(m) => sweeps.push((i, m)),
-            Err(e) => skipped.push(json!({"region": i, "reason": e})),
+    // the caps of the cuts (moves the layer rows of each cut section)
+    let mut caps: Vec<(usize, CutCap)> = Vec::new();
+    let mut join_error: Option<String> = None;
+    if join {
+        'caps: for (s, (_, m)) in sweeps.iter_mut().enumerate() {
+            for end in 0..2 {
+                if m.ends[end] == End::Cut {
+                    match m.cut_cap(end) {
+                        Ok(cap) => caps.push((s, cap)),
+                        Err(e) => {
+                            join_error = Some(e);
+                            caps.clear();
+                            break 'caps;
+                        }
+                    }
+                }
+            }
         }
     }
     let sweep_seconds = t2.elapsed().as_secs_f64();
@@ -170,7 +225,8 @@ pub fn fill(stl: &[u8], map: &Value, opts: FillOptions) -> Result<Filled, Engine
     let mut boundary: Vec<(Vec<usize>, usize)> = Vec::new();
     let mut sweep_json = Vec::new();
     let mut swept_volume = 0.0;
-    for (i, m) in &sweeps {
+    let mut cuts: Vec<Option<join::Cut>> = (0..caps.len()).map(|_| None).collect();
+    for (s_index, (i, m)) in sweeps.iter().enumerate() {
         let base = points.len();
         let first_cell = cells.len();
         points.extend(m.points.iter().copied());
@@ -191,21 +247,43 @@ pub fn fill(stl: &[u8], map: &Value, opts: FillOptions) -> Result<Filled, Engine
             roles.push(PatchRole::Interface);
             names.len() - 1
         };
-        let start_patch = match m.ends[0] {
-            End::Port => 1,
-            End::Cut => cut_patch(0),
+        let capped = |end: usize| caps.iter().position(|(s, c)| *s == s_index && c.end == end);
+        let mut patch_of_end = |end: usize| match (m.ends[end], capped(end)) {
+            (End::Port, _) => Some(end + 1),
+            (End::Cut, Some(_)) => None,
+            (End::Cut, None) => Some(cut_patch(end)),
         };
-        let end_patch = match m.ends[1] {
-            End::Port => 2,
-            End::Cut => cut_patch(1),
-        };
-        for (q, side, _) in &m.boundary {
-            let patch = match side {
-                Side::Wall => 0,
-                Side::Start => start_patch,
-                Side::Finish => end_patch,
+        let start_patch = patch_of_end(0);
+        let end_patch = patch_of_end(1);
+        let per = m.per_station();
+        for end in 0..2 {
+            if let Some(k) = capped(end) {
+                let station = if end == 0 { 0 } else { m.stations.len() - 1 };
+                cuts[k] = Some(join::Cut {
+                    patch: 0,
+                    normal: caps[k].1.normal,
+                    nodes: (0..per).map(|v| base + station * per + v).collect(),
+                    faces: Vec::new(),
+                });
+            }
+        }
+        for (q, side, cell) in &m.boundary {
+            let (patch, end) = match side {
+                Side::Wall => (Some(0), None),
+                Side::Start => (start_patch, Some(0)),
+                Side::Finish => (end_patch, Some(1)),
             };
-            boundary.push((q.iter().map(|&v| base + v).collect(), patch));
+            match patch {
+                Some(p) => boundary.push((q.iter().map(|&v| base + v).collect(), p)),
+                None => {
+                    if let Some(k) = end.and_then(capped)
+                        && let Some(cut) = cuts[k].as_mut()
+                    {
+                        cut.faces
+                            .push((first_cell + cell, if end == Some(0) { 4 } else { 5 }));
+                    }
+                }
+            }
         }
         swept_volume += m.volume;
         let st = &m.stations;
@@ -245,6 +323,80 @@ pub fn fill(stl: &[u8], map: &Value, opts: FillOptions) -> Result<Filled, Engine
             "unlifted_nodes": m.unlifted,
         }));
     }
+    // the region behind the cuts: polyhedra, joined at the cuts
+    let sweep_cells = cells.len();
+    let mut remainder_json = Value::Null;
+    let mut poly_volume = 0.0;
+    if !caps.is_empty() {
+        let t3 = Instant::now();
+        let steps: Vec<f64> = sweeps[caps[0].0]
+            .1
+            .layer_heights
+            .windows(2)
+            .map(|w| w[1] - w[0])
+            .collect();
+        let cap_list: Vec<CutCap> = caps.iter().map(|(_, c)| c.clone()).collect();
+        match remainder_mesh(&a, &cap_list, &steps) {
+            Ok((duct_mesh, cap_ids, ports, surface_json)) => {
+                let cuts: Vec<join::Cut> = cuts
+                    .into_iter()
+                    .zip(&cap_ids)
+                    .filter_map(|(c, &id)| c.map(|c| join::Cut { patch: id, ..c }))
+                    .collect();
+                let diameter = cap_list.iter().map(|c| 2.0 * c.radius).fold(0.0, f64::max);
+                let patch_of = |id: usize| -> Option<usize> {
+                    if duct::is_wall(id) {
+                        Some(0)
+                    } else {
+                        ports.iter().find(|(p, _)| *p == id).map(|(_, m)| *m)
+                    }
+                };
+                let joined = join::join(
+                    &mut points,
+                    &mut cells,
+                    &mut boundary,
+                    sweep_cells,
+                    &cuts,
+                    &duct_mesh,
+                    &patch_of,
+                    1e-8 * diameter,
+                )
+                .map_err(|e| EngineError::new(ErrorCode::InvalidConnectivity, e))?;
+                poly_volume = duct_mesh.measurements.volume;
+                remainder_json = json!({
+                    "surface": surface_json,
+                    "cells": joined.cells,
+                    "cap_faces_joined": joined.pieces,
+                    "edge_points_inserted": joined.edge_points,
+                    "welded_points": joined.welded,
+                    "max_weld_distance": joined.max_weld,
+                    "max_relative_area_error": joined.area_error,
+                    "volume": poly_volume,
+                    "seconds": t3.elapsed().as_secs_f64(),
+                });
+            }
+            Err(e) => {
+                join_error = Some(e.message.clone());
+                // the cuts stay open, as interface patches
+                for (k, cut) in cuts.into_iter().enumerate() {
+                    let Some(cut) = cut else { continue };
+                    let (s, cap) = &caps[k];
+                    names.push(format!(
+                        "cut_{}_{}",
+                        sweeps[*s].0,
+                        if cap.end == 0 { "start" } else { "end" }
+                    ));
+                    roles.push(PatchRole::Interface);
+                    for (c, fi) in cut.faces {
+                        boundary.push((cells[c].faces[fi].clone(), names.len() - 1));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(e) = &join_error {
+        remainder_json = json!({"error": e});
+    }
     let mut mesh = None;
     let mut validity = Value::Null;
     if !cells.is_empty() {
@@ -260,12 +412,14 @@ pub fn fill(stl: &[u8], map: &Value, opts: FillOptions) -> Result<Filled, Engine
         let h = HandoffMesh::from_cells(points, cells, vec!["fluid".into()], &boundary, patches)
             .map_err(|e| EngineError::new(ErrorCode::InvalidConnectivity, e))?;
         let summary = h.summary();
-        let (max_no, over) = non_orthogonality(&h);
+        let no = non_orthogonality(&h, sweep_cells);
+        let max_no = no.iter().map(|k| k.0).fold(0.0, f64::max);
+        let over: usize = no.iter().map(|k| k.1).sum();
         if summary.inverted_faces > 0 || summary.min_volume.is_nan() || summary.min_volume <= 0.0 {
             return Err(EngineError::new(
                 ErrorCode::ValidationFailed,
                 format!(
-                    "the swept cells are not valid: {} inverted faces, smallest cell volume {:e}",
+                    "the cells are not valid: {} inverted faces, smallest cell volume {:e}",
                     summary.inverted_faces, summary.min_volume
                 ),
             ));
@@ -280,6 +434,11 @@ pub fn fill(stl: &[u8], map: &Value, opts: FillOptions) -> Result<Filled, Engine
             "max_relative_closure": summary.max_relative_closure,
             "max_non_orthogonality_deg": max_no,
             "faces_over_70_deg": over,
+            "non_orthogonality_by_faces": {
+                "between_hexahedra": {"max_deg": no[0].0, "over_70_deg": no[0].1},
+                "between_polyhedra": {"max_deg": no[1].0, "over_70_deg": no[1].1},
+                "at_the_cuts": {"max_deg": no[2].0, "over_70_deg": no[2].1},
+            },
             "min_scaled_jacobian": sweeps.iter().map(|(_, m)| m.min_scaled_jacobian).fold(f64::INFINITY, f64::min),
             "patches": summary.patches,
         });
@@ -315,13 +474,15 @@ pub fn fill(stl: &[u8], map: &Value, opts: FillOptions) -> Result<Filled, Engine
         "shares": {
             "sweep_regions": share(kv[0], c.volume),
             "swept_cells": share(swept_volume, c.volume),
-            "left_for_the_polyhedral_mesher": share((c.volume - swept_volume).max(0.0), c.volume),
+            "polyhedral_cells": share(poly_volume, c.volume),
+            "not_meshed": share((c.volume - swept_volume - poly_volume).max(0.0), c.volume),
         },
+        "remainder": remainder_json,
         "sweeps": sweep_json,
         "not_swept": skipped,
         "validity": validity,
         "limitations": [
-            "only the swept cells are meshed; the remainder (boxes, junctions, clashing parts and the stubs behind calm cuts) waits for the polyhedral mesher with the conformal join at the cuts",
+            if poly_volume > 0.0 { "the region behind the cuts is meshed as polyhedra (median dual with the sweeps' layer stack) and joined conformally at the cuts: the cut sections of the sweeps take the cap positions of the polyhedral mesh, each hex face at a cut is split into the polyhedral cap faces it holds" } else { "only the swept cells are meshed; the region behind the cuts is not (see remainder for why)" },
             "interior stations follow the potential's level sets at equal centreline spacing; at a mitre corner one station is the mitre plane and the others fan around the inner corner, so cells there are short at the inner wall and long at the outer wall (see max_non_orthogonality_deg)",
             "a sweep needs one closed wall loop per level set and the same section type throughout (four sharp corners or none); other regions are listed under not_swept",
         ],
@@ -334,6 +495,120 @@ pub fn fill(stl: &[u8], map: &Value, opts: FillOptions) -> Result<Filled, Engine
         },
     });
     Ok(Filled { report, mesh })
+}
+
+/// The polyhedral mesh behind the cuts, the patch id of every cap, the STL
+/// ports inside the region as (patch id, merged patch) and a report.
+type Remainder = (DuctMesh, Vec<usize>, Vec<(usize, usize)>, Value);
+
+/// The polyhedral mesh of the region behind the cuts (MD-25): the STL
+/// without the swept ducts, closed by the caps, meshed by the median dual
+/// with the sweeps' layer stack. Returns the mesh, the patch id of every
+/// cap, the STL ports inside the region as (patch id, merged patch) and a
+/// report.
+fn remainder_mesh(a: &Analysis, caps: &[CutCap], steps: &[f64]) -> Result<Remainder, EngineError> {
+    let bad = |m: String| EngineError::new(ErrorCode::InvalidDomain, m);
+    let triangles: Vec<[usize; 3]> = a
+        .surface
+        .facets()
+        .iter()
+        .map(|f| f.triangle.vertices)
+        .collect();
+    let rem = remainder::remainder_surface(a.surface.vertices(), &triangles, caps).map_err(bad)?;
+    let has = |role: Role| {
+        rem.source
+            .iter()
+            .any(|s| matches!(*s, Source::Facet(f) if a.roles[f] == role))
+    };
+    if has(Role::Symmetry) {
+        return Err(bad(
+            "symmetry planes behind the cuts are not supported by the join yet".into(),
+        ));
+    }
+    // STL ports keep their ids (1 inlet, 2 outlet), the cuts take the free ones
+    let mut free = Vec::new();
+    let mut ports = Vec::new();
+    for (id, role) in [(1, Role::Inlet), (2, Role::Outlet)] {
+        if has(role) {
+            ports.push((id, id));
+        } else {
+            free.push(id);
+        }
+    }
+    if caps.len() > free.len() {
+        return Err(bad(format!(
+            "the region behind the cuts has {} openings; the polyhedral mesher takes two",
+            caps.len() + ports.len()
+        )));
+    }
+    let cap_ids: Vec<usize> = free[..caps.len()].to_vec();
+    let patches: Vec<usize> = rem
+        .source
+        .iter()
+        .map(|s| match *s {
+            Source::Facet(f) => match a.roles[f] {
+                Role::Inlet => 1,
+                Role::Outlet => 2,
+                _ => duct::WALL,
+            },
+            Source::Strip(_) => duct::WALL,
+            Source::Cap(k) => cap_ids[k],
+        })
+        .collect();
+    let faces: Vec<SurfaceTriangle> = rem
+        .triangles
+        .iter()
+        .zip(&patches)
+        .map(|(t, &p)| SurfaceTriangle {
+            vertices: *t,
+            patch: PatchId(p - 1),
+        })
+        .collect();
+    let surface = ClosedSurface::new(
+        rem.points.clone(),
+        faces,
+        vec!["1".into(), "2".into(), "3".into()],
+    )
+    .map_err(|e| {
+        bad(format!(
+            "the region behind the cuts is not a closed surface: {e}"
+        ))
+    })?;
+    // sizes: the cuts' wall spacing at the caps, the analysis spacing inside
+    let spacing = caps
+        .iter()
+        .map(|c| {
+            let rim = &c.points[..c.rim];
+            (0..rim.len())
+                .map(|i| (rim[(i + 1) % rim.len()] - rim[i]).length())
+                .sum::<f64>()
+                / rim.len() as f64
+        })
+        .fold(f64::INFINITY, f64::min);
+    let build = ScaffoldBuild {
+        tolerance: 0.01 * spacing,
+        min_size: 0.125 * spacing,
+        max_size: a.h.max(spacing),
+        rate: 0.4,
+        rim_size: Some(spacing),
+        feature_angle: 30.0,
+        iterations: 10,
+        thickness: None,
+        grading: None,
+    };
+    let report_build = json!({
+        "tolerance": build.tolerance, "min_size": build.min_size, "max_size": build.max_size,
+        "rate": build.rate, "rim_size": build.rim_size,
+    });
+    let (mesh, _shell, built) = mesh_surface(&surface, &patches, build, steps, 0.002)?;
+    let report = json!({
+        "stl_facets_dropped": rem.dropped,
+        "triangles": rem.triangles.len(),
+        "caps": caps.len(),
+        "build": report_build,
+        "scaffold": built,
+    });
+    Ok((mesh, cap_ids, ports, report))
 }
 
 /// Fill and write the bundle: `foehncraft.vtu` (the swept cells, walls,

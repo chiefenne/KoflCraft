@@ -99,6 +99,10 @@ pub struct FillInput {
     pub core_fraction: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub axial_size: Option<f64>,
+    /// Mesh the region behind the cuts as polyhedra and join it to the
+    /// sweeps at the cuts (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<bool>,
 }
 
 pub(crate) fn fill(input: Value, ctx: &Context) -> Run {
@@ -118,12 +122,16 @@ pub(crate) fn fill(input: Value, ctx: &Context) -> Run {
         first_height: i.first_height.or(d.first_height),
         core_fraction: i.core_fraction.unwrap_or(d.core_fraction),
         axial_size: i.axial_size.or(d.axial_size),
+        join: i.join.unwrap_or(d.join),
     };
     let (dir, name) = ctx.target(&i.output)?;
     let mut report = fill::generate(&stl, &map, opts, &dir, &name)?;
     report["output"] = json!(i.output);
-    report["next"] = json!(
-        "Open foehncraft.vtu: the swept hexahedra. The rest of the domain (shares.left_for_the_polyhedral_mesher) is not meshed yet."
-    );
+    let whole = report["shares"]["not_meshed"].as_f64().unwrap_or(1.0) == 0.0;
+    report["next"] = json!(if whole {
+        "Open foehncraft.vtu: the swept hexahedra and the polyhedra behind the cuts, one conformal mesh (cell field zone and the patches)."
+    } else {
+        "Open foehncraft.vtu: the swept hexahedra. The rest of the domain (shares.not_meshed) is not meshed; remainder says why."
+    });
     Ok(report)
 }

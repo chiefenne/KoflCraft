@@ -2,6 +2,8 @@
 
 Date: 2026-11-27. Requirements: BS-18 (automatic block decomposition),
 BS-03 (templates), BS-17 and MD-25 (blocks next to the polyhedral mesher).
+The join of the region behind the cuts as polyhedra (step 2) is in its own
+section below.
 Tool: `regions.fill`. Follows `regions.propose`
 ([field-region-proposal.md](field-region-proposal.md)). Decided by the
 maintainer on a card (2026-11-27): the stations of a sweep are level sets of
@@ -106,13 +108,113 @@ trapezoidal cells, while the level sets fan around the inner corner
 (non-orthogonality 66° there against 24° in the Manifold bend). Not yet
 measured numerically: it is the first follow-up below.
 
+## Step 2: the region behind the cuts as polyhedra, joined at the cuts
+
+Decided by the maintainer on two cards (2026-11-27): next is the join of the
+box to the pipes, and at a cut the pipe adapts to the polyhedral mesher (the
+mesher stays as it is; the last section of the pipe takes the positions the
+mesher gives the cap).
+
+### Method
+
+1. **Cap of a cut (`CutCap`).** The polyhedral mesher (median dual of the tet
+   scaffold with prism layers, [m4](m4-voronoi-core.md)) shrinks a planar
+   port cap by one similarity about the mean c of its rim, x -> c + (x - c) s
+   with s = 1 - H / r (H the layer stack, r the smallest distance of c from a
+   rim edge), and puts the layer nodes of a rim point w at height h at
+   c + (w - c)(1 - h / r). The cap given to the mesher is the preimage of the
+   cut section under that map: the rim is the wall nodes of the cut, the
+   inner points are the section's nodes from the layer top inwards, scaled
+   by 1 / s. The layer rows of the cut section are moved to the mesher's
+   layer nodes. Then both sides meet in the same points without changing
+   the mesher.
+2. **Quads split by the Delaunay diagonal** (Lawson's angle test). A split
+   about the quad centre gives the thin rows next to the layer top flat
+   triangles (an apex of about 164°) whose circumcircle holds the next row:
+   no tetrahedralization has such a triangle as a face, so the boundary
+   recovery of the scaffold (Shewchuk 2002) split them without end (the
+   Manifold reached 750,000 splits and 6 GB in pass 15). With the diagonal
+   split the recovery needs no split at all.
+3. **The surface behind the cuts.** At each cut the STL facets that cross
+   the cut plane, joined over the edges that cross it, are the curves where
+   the plane meets the STL. The band is the one curve closest to the cut's
+   axis that stays within the rim's reach plus one facet. The band and
+   everything the band separates on the sweep's side (a flood over facet
+   edges) are dropped. Taking every crossing facet within reach instead also
+   took the Manifold's other pipe, which crosses the outlet cut's plane 72
+   units away, and flooded the whole STL. The hole is zipped to the cap's rim
+   by a strip of triangles, greedily by the shorter diagonal (Fuchs, Kedem &
+   Uselton 1977, *Optimal surface reconstruction from planar contours*, CACM
+   20(10)). The result is closed and outward: the kept STL, the strips (wall)
+   and the caps (port patches the remesh keeps).
+4. **Polyhedral mesh** of that surface with the standard pipeline: wall
+   remesh at the cut's wall spacing (tolerance 0.01, minimum 1/8 of it), a
+   Delaunay scaffold, the median dual, and prism layers with the sweeps' layer
+   heights. When the sweeps' first heights differ (they follow each
+   section's diameter), all sweeps are re-run with the smallest one, so one
+   stack fits every cut.
+5. **Wall offset at a box corner.** The mesher offsets the scaffold by the
+   layer stack and lets the layers yield where a tetrahedron would turn over.
+   Only the tetrahedron's own wall vertices yielded. On the Manifold box
+   (H = 1.86, five times the stack of the polyhedral acceptance run) one
+   tetrahedron at a corner of three walls has three vertices on two walls
+   and its fourth inside, near the third wall. That node moves with the
+   third wall, so the tetrahedron stayed turned over in every round. Now a
+   tetrahedron still turned over a round later also lets the wall vertices
+   next to its interior nodes yield. The case was fixed in three rounds.
+   Meshes where every bad tetrahedron is fixed in one round do not change.
+6. **The join.** The cap points of the polyhedral mesh are welded to the
+   cut's nodes (grid hash, 1e-8 of the diameter). Each polyhedral cap face (a
+   median-dual piece of a cap triangle, or the end of a layer prism) lies in
+   one hex face of the cut, found by its centroid (point in polygon in the
+   cut plane). The hex face is replaced by these pieces, reversed, and checked
+   to have the same area. The points the pieces put on hex-face edges are
+   spliced into every other face along that edge (swept faces and wall faces),
+   so all cells stay closed. The FoehnCraft hand-off then merges faces two
+   cells share more than once and validates the whole mesh.
+
+### Results (Manifold, defaults)
+
+| | Value |
+|---|---|
+| Cells | 132,520: 69,632 hexahedra (pipes), 62,888 polyhedra (box) |
+| Validity | 0 inverted faces, closure 1.9e-14, smallest cell 0.026 |
+| Volume | -0.17 % of the STL (pipe faceting); polyhedra -0.22 % of the region behind the cuts |
+| At the cuts | 9,088 cap faces in the hex faces, 1,760 points spliced into edges, weld 6e-14, area match 3e-12 |
+| Non-orthogonality (cell centroids) | at the cuts 48.2° (none over 70°), hexahedra 23.5°, polyhedra 87.7° (393 faces over 70°, the box mesh itself) |
+| FoehnCraft read-back | valid, 0 negative volumes, 0 inverted faces (by hand, see below) |
+| Time | 30 s (field scaffold 9.6 s, polyhedral box 15.2 s) |
+
+The elbow has no cut and is unchanged. `join: false` gives the step 1 mesh
+(the cuts as interface patches).
+
+Pictures: `koflcraft-images/sweep/manifold-join-1-plan.png` (plan view
+cut through both pipe axes), `-2-cut.png` (close-up at the outlet cut) and
+`-3-interface.png` (the cut seen from the box: each O-grid face split into
+the cap faces it holds).
+
+What was tried and dropped:
+
+- **Cap quads split about their centres:** the boundary recovery never
+  converged (item 2).
+- **The band as every crossing facet within reach:** it took the other pipe
+  (item 3).
+
 ## Limits and next steps
 
-- Only the sweeps are meshed. Next: the remainder (the Manifold box)
-  through the polyhedral mesher with the conformal join at the cuts
-  (MD-25): the remainder takes the cut's quads as its port mesh, the hex
-  faces split into the median-dual pieces, and the near-wall rows of the
-  sweep are the layer heights, so the poly layers end on the same points.
+- The join needs at most two openings in the region behind the cuts (the
+  polyhedral mesher's two port patch ids). STL ports behind the cuts take
+  them first, and symmetry planes behind the cuts are refused.
+- `regions.fill` is not in the acceptance runner yet, so CI does not read a
+  joined mesh back with FoehnCraft. By hand (`foehn mesh` on the Manifold
+  VTU, FoehnCraft main of 2026-11-27) it is valid: 132,520 cells (68,664
+  hexahedra, 63,856 polyhedra, among them the hexahedra with split cut
+  faces), 0 negative volumes, 0 inverted faces, closure 3.4e-16. On
+  FoehnCraft's non-orthogonality measure it is at most 88.8°, with 97,304
+  faces over 70°. The plain polyhedral Manifold of the acceptance run
+  measures 90.0° and 271,252 faces on the same measure.
+- The polyhedral box keeps the mesher's own quality: 87.7° non-orthogonality
+  inside the box, none at the cuts.
 - At a mitre the stations fan around the inner corner; blending the
   stations between a calm section and the mitre plane (the classical mitre
   mesh) would give better cells there.
@@ -125,7 +227,9 @@ measured numerically: it is the first follow-up below.
 
 ## Provenance
 
-Clean room: built from the papers cited above and documented formats; no
+Clean room: built from the papers cited above (and Lawson's angle test and
+Shewchuk 2002, *Constrained Delaunay tetrahedralizations and provably good
+boundary recovery*, IMR, for the cap split) and documented formats; no
 source code of any meshing or geometry project was read. Fixtures: the
 elbow and the Manifold from `test-fixtures/` (provenance beside them); the
 confidential cooling jacket was not used.

@@ -330,7 +330,7 @@ pub static TOOLS: &[Tool] = &[
         id: "regions.fill",
         version: 1,
         action: Action::StartBuild,
-        summary: "Fill the sweep regions of the region proposal with hexahedra (block-dominant meshing): stations on level sets of the inlet-to-outlet potential, each section the pipe template's O-grid (ring corners on the four corners of a rectangular duct, else at 45° + 90° m of a rotation-minimising frame), the first rows at the layer heights, a station on the plane of each mitre corner. A sweep ends at its port or at a calm (flat) cut before a box, junction or remainder, which are not meshed yet. Validates the swept cells and writes `foehncraft.vtu`, `report.json` and `mesh-evidence.json` into a new directory. The map needs an inlet and an outlet.",
+        summary: "Fill the sweep regions of the region proposal with hexahedra (block-dominant meshing): stations on level sets of the inlet-to-outlet potential, each section the pipe template's O-grid (ring corners on the four corners of a rectangular duct, else at 45° + 90° m of a rotation-minimising frame), the first rows at the layer heights, a station on the plane of each mitre corner. A sweep ends at its port or at a calm (flat) cut before a box, junction or remainder. With `join` (default) the region behind the cuts is meshed as polyhedra (median dual with the sweeps' layer stack) and joined conformally at the cuts: the cut sections take the polyhedral cap positions, each hex face at a cut is split into the cap faces it holds; `join: false` meshes only the sweeps and leaves the cuts as interface patches. Validates the whole mesh and writes `foehncraft.vtu`, `report.json` and `mesh-evidence.json` into a new directory. The map needs an inlet and an outlet.",
         legacy_name: None,
         outputs: &["output"],
         input_schema: || {
@@ -342,7 +342,8 @@ pub static TOOLS: &[Tool] = &[
                        "growth": {"type": "number", "minimum": 1, "maximum": 3},
                        "first_height": {"type": "number", "exclusiveMinimum": 0},
                        "core_fraction": {"type": "number", "exclusiveMinimum": 0.1, "exclusiveMaximum": 0.9},
-                       "axial_size": {"type": "number", "exclusiveMinimum": 0}}),
+                       "axial_size": {"type": "number", "exclusiveMinimum": 0},
+                       "join": {"type": "boolean"}}),
                 &[
                     "size",
                     "cells_around",
@@ -351,6 +352,7 @@ pub static TOOLS: &[Tool] = &[
                     "first_height",
                     "core_fraction",
                     "axial_size",
+                    "join",
                 ],
             )
         },
