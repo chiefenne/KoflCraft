@@ -129,6 +129,36 @@ For example, split the core block of a pipe halfway along its axis:
 kofl call block.split_block --input split.json
 ```
 
+## T-junctions
+
+A block corner may sit inside an edge of a bigger block: a T-junction
+(BS-21). The topology lists such edges under `junctions`, each with the
+vertices it passes through in order:
+
+```json
+"junctions": [{"edge": [1, 2], "through": [8]}]
+```
+
+The big block keeps its edge 1–2 whole; on the other side, 1–8 and 8–2 are
+edges of two smaller blocks. The big edge's cell count is the sum of the
+pieces' counts, and the face of the big block is gridded first, so the
+smaller blocks' faces take its nodes: the cells still meet node for node,
+and the mesh is plain hexahedra for every solver. `block.check` lists the
+junction edges and the coarse faces they make (`t_junctions`).
+
+`block.split_triangle` with `"stop": "t_junction"` uses them: the new row of
+cells stops at the neighbouring blocks instead of cutting every block on its
+way to the boundary. The neighbours keep their blocks and carry the new cells
+in their counts; a count solve picks one integer per chain, close to the
+counts before the split, so that every sum adds up. The result reports what
+the solve did (`counts`). In a conforming mesh the new cells still run along
+the chain to the boundary; what stops at the T-junction are the block cuts.
+
+Faces must be covered in strips (the cuts run from one side of the big face
+to the other). Elliptic smoothing and the edits that add, remove or split
+blocks or set chain counts refuse a topology with T-junctions for now; use
+the TFI grid.
+
 ## Limits
 
 - Hexahedral blocks only; one layer of blocks for the 2D-extruded tools

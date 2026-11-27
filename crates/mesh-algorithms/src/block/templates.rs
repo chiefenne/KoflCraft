@@ -82,6 +82,7 @@ pub fn channel(
     }
     Ok(Template {
         topology: BlockTopology {
+            junctions: Vec::new(),
             vertices,
             edges,
             blocks: vec![BlockSpec {
@@ -423,6 +424,7 @@ fn swept_ogrid(
         f
     };
     Ok(BlockTopology {
+        junctions: Vec::new(),
         vertices,
         edges,
         blocks,
@@ -1046,6 +1048,7 @@ pub fn airfoil_cgrid(section: &Section, p: &AirfoilCgrid) -> Result<Template, St
     let area = std::f64::consts::PI * big * big / 2.0 + 2.0 * big * wake - c * c * section.area;
     Ok(Template {
         topology: BlockTopology {
+            junctions: Vec::new(),
             vertices,
             edges,
             blocks,

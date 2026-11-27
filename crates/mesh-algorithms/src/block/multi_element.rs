@@ -1376,6 +1376,7 @@ pub fn multi_element_airfoil(
         });
     }
     let mut topology = BlockTopology {
+        junctions: Vec::new(),
         vertices,
         edges,
         blocks,

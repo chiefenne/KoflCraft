@@ -1207,6 +1207,7 @@ Action `write-files`, version 1.
 | `block` | yes | integer |
 | `cells` | no | integer |
 | `output` | yes | string |
+| `stop` | no | one of `sheet`, `t_junction` |
 | `topology` | yes | string |
 | `vertex` | yes | integer |
 

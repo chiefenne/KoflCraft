@@ -81,6 +81,9 @@ pub struct BlockGrid {
     /// the one its block face is listed under.
     pub surfaces: Vec<mesh_core::block::Surface>,
     pub boundary_surfaces: Vec<Option<usize>>,
+    /// For each block, which of its six faces meets other blocks at a
+    /// T-junction (a coarse face or a sub-face, BS-21).
+    pub junction_faces: Vec<[bool; 6]>,
 }
 
 /// Outward faces of a hexahedron in local node slots.
@@ -101,6 +104,7 @@ struct StoredFace {
 
 struct Builder<'a> {
     t: &'a BlockTopology,
+    checked: &'a Checked,
     points: Vec<Vec3>,
     edges: HashMap<(usize, usize), Vec<usize>>,
     faces: HashMap<[usize; 4], StoredFace>,
@@ -108,9 +112,33 @@ struct Builder<'a> {
 }
 
 impl Builder<'_> {
-    /// Node ids from `a` to `b` along the edge, built on first use.
+    /// Node ids from `a` to `b` along the edge, built on first use. An edge
+    /// through T-junctions joins the nodes of its pieces; a cut inside a
+    /// coarse face has its nodes from that face.
     fn edge(&mut self, a: usize, b: usize, n: usize) -> Result<Vec<usize>, String> {
         let key = edge_key(a, b);
+        let checked: &Checked = self.checked;
+        let jn = &checked.junctions;
+        if !self.edges.contains_key(&key) && jn.cuts.contains_key(&key) {
+            return Err(format!(
+                "edge {}–{} lies inside a coarse face that is not gridded yet",
+                key.0, key.1
+            ));
+        }
+        if !self.edges.contains_key(&key) && jn.through.contains_key(&key) {
+            let chain = jn.through[&key].clone();
+            let mut ids = vec![chain[0]];
+            for w in chain.windows(2) {
+                let m = checked
+                    .edge_counts
+                    .get(&edge_key(w[0], w[1]))
+                    .copied()
+                    .ok_or_else(|| format!("the piece {}–{} has no cell count", w[0], w[1]))?;
+                let part = self.edge(w[0], w[1], m)?;
+                ids.extend(&part[1..]);
+            }
+            self.edges.insert(key, ids);
+        }
         if !self.edges.contains_key(&key) {
             let spec = self
                 .t
@@ -190,11 +218,13 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
     };
     let mut g = Builder {
         t,
+        checked: &checked,
         points: t.vertices.clone(),
         edges: HashMap::new(),
         faces: HashMap::new(),
         reports: Vec::new(),
     };
+    coarse_faces(&mut g).map_err(fail)?;
     let mut hexes = Vec::with_capacity(checked.cells);
     let mut blocks = Vec::with_capacity(t.blocks.len());
     let mut boundary = Vec::new();
@@ -283,41 +313,25 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
                 }
             } else {
                 // 2D TFI of the face from its four edges
-                let pt = |local: &Vec<usize>, ca, cb| g.points[local[pos(ca, cb)]];
-                let bottom: Vec<Vec3> = (0..=m1).map(|i| pt(&local, i, 0)).collect();
-                let top: Vec<Vec3> = (0..=m1).map(|i| pt(&local, i, m2)).collect();
-                let left: Vec<Vec3> = (0..=m2).map(|j| pt(&local, 0, j)).collect();
-                let right: Vec<Vec3> = (0..=m2).map(|j| pt(&local, m1, j)).collect();
-                let (sb, st, sl, sr) = (
-                    chord_fractions(&bottom),
-                    chord_fractions(&top),
-                    chord_fractions(&left),
-                    chord_fractions(&right),
+                let side = |local: &Vec<usize>, r: &mut dyn Iterator<Item = (usize, usize)>| {
+                    r.map(|(ca, cb)| local[pos(ca, cb)]).collect::<Vec<usize>>()
+                };
+                let bottom = side(&local, &mut (0..=m1).map(|i| (i, 0)));
+                let top = side(&local, &mut (0..=m1).map(|i| (i, m2)));
+                let left = side(&local, &mut (0..=m2).map(|j| (0, j)));
+                let right = side(&local, &mut (0..=m2).map(|j| (m1, j)));
+                let project = surface_of.get(&key).map(|&sn| t.surfaces[sn].surface);
+                let ids = tfi_face(
+                    &mut g.points,
+                    &bottom,
+                    &top,
+                    &left,
+                    &right,
+                    project.as_ref(),
                 );
-                let (p00, p10, p11, p01) = (bottom[0], bottom[m1], top[m1], top[0]);
-                for j in 1..m2 {
-                    for i in 1..m1 {
-                        // u = sb + v (st − sb), v = sl + u (sr − sl)
-                        let (db, dl) = (st[i] - sb[i], sr[j] - sl[j]);
-                        let u = (sb[i] + sl[j] * db) / (1.0 - dl * db);
-                        let v = sl[j] + u * dl;
-                        let p =
-                            bottom[i] * (1.0 - v) + top[i] * v + left[j] * (1.0 - u) + right[j] * u
-                                - (p00 * ((1.0 - u) * (1.0 - v))
-                                    + p10 * (u * (1.0 - v))
-                                    + p11 * (u * v)
-                                    + p01 * ((1.0 - u) * v));
-                        local[pos(i, j)] = g.points.len();
-                        g.points.push(match surface_of.get(&key) {
-                            Some(&sn) => t.surfaces[sn].surface.project(p),
-                            None => p,
-                        });
-                    }
-                }
-                let mut ids = Vec::with_capacity((m1 + 1) * (m2 + 1));
                 for j in 0..=m2 {
                     for i in 0..=m1 {
-                        ids.push(local[pos(i, j)]);
+                        local[pos(i, j)] = ids[i + (m1 + 1) * j];
                     }
                 }
                 g.faces.insert(
@@ -384,6 +398,7 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
             first_cell,
         });
     }
+    let junction_faces = checked.junctions.block_faces(t);
     if g.points.len() != checked.points {
         return Err(fail(format!(
             "{} nodes placed where the topology has {}",
@@ -401,7 +416,147 @@ pub fn build(t: &BlockTopology) -> Result<BlockGrid, Vec<Issue>> {
         face_patches,
         surfaces: t.surfaces.iter().map(|s| s.surface).collect(),
         boundary_surfaces,
+        junction_faces,
     })
+}
+
+/// The nodes of a face by 2D transfinite interpolation of its four sides
+/// (node ids, `bottom` and `top` along the first axis, `left` and `right`
+/// along the second), index i + (m1 + 1) j; interior nodes are appended to
+/// `points` and projected onto `project` when given.
+fn tfi_face(
+    points: &mut Vec<Vec3>,
+    bottom: &[usize],
+    top: &[usize],
+    left: &[usize],
+    right: &[usize],
+    project: Option<&mesh_core::block::Surface>,
+) -> Vec<usize> {
+    let (m1, m2) = (bottom.len() - 1, left.len() - 1);
+    let get = |ids: &[usize]| ids.iter().map(|&v| points[v]).collect::<Vec<Vec3>>();
+    let (bp, tp, lp, rp) = (get(bottom), get(top), get(left), get(right));
+    let (sb, st, sl, sr) = (
+        chord_fractions(&bp),
+        chord_fractions(&tp),
+        chord_fractions(&lp),
+        chord_fractions(&rp),
+    );
+    let (p00, p10, p11, p01) = (bp[0], bp[m1], tp[m1], tp[0]);
+    let mut ids = vec![usize::MAX; (m1 + 1) * (m2 + 1)];
+    for i in 0..=m1 {
+        ids[i] = bottom[i];
+        ids[i + (m1 + 1) * m2] = top[i];
+    }
+    for j in 0..=m2 {
+        ids[(m1 + 1) * j] = left[j];
+        ids[m1 + (m1 + 1) * j] = right[j];
+    }
+    for j in 1..m2 {
+        for i in 1..m1 {
+            // u = sb + v (st − sb), v = sl + u (sr − sl)
+            let (db, dl) = (st[i] - sb[i], sr[j] - sl[j]);
+            let u = (sb[i] + sl[j] * db) / (1.0 - dl * db);
+            let v = sl[j] + u * dl;
+            let p = bp[i] * (1.0 - v) + tp[i] * v + lp[j] * (1.0 - u) + rp[j] * u
+                - (p00 * ((1.0 - u) * (1.0 - v))
+                    + p10 * (u * (1.0 - v))
+                    + p11 * (u * v)
+                    + p01 * ((1.0 - u) * v));
+            ids[i + (m1 + 1) * j] = points.len();
+            points.push(match project {
+                Some(s) => s.project(p),
+                None => p,
+            });
+        }
+    }
+    ids
+}
+
+/// Grid every coarse face of a T-junction before the blocks (BS-21): its
+/// whole sides, then its interior by TFI; its sub-faces and cuts are
+/// stored as parts of its grid, so the blocks on both sides read the same
+/// nodes. A coarse face whose sides run along a cut of another coarse face
+/// waits until that one is built.
+fn coarse_faces(g: &mut Builder) -> Result<(), String> {
+    let checked: &Checked = g.checked;
+    let jn = &checked.junctions;
+    let mut pending: Vec<usize> = (0..jn.covers.len()).collect();
+    while !pending.is_empty() {
+        let ready = pending.iter().position(|&c| {
+            let k = jn.covers[c].corners;
+            [(k[0], k[1]), (k[3], k[2]), (k[0], k[3]), (k[1], k[2])]
+                .iter()
+                .all(|&(p, q)| {
+                    jn.expand(p, q).windows(2).all(|w| {
+                        let key = edge_key(w[0], w[1]);
+                        !jn.cuts.contains_key(&key) || g.edges.contains_key(&key)
+                    })
+                })
+        });
+        let Some(at) = ready else {
+            return Err("the coarse faces of the T-junctions wait on each other's cuts".into());
+        };
+        let cover = jn.covers[pending.remove(at)].clone();
+        let [m1, m2] = jn.coarse_dims(g.t, &cover);
+        let c = cover.corners;
+        let bottom = g.edge(c[0], c[1], m1)?;
+        let top = g.edge(c[3], c[2], m1)?;
+        let left = g.edge(c[0], c[3], m2)?;
+        let right = g.edge(c[1], c[2], m2)?;
+        let ids = tfi_face(&mut g.points, &bottom, &top, &left, &right, None);
+        let count = |p: usize, q: usize| checked.edge_counts.get(&edge_key(p, q)).copied();
+        let mut offset = 0;
+        for (n, s) in cover.subs.iter().enumerate() {
+            let (w, h, o) = if cover.along_first {
+                let w = count(s[0], s[1]).ok_or("a sub-face has no count")?;
+                (w, m2, [offset, 0])
+            } else {
+                let h = count(s[0], s[3]).ok_or("a sub-face has no count")?;
+                (m1, h, [0, offset])
+            };
+            let mut sub = Vec::with_capacity((w + 1) * (h + 1));
+            for j in 0..=h {
+                for i in 0..=w {
+                    sub.push(ids[(o[0] + i) + (m1 + 1) * (o[1] + j)]);
+                }
+            }
+            let corners = *s;
+            g.faces.insert(
+                face_key(corners),
+                StoredFace {
+                    corners,
+                    dims: [w, h],
+                    ids: sub,
+                },
+            );
+            offset += if cover.along_first { w } else { h };
+            if let Some(&(p, q)) = cover.cuts.get(n) {
+                let mut line: Vec<usize> = if cover.along_first {
+                    (0..=m2).map(|j| ids[offset + (m1 + 1) * j]).collect()
+                } else {
+                    (0..=m1).map(|i| ids[i + (m1 + 1) * offset]).collect()
+                };
+                if line[0] != p || line[line.len() - 1] != q {
+                    return Err(format!(
+                        "the cut {p}–{q} does not meet the nodes of its coarse face"
+                    ));
+                }
+                if p > q {
+                    line.reverse();
+                }
+                g.edges.insert(edge_key(p, q), line);
+            }
+        }
+        g.faces.insert(
+            face_key(c),
+            StoredFace {
+                corners: c,
+                dims: [m1, m2],
+                ids,
+            },
+        );
+    }
+    Ok(())
 }
 
 fn fill_interior(points: &mut Vec<Vec3>, local: &mut [usize], n: [usize; 3]) {

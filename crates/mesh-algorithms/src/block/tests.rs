@@ -805,3 +805,189 @@ fn multi_element_airfoil_places_and_conforms() {
     let e = multi_case(Some((10.0, 0.02, -0.005)), None).err().unwrap();
     assert!(e.contains("between the slat and the main element"), "{e}");
 }
+
+mod junctions {
+    use mesh_core::block::{BlockSpec, BlockTopology, JunctionSpec, PatchSpec, face_key};
+    use mesh_core::geometry::Vec3;
+
+    use super::super::*;
+    use super::{assert_conforming, total};
+
+    /// Boxes in the unit-free box [0, X]: vertices, blocks (vertex lists
+    /// and counts), junctions; every block face on the outer box is a wall.
+    fn boxes(
+        vertices: Vec<[f64; 3]>,
+        blocks: Vec<([usize; 8], [usize; 3])>,
+        junctions: Vec<([usize; 2], Vec<usize>)>,
+    ) -> BlockTopology {
+        let vertices: Vec<Vec3> = vertices
+            .into_iter()
+            .map(|p| Vec3::new(p[0], p[1], p[2]))
+            .collect();
+        let lo = vertices.iter().fold(Vec3::new(1e9, 1e9, 1e9), |a, p| {
+            Vec3::new(a.x.min(p.x), a.y.min(p.y), a.z.min(p.z))
+        });
+        let hi = vertices.iter().fold(Vec3::new(-1e9, -1e9, -1e9), |a, p| {
+            Vec3::new(a.x.max(p.x), a.y.max(p.y), a.z.max(p.z))
+        });
+        let on_box = |f: [usize; 4]| {
+            let ps = f.map(|v| vertices[v]);
+            let same =
+                |g: &dyn Fn(Vec3) -> f64, v: f64| ps.iter().all(|&p| (g(p) - v).abs() < 1e-12);
+            same(&|p| p.x, lo.x)
+                || same(&|p| p.x, hi.x)
+                || same(&|p| p.y, lo.y)
+                || same(&|p| p.y, hi.y)
+                || same(&|p| p.z, lo.z)
+                || same(&|p| p.z, hi.z)
+        };
+        let blocks: Vec<BlockSpec> = blocks
+            .into_iter()
+            .map(|(v, n)| BlockSpec {
+                vertices: v,
+                cells: n,
+                domain: "fluid".into(),
+            })
+            .collect();
+        let mut faces = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for b in &blocks {
+            for f in 0..6 {
+                let fv = face_vertices(&b.vertices, f);
+                if on_box(fv) && seen.insert(face_key(fv)) {
+                    faces.push(fv);
+                }
+            }
+        }
+        BlockTopology {
+            vertices,
+            edges: Vec::new(),
+            blocks,
+            patches: vec![PatchSpec {
+                name: "walls".into(),
+                faces,
+            }],
+            surfaces: Vec::new(),
+            junctions: junctions
+                .into_iter()
+                .map(|(edge, through)| JunctionSpec { edge, through })
+                .collect(),
+        }
+    }
+
+    /// One block [0,1]×[0,2]×[0,1] on the left; on the right two blocks
+    /// [1,2]×[0,1] and [1,2]×[1,2] whose shared corner line sits on the
+    /// left block's face x = 1 (T-junctions at (1,1,0) and (1,1,1)).
+    fn t_box(left_j: usize, low_j: usize, high_j: usize) -> BlockTopology {
+        let v = vec![
+            [0.0, 0.0, 0.0], // 0
+            [1.0, 0.0, 0.0], // 1
+            [1.0, 2.0, 0.0], // 2
+            [0.0, 2.0, 0.0], // 3
+            [0.0, 0.0, 1.0], // 4
+            [1.0, 0.0, 1.0], // 5
+            [1.0, 2.0, 1.0], // 6
+            [0.0, 2.0, 1.0], // 7
+            [1.0, 1.0, 0.0], // 8  T
+            [1.0, 1.0, 1.0], // 9  T
+            [2.0, 0.0, 0.0], // 10
+            [2.0, 1.0, 0.0], // 11
+            [2.0, 2.0, 0.0], // 12
+            [2.0, 0.0, 1.0], // 13
+            [2.0, 1.0, 1.0], // 14
+            [2.0, 2.0, 1.0], // 15
+        ];
+        boxes(
+            v,
+            vec![
+                ([0, 1, 2, 3, 4, 5, 6, 7], [2, left_j, 2]),
+                ([1, 10, 11, 8, 5, 13, 14, 9], [3, low_j, 2]),
+                ([8, 11, 12, 2, 9, 14, 15, 6], [3, high_j, 2]),
+            ],
+            vec![([1, 2], vec![8]), ([5, 6], vec![9])],
+        )
+    }
+
+    /// Invariant (BS-21): a block face covered by two smaller faces at a
+    /// T-junction meets them node for node; the cells conform, the volume
+    /// is exact and the counts add up. Breaks when the builder grids the
+    /// sub-faces on their own or counts the shared nodes twice; no other
+    /// test has a topology with T-junctions.
+    #[test]
+    fn t_junction_faces_conform() {
+        let t = t_box(4, 1, 3);
+        let c = check(&t).unwrap();
+        assert_eq!(c.junctions.covers.len(), 1);
+        assert_eq!(c.junctions.covers[0].subs.len(), 2);
+        assert_eq!(c.cells, 2 * 4 * 2 + 3 * 2 + 3 * 3 * 2);
+        let g = build(&t).unwrap();
+        assert_eq!(g.hexes.len(), c.cells);
+        assert_eq!(g.points.len(), c.points);
+        assert_conforming(&g);
+        assert!((total(&g) - 4.0).abs() < 1e-12);
+        assert!((g.boundary_volume() - 4.0).abs() < 1e-12);
+        // the right blocks stay boxes; the left one fans from its uniform
+        // side x = 0 to the T-junction side (nodes 0, 1, 4/3, 5/3, 2)
+        let q = g.quality();
+        assert!(q[1].min_scaled_jacobian > 0.999 && q[2].min_scaled_jacobian > 0.999);
+        assert!(q[0].min_scaled_jacobian > 0.85, "{:?}", q[0]);
+        assert_eq!(g.junction_faces[0].iter().filter(|&&f| f).count(), 1);
+    }
+
+    /// Invariant: the count of an edge with T-junctions is the sum of its
+    /// pieces; a mismatch is named, not gridded with a gap.
+    #[test]
+    fn t_junction_counts_must_add_up() {
+        let e = check(&t_box(5, 1, 3)).unwrap_err();
+        assert!(
+            e.iter()
+                .any(|i| i.kind == "count_chain" && i.message.contains("add up")),
+            "{e:?}"
+        );
+    }
+
+    /// Invariant: a junction on an edge no block has, or one the faces do
+    /// not cover, is refused with its reason.
+    #[test]
+    fn bad_junctions_are_refused() {
+        let mut t = t_box(4, 1, 3);
+        t.junctions.push(JunctionSpec {
+            edge: [0, 4],
+            through: vec![8],
+        });
+        let e = check(&t).unwrap_err();
+        assert!(
+            e.iter()
+                .any(|i| i.kind == "count_chain" || i.kind == "junction"),
+            "{e:?}"
+        );
+        let mut t = t_box(4, 1, 3);
+        t.junctions.clear();
+        let e = check(&t).unwrap_err();
+        assert!(e.iter().any(|i| i.kind == "patch"), "{e:?}");
+    }
+
+    /// Invariant: the count solve turns counts that do not add up into
+    /// ones that do, near the targets, and the result grids. Breaks when a
+    /// sum rule is dropped or a sheet is split; the check alone would only
+    /// refuse the topology.
+    #[test]
+    fn count_solve_makes_the_t_junction_add_up() {
+        let mut t = t_box(5, 1, 3);
+        let mut issues = Vec::new();
+        let jn = Junctions::read(&t, &mut issues);
+        assert!(issues.is_empty());
+        let targets: Vec<[f64; 3]> = t.blocks.iter().map(|b| b.cells.map(|c| c as f64)).collect();
+        let fit = counts::fit(&t, &jn, &targets).unwrap();
+        assert_eq!(fit.sums, 2);
+        let [l, lo, hi] = [0, 1, 2].map(|b| fit.cells[b][1]);
+        assert_eq!(l, lo + hi, "{:?}", fit.cells);
+        assert!(fit.max_deviation <= 0.5, "{fit:?}");
+        for (b, c) in fit.cells.iter().enumerate() {
+            t.blocks[b].cells = *c;
+        }
+        let g = build(&t).unwrap();
+        assert_conforming(&g);
+        assert!((total(&g) - 4.0).abs() < 1e-12);
+    }
+}

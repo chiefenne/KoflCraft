@@ -823,8 +823,9 @@ pub(crate) fn block_split_triangle() -> Value {
         json!({"topology": path(), "output": path(), "block": index(),
                "vertex": {"type": "integer", "minimum": 0, "description": "The block's flat corner (at least 120°)"},
                "along": {"type": "integer", "minimum": 0, "description": "3D: the other end of the flat block edge at `vertex`; the flattest edge there when absent"},
-               "cells": {"type": "integer", "minimum": 1, "description": "Cells of the new row; from the triangle's spacing when absent"}}),
-        &["along", "cells"],
+               "cells": {"type": "integer", "minimum": 1, "description": "Cells of the new row; from the triangle's spacing when absent"},
+               "stop": {"type": "string", "enum": ["sheet", "t_junction"], "description": "Where the new row ends: `sheet` (default) cuts every block on its way to the boundary in two; `t_junction` keeps the neighbouring blocks whole with a T-junction on their edges and fits the counts (one integer per sheet)"}}),
+        &["along", "cells", "stop"],
     )
 }
 

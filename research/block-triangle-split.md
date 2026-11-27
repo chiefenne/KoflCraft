@@ -155,3 +155,64 @@ first, integer count solve, geometry plus measured trial as trigger).
   quantization in Kobbelt's and Campen's groups). The block model shares
   faces whole today, so T-junctions need support in the topology and the
   grid builder first.
+
+## T-junctions and the count solve (step 2, 2026-11-27)
+
+Step 2 of the 3D insertion plan, part 1 of three pull requests (maintainer
+card "Three PRs"). Requirement BS-21.
+
+**What a T-junction can and cannot do.** In a mesh whose cells meet node to
+node, every dual sheet (a layer of hexahedra) ends on the boundary or closes
+on itself. So the n_C new cells of a triangle split cannot stop at a
+T-junction: they run along the neighbours' chain as extra count. What a
+T-junction stops is the block cut. With the sheet split of step 1 every
+block on the row's way is cut in two; with a T-junction the neighbour keeps
+its block, a corner of the new pieces sits on its edge, and its grid spreads
+the extra cells by its own law. The maintainer chose this reading on a card
+("Stop block cuts, cells still run"), against closing the row around the
+triangle's corner (a pillow, local but with irregular vertices).
+
+**Model.** The topology lists `junctions`: an edge a–b and the vertices it
+passes through. The check requires every piece to be an edge of a block and
+the counts to add up (whole = sum of pieces). A block face of one block, in
+no patch, whose region the faces of other blocks tile in strips (cuts from
+one side to the opposite one) is a coarse face; the strips are its
+sub-faces. The grid builder grids the coarse faces first (the whole edges
+are the pieces' nodes joined, the interior by TFI), stores the sub-faces and
+cuts as parts of that grid, and the blocks then read them like any shared
+face. The hexahedra therefore conform without welding. This is the T-mesh of
+layout quantisation (Lyon, Campen and Kobbelt, CGF 40(2), 2021; Brückler,
+Bommes and Campen, ACM TOG 41(4), 2022), limited to strip covers.
+
+**Count solve.** A sheet is a class of block axes with one count (the chains
+of BS-05). Without T-junctions each sheet is free. Each junction adds the sum
+rule count(whole) − Σ count(pieces) = 0 over sheets, so the tied sheets lie on
+the integer kernel of that matrix. `block::counts::fit` takes an integer
+basis of the kernel by column Hermite reduction (size-reduced pairwise), the
+least-squares point of the relative deviations (count − target) / target on
+it, rounds it and improves it by single and paired basis moves, with every
+count at least 1. The one-integer-per-sheet form follows the advice of the
+3D blocking survey (integer-sheet-pump, Brückler et al., SGP 2024). No code
+was read.
+
+**Triangle split with `stop: t_junction`.** The column is split into its
+pieces as before; the row edges B–C and C–A of every layer get their new
+vertex. Each of those edges that a neighbour still has whole becomes a
+junction; no neighbour is cut. The count solve then starts from the counts
+before the split (the pieces' own counts for them) and makes every sum add
+up.
+
+| Case | Blocks | Cells | Count solve |
+|---|---|---|---|
+| Two-layer wedge (171° triangle + quad, 2 layers), `cells` 3, sheet split | 10 | 150 | – |
+| Same, `stop: t_junction` | 8 | 126 | 3 junctions, 7 sheets (3 tied); the quad's chain goes 4 → 6, n_C 3 → 2 (largest change 50 % on a 4-cell chain) |
+
+The neighbour's chain must carry n_B + n_C, which the solve shares out
+between n_C and the neighbour's count. On counts this small the relative
+change is large; it shrinks with the counts.
+
+Limits of part 1: strip covers only (no 2 × 2 split of a face, no vertex
+inside a coarse face); elliptic smoothing, the layout optimiser and the
+edits that add, remove or split blocks or set chain counts refuse
+T-junctions; the 3D trigger (part 2) and the tetrahedron insertion (part 3)
+are next.

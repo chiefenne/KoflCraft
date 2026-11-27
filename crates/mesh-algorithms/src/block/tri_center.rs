@@ -230,6 +230,7 @@ pub fn triangle(
     };
     Ok(Template {
         topology: BlockTopology {
+            junctions: Vec::new(),
             vertices,
             edges: Vec::new(),
             blocks,
@@ -268,6 +269,7 @@ pub fn tetrahedron(corners: [[f64; 3]; 4], cells: [usize; 4]) -> Result<Template
     let faces = boundary_faces(&blocks);
     Ok(Template {
         topology: BlockTopology {
+            junctions: Vec::new(),
             vertices,
             edges: Vec::new(),
             blocks,
@@ -399,6 +401,7 @@ mod tests {
         let faces = boundary_faces(&blocks);
         assert_eq!(faces.len(), 18, "three outer faces per outer side");
         let t = BlockTopology {
+            junctions: Vec::new(),
             vertices,
             edges: Vec::new(),
             blocks,
