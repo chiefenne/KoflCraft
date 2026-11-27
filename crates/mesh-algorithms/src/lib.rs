@@ -3,6 +3,7 @@ pub mod channel;
 pub mod clipping;
 pub mod delaunay;
 pub mod duct;
+pub mod fields;
 pub mod hexcore;
 pub mod neighbours;
 pub mod planar;
