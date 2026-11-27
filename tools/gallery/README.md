@@ -31,3 +31,9 @@ and collects the outputs in `out/`; the shots (`SHOTS`) open the meshes'
 planes. The seven-tube furnace needs `pip install gmsh numpy` (and, on a
 bare Linux, `libglu1-mesa`). `RENDER_ONLY=1` renders from the outputs of
 an earlier run without meshing again.
+
+[app_gallery.py](app_gallery.py) makes the pictures of the
+[Application gallery](../../docs/applications.md): `MURMEL=/path/to/murmel python3 tools/gallery/app_gallery.py target/release/kofl target/gallery [heat-exchanger|furnace-7|airfoil]`.
+It reuses the machinery of the two scripts above and writes to
+`docs/figures/applications/`. The heat exchanger needs `pip install gmsh`
+(its STEP file is read by Gmsh, not by KoflCraft), the furnace gmsh and numpy.
