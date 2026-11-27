@@ -31,7 +31,10 @@
 //!    is put into its plane, so a cut can join the polyhedral mesher
 //!    exactly. A station is pinned to every sharp wall edge across the flow
 //!    (a mitre corner); its loop is snapped onto the edges, and when it is
-//!    flat the station is the mitre plane.
+//!    flat the station is the mitre plane. The stations next to a mitre
+//!    plane are blended planes turning from the leg's section to it (the
+//!    classical structured mitre), where the level sets would crowd at the
+//!    inner corner.
 //! 5. Neighbouring sections are joined node by node into hexahedra.
 
 #![allow(clippy::needless_range_loop)] // parallel per-node arrays
@@ -68,6 +71,10 @@ pub struct SweepOptions {
     /// Largest angle between a cut's plane and the plane normal to the
     /// centreline, for the cut to count as calm.
     pub calm_tilt_deg: f64,
+    /// Blend the stations next to a mitre plane: planes whose normals turn
+    /// from the leg's section to the mitre plane (the classical structured
+    /// mitre), in place of the level sets that fan around the inner corner.
+    pub mitre_blend: bool,
 }
 
 impl Default for SweepOptions {
@@ -82,6 +89,7 @@ impl Default for SweepOptions {
             axial_size: None,
             calm_flatness: 0.001,
             calm_tilt_deg: 0.5,
+            mitre_blend: true,
         }
     }
 }
@@ -147,6 +155,11 @@ pub struct SweepMesh {
     /// Sharp cross-flow wall edges no station could follow (the edge is not
     /// close to one level set).
     pub missed_features: usize,
+    /// Stations next to a mitre plane made planes of the blend.
+    pub blended_stations: usize,
+    /// Mitre sides left as level sets: the blended planes would have
+    /// crossed or no plane met the wall in one loop.
+    pub unblended_mitres: usize,
     /// Cells around, rows from wall to core, cells along a core side.
     pub section: [usize; 3],
     /// Layer heights from the wall (first is 0).
@@ -1107,6 +1120,33 @@ pub fn fill(
             planar,
         });
     }
+    // stations next to a mitre plane: blended planes (classical mitre)
+    let mut blended_stations = 0;
+    let mut unblended_mitres = 0;
+    if opts.mitre_blend {
+        let spacing = length / cells_axial as f64;
+        let mitres: Vec<usize> = (1..rings.len() - 1)
+            .filter(|&k| pinned[k].is_some() && rings[k].planar)
+            .collect();
+        let mut taken = vec![false; rings.len()];
+        for &m in &mitres {
+            taken[m] = true;
+        }
+        for &m in &mitres {
+            for dir in [-1isize, 1] {
+                match blend_side(&rings, m, dir, &taken, spacing, &sub.points, &walls, stl) {
+                    Some(new) => {
+                        for (k, r) in new {
+                            taken[k] = true;
+                            rings[k] = r;
+                            blended_stations += 1;
+                        }
+                    }
+                    None => unblended_mitres += 1,
+                }
+            }
+        }
+    }
     let sharp = rings[0].corners.len() == 4;
     for r in &rings {
         let k = r.corners.len();
@@ -1368,12 +1408,166 @@ pub fn fill(
         calm_ends,
         feature_stations,
         missed_features,
+        blended_stations,
+        unblended_mitres,
         section: [opts.cells_around, rows, n],
         layer_heights: heights,
         min_scaled_jacobian: min_sj,
         volume,
         region_volume,
         unlifted,
+    })
+}
+
+/// The blended stations on one side of the mitre station `m` (towards
+/// lower stations for `dir` -1): the stations between a start station a
+/// and m become planes whose normal turns from a's normal to the mitre
+/// plane's by spherical interpolation and whose centre runs on the chord
+/// from a's centroid to m's, both at equal steps. This is the classical
+/// structured mitre: the section turns over the run, so the wall faces
+/// between stations stay longer than they are thick at the inner corner,
+/// where the level sets of the potential crowd (non-orthogonality 66° on
+/// the elbow). The run is long enough that the inner wall keeps at least
+/// half the outer wall's spacing (z ≥ 3 r θ / spacing, r the section's
+/// reach towards the inner corner, θ the turn); it stops at the sweep's
+/// ends and short of the next mitre's run. Returns `None` (the level sets
+/// stay) when the run has fewer than two steps, a plane does not meet the
+/// wall in one closed loop near its centre, or neighbouring planes cross
+/// inside the section.
+#[allow(clippy::too_many_arguments)]
+fn blend_side(
+    rings: &[Ring],
+    m: usize,
+    dir: isize,
+    taken: &[bool],
+    spacing: f64,
+    points: &[Vec3],
+    walls: &[[usize; 3]],
+    stl: &ClosestSet,
+) -> Option<Vec<(usize, Ring)>> {
+    let at = |j: usize| -> Option<usize> {
+        let k = m as isize + dir * j as isize;
+        (k >= 0 && (k as usize) < rings.len()).then_some(k as usize)
+    };
+    // free stations towards the end (a taken station ends the run before it)
+    let mut free = 0;
+    while let Some(k) = at(free + 1) {
+        if taken[k] {
+            // share the gap with the other mitre's run
+            free = free.div_ceil(2);
+            break;
+        }
+        free += 1;
+        if k == 0 || k == rings.len() - 1 {
+            break;
+        }
+    }
+    let rm = &rings[m];
+    // the turn and the section's reach across the turn axis
+    let theta_of = |a: &Ring| a.normal.dot(rm.normal).clamp(-1.0, 1.0).acos();
+    let mut z = 0;
+    for j in 2..=free {
+        let a = &rings[at(j)?];
+        let theta = theta_of(a);
+        if theta < 1e-3 {
+            return None;
+        }
+        let axis = unit(a.normal.cross(rm.normal));
+        let across = unit(a.normal.cross(axis));
+        let reach = a
+            .points
+            .iter()
+            .map(|&x| (x - a.centroid).dot(across).abs())
+            .fold(0.0, f64::max);
+        z = j;
+        if j as f64 * spacing >= 3.0 * reach * theta {
+            break;
+        }
+    }
+    if z < 2 {
+        return None;
+    }
+    let ra = &rings[at(z)?];
+    let theta = theta_of(ra);
+    let mut out = Vec::with_capacity(z - 1);
+    for j in 1..z {
+        // t from the start station (0) to the mitre (1)
+        let t = (z - j) as f64 / z as f64;
+        let k = at(j)?;
+        let n = unit(
+            ra.normal * (((1.0 - t) * theta).sin() / theta.sin())
+                + rm.normal * ((t * theta).sin() / theta.sin()),
+        );
+        let c = ra.centroid + (rm.centroid - ra.centroid) * t;
+        out.push((k, plane_ring(rings[k].level, c, n, points, walls, stl)?));
+    }
+    // neighbouring stations must not cross inside the section: every wall
+    // point of a station lies ahead of the plane of the one before it
+    let mut chain: Vec<&Ring> = Vec::with_capacity(z + 1);
+    chain.push(ra);
+    chain.extend(out.iter().rev().map(|(_, r)| r));
+    chain.push(rm);
+    if dir > 0 {
+        chain.reverse();
+    }
+    // chain now runs along increasing station index; normals along the flow
+    for w in chain.windows(2) {
+        let (p, q) = (w[0], w[1]);
+        let ahead = q
+            .points
+            .iter()
+            .map(|&x| (x - p.centroid).dot(p.normal))
+            .fold(f64::INFINITY, f64::min);
+        let behind = p
+            .points
+            .iter()
+            .map(|&x| (q.centroid - x).dot(q.normal))
+            .fold(f64::INFINITY, f64::min);
+        if ahead.min(behind) <= 0.1 * spacing {
+            return None;
+        }
+    }
+    Some(out)
+}
+
+/// A planar station: the wall loop of the plane (c, n) on the scaffold
+/// wall nearest to c, projected onto the STL in the plane.
+fn plane_ring(
+    level: f64,
+    c: Vec3,
+    n: Vec3,
+    points: &[Vec3],
+    walls: &[[usize; 3]],
+    stl: &ClosestSet,
+) -> Option<Ring> {
+    let side: Vec<f64> = points.iter().map(|&x| (x - c).dot(n)).collect();
+    let lp = level_loops(points, walls, &side, 0.0)
+        .into_iter()
+        .filter(|l| l.closed && l.points.len() >= 3)
+        .min_by(|a, b| {
+            let d = |l: &Loop| (polygon(&l.points).1 - c).length();
+            d(a).total_cmp(&d(b))
+        })?;
+    let mut pts: Vec<Vec3> = lp
+        .points
+        .iter()
+        .map(|&x| on_wall(stl, x, Some((c, n))))
+        .collect();
+    let (pn, _, _) = polygon(&pts);
+    if pn.dot(n) < 0.0 {
+        pts.reverse();
+    }
+    let (normal, centroid, area, flatness) = metrics(&pts, n);
+    let corners = sharp_corners(&pts, normal);
+    Some(Ring {
+        level,
+        points: pts,
+        normal,
+        centroid,
+        area,
+        flatness,
+        corners,
+        planar: true,
     })
 }
 

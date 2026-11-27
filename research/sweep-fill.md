@@ -200,6 +200,59 @@ What was tried and dropped:
 - **The band as every crossing facet within reach:** it took the other pipe
   (item 3).
 
+## Blended stations at mitre corners
+
+Date: 2026-11-27. The level sets of the potential crowd at the inner corner
+of a mitre (the potential is singular at a reentrant edge), so the stations
+fan around it: on the elbow the cells next to the inner corner are short at
+the inner wall and long at the outer wall, with 66.1° non-orthogonality.
+
+### Method
+
+The classical structured mitre (as in the swept and extruded block meshes
+of mitred ducts): on each side of a mitre station m, the stations from a
+start station a up to m become planes. Their normals turn from a's normal
+to the mitre plane's normal by spherical linear interpolation (Shoemake
+1985, *Animating rotation with quaternion curves*, SIGGRAPH), their centres
+run on the chord from a's centroid to m's, both in equal steps. Each plane's
+wall loop is traced on the scaffold wall (the same marching triangles as for
+the level sets, on the signed distance to the plane), the loop nearest the
+centre is kept and projected onto the STL in the plane.
+
+- **Run length.** Over a run of z stations the planes turn by θ/z each. A
+  wall point at distance r across the turn axis then moves by
+  spacing ± r θ / z between stations; the inner wall keeps at least half
+  the outer wall's spacing when z ≥ 3 r θ / spacing. On the elbow (r = 0.5,
+  θ = 45°, spacing 0.125) that is 10 stations. The run stops at the sweep's
+  ends and halfway to the next mitre's run.
+- **Fallback.** When a plane meets the wall in no closed loop near its
+  centre, or two neighbouring stations would come closer than 0.1 of the
+  spacing anywhere on the wall, that side keeps the level sets and the
+  report counts it (`unblended_mitre_sides`).
+- `blended_stations` in the report counts the planes.
+
+### Results (elbow, defaults)
+
+| | Level sets | Blended planes |
+|---|---|---|
+| Max non-orthogonality (KoflCraft) | 66.1° | 59.1° |
+| Max non-orthogonality (FoehnCraft) | 81.9° | 59.1° |
+| Min scaled Jacobian | 0.26 | 0.37 |
+| Volume vs region | -0.003 % | -0.002 % |
+| Blended stations | 0 | 17 (both sides) |
+
+Run length (factor k in z ≥ k r θ / spacing): k = 0.5 gives runs too short
+to blend (66.1°), k = 1.5 blends one side and the other's planes would
+cross (66.1°), k = 3 gives 59.1°, k = 6 and more (the whole leg) 59.6°.
+k = 3 is kept. The Manifold has no mitre and does not change.
+
+The 59° that is left sits where the square O-grid section's diagonal ring
+edges meet the mitre: the section template alone gives 45.0° in the
+straight legs (the corner cells of the butterfly are rhombi), and the
+mitre's tilt adds to it. Picture:
+`koflcraft-images/sweep/elbow-mitre-blend.png` (the floor wall, before and
+after; `render_floor.py` beside it).
+
 ## Limits and next steps
 
 - The join needs at most two openings in the region behind the cuts (the
@@ -215,9 +268,9 @@ What was tried and dropped:
   measures 90.0° and 271,252 faces on the same measure.
 - The polyhedral box keeps the mesher's own quality: 87.7° non-orthogonality
   inside the box, none at the cuts.
-- At a mitre the stations fan around the inner corner; blending the
-  stations between a calm section and the mitre plane (the classical mitre
-  mesh) would give better cells there.
+- At a mitre the stations next to the mitre plane are blended planes (see
+  above); the square O-grid section keeps 45° at its diagonals in the
+  straight legs, which adds to the mitre's tilt (59° on the elbow).
 - Section rows of the ring blocks bow slightly inwards (each column is
   graded on its own); a 2D smoothing of the section is open.
 - A sweep needs one closed wall loop per level set and the same section

@@ -15,11 +15,18 @@ fn fixture(name: &str) -> (Vec<u8>, Value) {
 }
 
 fn run(name: &str, join: bool) -> (Value, mesh_io::handoff::HandoffMesh) {
+    run_with(
+        name,
+        FillOptions {
+            join,
+            ..FillOptions::default()
+        },
+    )
+}
+
+fn run_with(name: &str, opts: FillOptions) -> (Value, mesh_io::handoff::HandoffMesh) {
     let (stl, map) = fixture(name);
-    let opts = FillOptions {
-        join,
-        ..FillOptions::default()
-    };
+    let join = opts.join;
     let f = fill(&stl, &map, opts).unwrap();
     if let Ok(dir) = std::env::var("KOFL_FILL_OUT") {
         std::fs::write(
@@ -58,10 +65,46 @@ fn elbow_sweeps_through_the_mitre() {
     let v = &r["validity"];
     assert_eq!(v["inverted_faces"], 0);
     assert!(num(&v["min_volume"]) > 0.0);
-    assert!(num(&v["max_non_orthogonality_deg"]) < 70.0, "{v}");
-    assert!(num(&v["min_scaled_jacobian"]) > 0.2, "{v}");
+    // the stations next to the mitre are blended planes on both sides
+    assert!(num(&s["blended_stations"]) >= 4.0, "{s}");
+    assert_eq!(s["unblended_mitre_sides"], 0, "{s}");
+    assert!(num(&v["max_non_orthogonality_deg"]) < 62.0, "{v}");
+    assert!(num(&v["min_scaled_jacobian"]) > 0.3, "{v}");
     assert_eq!(mesh.summary().inverted_faces, 0);
     assert!(num(&r["shares"]["swept_cells"]) > 0.99, "{}", r["shares"]);
+}
+
+/// Keep: the blended mitre stations (the classical structured mitre) beat
+/// the level sets there (ALG-16). Without the blend the level sets crowd at
+/// the inner corner: non-orthogonality 66° and min scaled Jacobian 0.26
+/// against 59° and 0.37 with it. The test above only bounds the blended
+/// mesh; this one fails when the blend stops helping or stops running.
+#[test]
+fn mitre_blend_beats_the_level_sets() {
+    let opts = |mitre_blend| FillOptions {
+        mitre_blend,
+        ..FillOptions::default()
+    };
+    let (blend, _) = run_with("elbow", opts(true));
+    let (level, _) = run_with("elbow", opts(false));
+    assert_eq!(level["sweeps"][0]["blended_stations"], 0);
+    let no = |r: &Value| num(&r["validity"]["max_non_orthogonality_deg"]);
+    let sj = |r: &Value| num(&r["validity"]["min_scaled_jacobian"]);
+    assert!(
+        no(&blend) + 5.0 < no(&level),
+        "{} vs {}",
+        no(&blend),
+        no(&level)
+    );
+    assert!(
+        sj(&blend) > sj(&level) + 0.05,
+        "{} vs {}",
+        sj(&blend),
+        sj(&level)
+    );
+    // the blend keeps the volume (the stations stay on the walls)
+    let dv = |r: &Value| num(&r["sweeps"][0]["relative_volume_difference"]).abs();
+    assert!(dv(&blend) < 1e-4, "{}", dv(&blend));
 }
 
 /// Keep: in the Manifold both pipes are swept from their port to a calm

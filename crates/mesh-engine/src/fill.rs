@@ -50,6 +50,9 @@ pub struct FillOptions {
     /// Mesh the region behind the cuts with polyhedra and join it to the
     /// sweeps (MD-25).
     pub join: bool,
+    /// Blended planar stations next to each mitre plane (default true);
+    /// false keeps the level sets there (for the benchmark).
+    pub mitre_blend: bool,
 }
 
 impl Default for FillOptions {
@@ -67,6 +70,7 @@ impl Default for FillOptions {
             core_fraction: s.core_fraction,
             axial_size: None,
             join: true,
+            mitre_blend: true,
         }
     }
 }
@@ -172,6 +176,7 @@ pub fn fill(stl: &[u8], map: &Value, opts: FillOptions) -> Result<Filled, Engine
                 radial_cells: None,
                 core_fraction: opts.core_fraction,
                 axial_size: opts.axial_size,
+                mitre_blend: opts.mitre_blend,
                 ..SweepOptions::default()
             };
             match sweep::fill(&a.mesh, &a.p, &region, &a.adjacent, &stl_walls, s) {
@@ -315,6 +320,8 @@ pub fn fill(stl: &[u8], map: &Value, opts: FillOptions) -> Result<Filled, Engine
             "ends": [cut(0, m.ends[0], m.calm_ends[0]), cut(st.len() - 1, m.ends[1], m.calm_ends[1])],
             "feature_stations": m.feature_stations,
             "missed_feature_edges": m.missed_features,
+            "blended_stations": m.blended_stations,
+            "unblended_mitre_sides": m.unblended_mitres,
             "max_station_flatness": st.iter().map(|s| s.flatness).fold(0.0, f64::max),
             "min_scaled_jacobian": m.min_scaled_jacobian,
             "volume": m.volume,
