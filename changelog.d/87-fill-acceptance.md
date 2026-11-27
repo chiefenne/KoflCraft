@@ -7,3 +7,7 @@
 - **`regions.fill` names what it wrote.** The joined Manifold was told
   that its box was not meshed, and the elbow that it held polyhedra; the
   next step now says which of the three meshes the file is.
+- **Gmsh file of the polyhedral Manifold readable again.** Four core
+  cells had a corner as their kernel point, so their tetrahedral fan in
+  `mesh.msh` held tetrahedra of zero volume and FoehnCraft refused the
+  file. Those cells now get a kernel point strictly inside.
