@@ -82,6 +82,10 @@ pub enum Edit {
     SplitTriangle {
         block: usize,
         vertex: usize,
+        /// The other end of the flat edge (3D); the flattest edge at
+        /// `vertex` when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        along: Option<usize>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cells: Option<usize>,
     },
@@ -999,9 +1003,17 @@ pub fn apply(file: &TopologyFile, edit: &Edit) -> Result<(TopologyFile, Change),
         Edit::SplitTriangle {
             block,
             vertex,
+            along,
             cells,
         } => {
-            crate::block_triangle::split_triangle(&mut out, *block, *vertex, *cells, &mut change)?;
+            crate::block_triangle::split_triangle(
+                &mut out,
+                *block,
+                *vertex,
+                *along,
+                *cells,
+                &mut change,
+            )?;
         }
         Edit::SetPatch { name, rename, role } => {
             if rename.is_none() && role.is_none() {

@@ -128,3 +128,30 @@ Two variants were tried and dropped:
 - The trigger tries at most four candidates per round. Each trial costs one
   layout optimisation: 0.2 s for the wedge, 0.5–2.5 s for an airfoil
   layout.
+
+## 3D: the split through a column (2026-11-27)
+
+Step 1 of the 3D insertion plan (maintainer cards of 2026-11-27: conformal
+first, integer count solve, geometry plus measured trial as trigger).
+
+- **The flat corner is a block edge.** A prism-shaped block has an edge whose
+  cross-section corner is flat (150° or more at both ends, `flat_edges`). The
+  split takes that edge as the prism axis (`along`, or the flattest edge at
+  `vertex`). The block is turned into a local frame with the edge along k
+  (one of the 24 right-handed rotations of the hex frame), so the 2D code of
+  MB1h applies unchanged in the cross-section.
+- **The column.** Every block stacked on it across the faces at the two ends
+  of the edge is turned to the same frame (face corner by face corner) and
+  split the same way, so the faces between the layers stay point-matched
+  (BS-05). A column that closes into a ring is refused for now.
+- **The sheet.** The new count n_C enters on the edges B–C and C–A of every
+  layer of the column and runs through the neighbouring blocks to the
+  boundary, the same propagation as before, now without the one-layer limit.
+- **Why a sheet is always needed.** In a hex replaced in place, opposite edges
+  carry the same count (N_BC = N_AM, N_CA = N_MB), so the tri-center counts
+  give n_C = (N_BC + N_CA − N_AB) / 2 = 0: the new count cannot fit the old
+  ones. The chain through the block must be split by a sheet (now) or stopped
+  at a T-junction (step 2, with the integer count solve, after T-mesh
+  quantization in Kobbelt's and Campen's groups). The block model shares
+  faces whole today, so T-junctions need support in the topology and the
+  grid builder first.
