@@ -1,0 +1,1 @@
+{"partition": "partition.json", "output": "partition-1.json", "shell": {"name": "baffle", "polygon": [[-9, -9, 24.3], [0.7, -9, 24.3], [0.7, 9, 24.3], [-9, 9, 24.3]]}}

@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "source_sha256": "filled in by set_sha256.py",
+  "regions": [],
+  "volume_scaffold": {
+    "build": {
+      "tolerance": 0.0007,
+      "min_size": 0.021,
+      "max_size": 0.125,
+      "rate": 0.4,
+      "rim_size": 0.03,
+      "feature_angle": 30.0,
+      "iterations": 10,
+      "thickness": {
+        "across": 1.0,
+        "min_size": 0.02,
+        "wedge_angle": 45.0
+      }
+    },
+    "max_relative_geometry_error": 0.03,
+    "max_wall_deviation": 0.00105
+  },
+  "first_thickness": 0.002,
+  "growth": 1.2,
+  "layers": 5,
+  "no_layers": [
+    "sides"
+  ]
+}

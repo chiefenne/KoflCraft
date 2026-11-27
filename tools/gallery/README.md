@@ -20,3 +20,14 @@ light theme) and puts the shots of an entry side by side into
 `docs/figures/gallery/<figure>.jpg` (800 pixels wide each, JPEG quality
 88). Each run's tool results are in `<work>/<entry>/results.json`; the
 numbers on the gallery page come from them.
+
+[poly_gallery.py](poly_gallery.py) makes the page
+[Polyhedral and layered meshes](../../docs/gallery/polyhedral.md) the same
+way: `MURMEL=/path/to/murmel python3 tools/gallery/poly_gallery.py target/release/kofl target/gallery [entry ...]`.
+Each entry (`SCRIPTS`) is the command block printed on the page, run by
+bash in the work folder, which links `test-fixtures/` and `examples/`
+and collects the outputs in `out/`; the shots (`SHOTS`) open the meshes'
+`foehncraft.vtu`, colour by patch or cell type and cut them with clip
+planes. The seven-tube furnace needs `pip install gmsh numpy` (and, on a
+bare Linux, `libglu1-mesa`). `RENDER_ONLY=1` renders from the outputs of
+an earlier run without meshing again.

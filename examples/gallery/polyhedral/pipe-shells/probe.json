@@ -1,0 +1,1 @@
+{"partition": "partition-2.json", "output": "partition-3.json", "source": {"kind": "datum", "name": "probe", "size": 0.25, "distance": 1, "shape": {"type": "sphere", "centre": [0, 0, 32], "radius": 1}}}
