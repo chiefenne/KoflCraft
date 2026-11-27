@@ -156,7 +156,8 @@ the chain to the boundary; what stops at the T-junction are the block cuts.
 
 `block.optimize_layout` on a topology that is not extruded along z (or that
 has T-junctions) finds prism-shaped blocks by geometry (a block edge flatter
-than 150° at both ends) and tries the split there, with the T-junction stop
+than 150° at both ends), and tet-shaped blocks (see below), and tries the
+split there, with the T-junction stop
 and with the sheet. It keeps a split only when the blocks it touches get a
 worst angle at least 2° lower and a worst scaled Jacobian of 0.4 or more, and
 the whole grid gets no worse and grows by at most 10 % of its cells. There is
@@ -167,6 +168,30 @@ Faces must be covered in strips (the cuts run from one side of the big face
 to the other). Elliptic smoothing and the edits that add, remove or split
 blocks or set chain counts refuse a topology with T-junctions for now; use
 the TFI grid.
+
+## Tet blocks
+
+A block shaped like a tetrahedron (three faces at one corner P0 are
+triangles, each with a nearly flat corner, and the other three faces form the
+fourth triangle) has poor cells near its flat corners. `block.split_tet`
+splits it into the four hexahedra of the tetrahedron, one at each corner:
+
+```json
+{"topology": "tet.json", "output": "tet-split.json", "block": 0}
+```
+
+```sh
+kofl call block.split_tet --input split-tet.json
+```
+
+The fourth triangle keeps its grid, so a block on it is untouched. The three
+edges at P0 get `cells` more cells (the mean of the block's counts when
+absent). A block on one of the three triangles at P0 is split into three with
+the tet, together with every block stacked on it, so the faces still meet
+node for node; the new cells run on as one row, through blocks on the edges
+at P0, ended as `stop` says (`sheet` cuts them, `t_junction` keeps them whole
+with a T-junction). `block.optimize_layout` in 3D tries tet-shaped blocks
+too, with the same keep rule as the prism splits.
 
 ## Limits
 

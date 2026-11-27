@@ -95,6 +95,22 @@ pub enum Edit {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stop: Option<crate::block_triangle::RowStop>,
     },
+    /// Split a block shaped like a tetrahedron (three faces at `corner`
+    /// are triangles, each with one flat corner) into the four hexahedra
+    /// of the tetrahedron around a centre vertex; the edges at `corner`
+    /// get `cells` more cells (the mean of the block's counts when
+    /// absent). A block on one of those triangles is split into three
+    /// with it (a triangle split along its edge away from the tet), and
+    /// the new cells run on as a row, ended as `stop` says (BS-20).
+    SplitTet {
+        block: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        corner: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cells: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stop: Option<crate::block_triangle::RowStop>,
+    },
     /// Rename a patch and/or set its role.
     SetPatch {
         name: String,
@@ -909,6 +925,7 @@ pub fn apply(file: &TopologyFile, edit: &Edit) -> Result<(TopologyFile, Change),
                 | Edit::SetDistribution { .. }
                 | Edit::SetCurve { .. }
                 | Edit::SplitTriangle { .. }
+                | Edit::SplitTet { .. }
         )
     {
         return Err(refused(
@@ -1032,6 +1049,21 @@ pub fn apply(file: &TopologyFile, edit: &Edit) -> Result<(TopologyFile, Change),
                 *block,
                 *vertex,
                 *along,
+                *cells,
+                stop.unwrap_or_default(),
+                &mut change,
+            )?;
+        }
+        Edit::SplitTet {
+            block,
+            corner,
+            cells,
+            stop,
+        } => {
+            crate::block_tet::split_tet(
+                &mut out,
+                *block,
+                *corner,
                 *cells,
                 stop.unwrap_or_default(),
                 &mut change,

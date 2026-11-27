@@ -77,7 +77,7 @@ fn core_law(d: &DistributionFile) -> Distribution {
 }
 
 /// The curve and law of the edge from `p` to `q`, read in that direction.
-fn edge_of(file: &TopologyFile, p: usize, q: usize) -> (CurveFile, DistributionFile) {
+pub(crate) fn edge_of(file: &TopologyFile, p: usize, q: usize) -> (CurveFile, DistributionFile) {
     match file
         .edges
         .iter()
@@ -90,7 +90,7 @@ fn edge_of(file: &TopologyFile, p: usize, q: usize) -> (CurveFile, DistributionF
 }
 
 /// Fractions of the length of the edge `p` → `q` at its `n` nodes.
-fn edge_fractions(
+pub(crate) fn edge_fractions(
     file: &TopologyFile,
     p: usize,
     q: usize,
@@ -108,7 +108,7 @@ fn edge_fractions(
 }
 
 /// The local corner (i, j, k) of a vertex slot.
-fn corner_of(slot: usize) -> [usize; 3] {
+pub(crate) fn corner_of(slot: usize) -> [usize; 3] {
     let (i, j) = [(0, 0), (1, 0), (1, 1), (0, 1)][slot % 4];
     [i, j, slot / 4]
 }
@@ -116,11 +116,11 @@ fn corner_of(slot: usize) -> [usize; 3] {
 /// A split edge of the new cell row: the vertex on the side of the new
 /// cells, the old cell count, and (once placed) the new vertex with the
 /// edge's nodes from the new cells' side.
-struct RowEdge {
-    from: usize,
-    to: usize,
-    cells: usize,
-    vertex: usize,
+pub(crate) struct RowEdge {
+    pub from: usize,
+    pub to: usize,
+    pub cells: usize,
+    pub vertex: usize,
     nodes: Vec<Vec3>,
     /// Fraction of the length from `from` at the new vertex, and the old
     /// nodes' fractions from `from`.
@@ -213,94 +213,218 @@ pub(crate) fn split_triangle_with(
     stop: RowStop,
     change: &mut Change,
 ) -> Result<TriangleSplit, EngineError> {
+    let p = split_prisms(
+        file,
+        &[Start {
+            block: b0,
+            vertex,
+            along,
+        }],
+        cells,
+        stop,
+        &BTreeSet::new(),
+        &[],
+        change,
+    )?;
+    let counts = match stop {
+        RowStop::Sheet => None,
+        RowStop::TJunction => Some(t_junctions(file, &p.row, p.cells_before)?),
+    };
+    let c = p.columns.into_iter().next().expect("one start, one column");
+    Ok(TriangleSplit {
+        block: b0,
+        vertex,
+        corner_deg: c.corner_deg,
+        row_cells: p.row_cells,
+        row_blocks: p.row_blocks,
+        column: c.column,
+        blocks: c.blocks,
+        stop,
+        counts,
+    })
+}
+
+/// Where a column of triangle splits starts: the block, its flat corner
+/// and the other end of the flat edge (the flattest edge when absent).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Start {
+    pub block: usize,
+    pub vertex: usize,
+    pub along: Option<usize>,
+}
+
+/// One column of a [`split_prisms`].
+pub(crate) struct ColumnSplit {
+    pub corner_deg: f64,
+    pub column: Vec<usize>,
+    pub blocks: Vec<usize>,
+    /// The centre vertex at every layer of the column, from the bottom
+    /// (the layer at the start's flat corner is 0 unless blocks were
+    /// stacked below it).
+    pub centres: Vec<usize>,
+}
+
+/// What a [`split_prisms`] did.
+pub(crate) struct Prisms {
+    pub columns: Vec<ColumnSplit>,
+    pub row_cells: usize,
+    pub row_blocks: Vec<usize>,
+    pub row: BTreeMap<(usize, usize), RowEdge>,
+    pub cells_before: usize,
+}
+
+/// Triangle splits of several columns that share one new row of `cells`
+/// cells (BS-03, BS-20). `exclude` are blocks that neither a column nor
+/// the row may enter (they are split by the caller, who also makes the
+/// topology valid again); `extra_row` are further edges of the row, from
+/// the side of the new cells, with their counts. With `t_junction` the row
+/// stops at the neighbours, but the caller runs [`t_junctions`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn split_prisms(
+    file: &mut TopologyFile,
+    starts: &[Start],
+    cells: Option<usize>,
+    stop: RowStop,
+    exclude: &BTreeSet<usize>,
+    extra_row: &[(usize, usize, usize)],
+    change: &mut Change,
+) -> Result<Prisms, EngineError> {
     if stop == RowStop::Sheet && !file.junctions.is_empty() {
         return Err(refused(
             "the topology has T-junctions; split with stop t_junction (a sheet split does not handle them yet)",
         ));
     }
-    if b0 >= file.blocks.len() {
-        return Err(refused(format!("there is no block {b0}")));
-    }
-    let Some(slot) = file.blocks[b0].vertices.iter().position(|&v| v == vertex) else {
-        return Err(refused(format!(
-            "vertex {vertex} is no corner of block {b0}"
-        )));
-    };
-    let axis = match along {
-        Some(w) => {
-            let Some(s2) = file.blocks[b0].vertices.iter().position(|&v| v == w) else {
-                return Err(refused(format!("vertex {w} is no corner of block {b0}")));
-            };
-            let (c1, c2) = (corner_of(slot), corner_of(s2));
-            let diff: Vec<usize> = (0..3).filter(|&d| c1[d] != c2[d]).collect();
-            if diff.len() != 1 {
-                return Err(refused(format!(
-                    "vertices {vertex} and {w} are not joined by an edge of block {b0}"
-                )));
-            }
-            diff[0]
-        }
-        None => {
-            let grid0 = algo::build(&file.topology()?).map_err(issues)?;
-            let deg = |a: usize| cross_angle(&grid0, file, b0, slot, a);
-            (0..3)
-                .max_by(|&x, &y| deg(x).total_cmp(&deg(y)))
-                .unwrap_or(2)
-        }
-    };
     let cells_before: usize = file
         .blocks
         .iter()
         .map(|b| b.cells.iter().product::<usize>())
         .sum();
-    let cols = column(file, b0, axis, slot)?;
-    let colset: BTreeSet<usize> = cols.iter().copied().collect();
-    let grid = algo::build(&file.topology()?).map_err(issues)?;
-    let old = file.blocks[b0].clone();
-    let f = old.vertices[..4]
-        .iter()
-        .position(|&v| v == vertex)
-        .expect("the column puts the vertex at k = 0");
-    let corner_deg = corner_angles(&grid, file, b0, 0)[f].min(corner_angles(&grid, file, b0, 1)[f]);
-    if corner_deg < MIN_CORNER {
-        return Err(refused(format!(
-            "the corner of block {b0} at vertex {vertex} is {corner_deg:.1}°; a triangle split \
-             needs a corner of at least {MIN_CORNER}° there (a block whose cross-section is a \
-             triangle)"
-        )));
+    // every column, rotated so its flat edge runs along k
+    let mut columns: Vec<(usize, usize, Vec<usize>)> = Vec::new();
+    let mut colset: BTreeSet<usize> = BTreeSet::new();
+    for st in starts {
+        let (b0, vertex) = (st.block, st.vertex);
+        if b0 >= file.blocks.len() {
+            return Err(refused(format!("there is no block {b0}")));
+        }
+        if colset.contains(&b0) || exclude.contains(&b0) {
+            return Err(refused(format!(
+                "block {b0} lies in two columns of the split; split by hand"
+            )));
+        }
+        let Some(slot) = file.blocks[b0].vertices.iter().position(|&v| v == vertex) else {
+            return Err(refused(format!(
+                "vertex {vertex} is no corner of block {b0}"
+            )));
+        };
+        let axis = match st.along {
+            Some(w) => {
+                let Some(s2) = file.blocks[b0].vertices.iter().position(|&v| v == w) else {
+                    return Err(refused(format!("vertex {w} is no corner of block {b0}")));
+                };
+                let (c1, c2) = (corner_of(slot), corner_of(s2));
+                let diff: Vec<usize> = (0..3).filter(|&d| c1[d] != c2[d]).collect();
+                if diff.len() != 1 {
+                    return Err(refused(format!(
+                        "vertices {vertex} and {w} are not joined by an edge of block {b0}"
+                    )));
+                }
+                diff[0]
+            }
+            None => {
+                let grid0 = algo::build(&file.topology()?).map_err(issues)?;
+                let deg = |a: usize| cross_angle(&grid0, file, b0, slot, a);
+                (0..3)
+                    .max_by(|&x, &y| deg(x).total_cmp(&deg(y)))
+                    .unwrap_or(2)
+            }
+        };
+        let cols = column(file, b0, axis, slot, exclude)?;
+        if let Some(o) = cols.iter().find(|o| colset.contains(o)) {
+            return Err(refused(format!(
+                "block {o} lies in two columns of the split; split by hand"
+            )));
+        }
+        colset.extend(cols.iter().copied());
+        columns.push((b0, vertex, cols));
     }
-    // the triangle A, B, C with the flat corner M on side AB, every layer
-    // of the column from the bottom
-    let (ia, im, ib, ic) = ((f + 3) % 4, f, (f + 1) % 4, (f + 2) % 4);
-    let mut layv: Vec<[usize; 4]> = cols
-        .iter()
-        .map(|&o| {
-            let v = file.blocks[o].vertices;
-            [v[0], v[1], v[2], v[3]]
-        })
-        .collect();
-    let top = file.blocks[*cols.last().expect("the column holds b0")].vertices;
-    layv.push([top[4], top[5], top[6], top[7]]);
-    let layers = layv.len();
-    let k0 = cols
-        .iter()
-        .position(|&o| o == b0)
-        .expect("the column holds b0");
-    let lay = |i: usize, k: usize| layv[k][i];
-    let (n_b, n_a) = (old.cells[ia % 2], old.cells[im % 2]);
+    let grid = algo::build(&file.topology()?).map_err(issues)?;
+    // the triangle A, B, C of every column with the flat corner M on side
+    // AB, every layer of the column from the bottom
+    struct Col {
+        cols: Vec<usize>,
+        layv: Vec<[usize; 4]>,
+        ia: usize,
+        im: usize,
+        ib: usize,
+        ic: usize,
+        n_a: usize,
+        n_b: usize,
+        k0: usize,
+        corner_deg: f64,
+    }
+    let mut cs: Vec<Col> = Vec::new();
+    for (b0, vertex, cols) in columns {
+        let old = file.blocks[b0].clone();
+        let f = old.vertices[..4]
+            .iter()
+            .position(|&v| v == vertex)
+            .expect("the column puts the vertex at k = 0");
+        let corner_deg =
+            corner_angles(&grid, file, b0, 0)[f].min(corner_angles(&grid, file, b0, 1)[f]);
+        if corner_deg < MIN_CORNER {
+            return Err(refused(format!(
+                "the corner of block {b0} at vertex {vertex} is {corner_deg:.1}°; a triangle split \
+                 needs a corner of at least {MIN_CORNER}° there (a block whose cross-section is a \
+                 triangle)"
+            )));
+        }
+        let mut layv: Vec<[usize; 4]> = cols
+            .iter()
+            .map(|&o| {
+                let v = file.blocks[o].vertices;
+                [v[0], v[1], v[2], v[3]]
+            })
+            .collect();
+        let top = file.blocks[*cols.last().expect("the column holds b0")].vertices;
+        layv.push([top[4], top[5], top[6], top[7]]);
+        let k0 = cols
+            .iter()
+            .position(|&o| o == b0)
+            .expect("the column holds b0");
+        let (ia, im, ib, ic) = ((f + 3) % 4, f, (f + 1) % 4, (f + 2) % 4);
+        let (n_b, n_a) = (old.cells[ia % 2], old.cells[im % 2]);
+        cs.push(Col {
+            cols,
+            layv,
+            ia,
+            im,
+            ib,
+            ic,
+            n_a,
+            n_b,
+            k0,
+            corner_deg,
+        });
+    }
     let n_c = match cells {
         Some(0) => return Err(refused("the new row needs at least one cell")),
         Some(c) => c,
         None => {
-            let p = |i: usize| v3(file.vertices[lay(i, k0)]);
-            let centre = (p(ia) + p(ib) + p(ic)) / 3.0;
-            let h = ((p(im) - p(ia)).length() / n_b as f64 + (p(ib) - p(im)).length() / n_a as f64)
+            let Some(c) = cs.first() else {
+                return Err(refused("give the count of the new row"));
+            };
+            let p = |i: usize| v3(file.vertices[c.layv[c.k0][i]]);
+            let centre = (p(c.ia) + p(c.ib) + p(c.ic)) / 3.0;
+            let h = ((p(c.im) - p(c.ia)).length() / c.n_b as f64
+                + (p(c.ib) - p(c.im)).length() / c.n_a as f64)
                 / 2.0;
-            (((centre - p(im)).length() / h).round() as usize).max(1)
+            (((centre - p(c.im)).length() / h).round() as usize).max(1)
         }
     };
-    // the row: edges B–C (new cells next to B) and C–A (next to A), both
-    // layers, then every block that shares a split edge
+    // the row: edges B–C (new cells next to B) and C–A (next to A) of
+    // every layer of every column, the extra edges, then every block that
+    // shares a split edge
     let mut row: BTreeMap<(usize, usize), RowEdge> = BTreeMap::new();
     let start = |from: usize, to: usize, cells: usize| RowEdge {
         from,
@@ -311,15 +435,25 @@ pub(crate) fn split_triangle_with(
         at: 0.0,
         old: Vec::new(),
     };
-    for k in 0..layers {
-        row.insert(
-            key(lay(ib, k), lay(ic, k)),
-            start(lay(ib, k), lay(ic, k), n_b),
-        );
-        row.insert(
-            key(lay(ia, k), lay(ic, k)),
-            start(lay(ia, k), lay(ic, k), n_a),
-        );
+    let mut wanted: Vec<(usize, usize, usize)> = extra_row.to_vec();
+    for c in &cs {
+        for l in &c.layv {
+            wanted.push((l[c.ib], l[c.ic], c.n_b));
+            wanted.push((l[c.ia], l[c.ic], c.n_a));
+        }
+    }
+    for (from, to, n) in wanted {
+        match row.get(&key(from, to)) {
+            Some(r) if r.from != from => {
+                return Err(refused(format!(
+                    "the new row would enter the edge {from}–{to} from both ends; split by hand"
+                )));
+            }
+            Some(_) => {}
+            None => {
+                row.insert(key(from, to), start(from, to, n));
+            }
+        }
     }
     let own: BTreeSet<(usize, usize)> = row.keys().copied().collect();
     // crossed block → (axis, the new cells at its local start)
@@ -344,7 +478,7 @@ pub(crate) fn split_triangle_with(
         }
         let mut grew = false;
         for (o, b) in file.blocks.iter().enumerate() {
-            if colset.contains(&o) || crossed.contains_key(&o) {
+            if colset.contains(&o) || exclude.contains(&o) || crossed.contains_key(&o) {
                 continue;
             }
             for a in 0..3 {
@@ -394,7 +528,7 @@ pub(crate) fn split_triangle_with(
             }
         }
     }
-    for &o in &cols {
+    for &o in &colset {
         for g in 0..3 {
             for (p, q) in along(&file.blocks[o], g) {
                 if row.contains_key(&key(p, q)) && !own.contains(&key(p, q)) {
@@ -423,58 +557,9 @@ pub(crate) fn split_triangle_with(
     let mut new_edges: Vec<EdgeFile> = Vec::new();
     for r in row.values_mut() {
         r.old = edge_fractions(file, r.from, r.to, r.cells)?.1;
-        let (ev, fr) = edge_fractions(file, r.from, r.to, r.cells + n_c)?;
-        let mut nodes: Vec<Vec3> = fr.iter().map(|&s| ev.at(s)).collect();
-        nodes[0] = v3(file.vertices[r.from]);
-        nodes[r.cells + n_c] = v3(file.vertices[r.to]);
-        r.at = fr[n_c];
-        file.vertices.push(a3(nodes[n_c]));
-        r.vertex = file.vertices.len() - 1;
-        change.added_vertices.push(r.vertex);
-        let (curve, law) = edge_of(file, r.from, r.to);
-        let halves = match &curve {
-            CurveFile::Spline { through } => {
-                let pts: Vec<Vec3> = through.iter().map(|&p| v3(p)).collect();
-                Some(cut_spline(nodes[0], &pts, nodes[r.cells + n_c], nodes[n_c]))
-            }
-            _ => None,
-        };
-        for (h, (a, b, part)) in [
-            (r.from, r.vertex, &nodes[..=n_c]),
-            (r.vertex, r.to, &nodes[n_c..]),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let c = match (&curve, &halves) {
-                (CurveFile::Line, _) => CurveFile::Line,
-                (_, Some((x, y))) => {
-                    let pts = if h == 0 { x } else { y };
-                    if pts.is_empty() {
-                        fitted_curve(part)
-                    } else {
-                        CurveFile::Spline {
-                            through: pts.iter().map(|&p| a3(p)).collect(),
-                        }
-                    }
-                }
-                _ => fitted_curve(part),
-            };
-            let d = if law == DistributionFile::Uniform {
-                DistributionFile::Uniform
-            } else {
-                fitted_law(part, &c, &law)
-            };
-            if c != CurveFile::Line || d != DistributionFile::Uniform {
-                new_edges.push(EdgeFile {
-                    vertices: [a, b],
-                    curve: c,
-                    distribution: d,
-                });
-                change.fitted_edges.push([a, b]);
-            }
-        }
-        r.nodes = nodes;
+        let (vertex, at, nodes) =
+            split_edge(file, r.from, r.to, r.cells, n_c, &mut new_edges, change)?;
+        (r.vertex, r.at, r.nodes) = (vertex, at, nodes);
     }
     file.edges
         .retain(|e| !row.contains_key(&key(e.vertices[0], e.vertices[1])));
@@ -590,73 +675,89 @@ pub(crate) fn split_triangle_with(
         change.blocks.push(o);
         change.added_blocks.push(file.blocks.len() - 1);
     }
-    // the triangle: three blocks around the centre O, in every block of
-    // the column
-    let m = |i: usize, j: usize, k: usize| row[&key(lay(i, k), lay(j, k))].vertex;
-    let mut centre = vec![0usize; layers];
-    for (k, c) in centre.iter_mut().enumerate() {
-        let p = |i: usize| v3(file.vertices[lay(i, k)]);
-        file.vertices.push(a3((p(ia) + p(ib) + p(ic)) / 3.0));
-        *c = file.vertices.len() - 1;
-        change.added_vertices.push(*c);
-    }
+    // the triangles: three blocks around the centre O, in every block of
+    // every column
+    let new_vertices: BTreeMap<(usize, usize), usize> =
+        row.iter().map(|(&k, r)| (k, r.vertex)).collect();
     let quad = |q: [[usize; 2]; 4]| -> [usize; 8] {
         [
             q[0][0], q[1][0], q[2][0], q[3][0], q[0][1], q[1][1], q[2][1], q[3][1],
         ]
     };
-    let new_vertices: BTreeMap<(usize, usize), usize> =
-        row.iter().map(|(&k, r)| (k, r.vertex)).collect();
-    let mut blocks = Vec::new();
-    for (ci, &o) in cols.iter().enumerate() {
-        let ob = file.blocks[o].clone();
-        let at = |i: usize| [lay(i, ci), lay(i, ci + 1)];
-        let cen = [centre[ci], centre[ci + 1]];
-        let (mbc, mca) = (
-            [m(ib, ic, ci), m(ib, ic, ci + 1)],
-            [m(ia, ic, ci), m(ia, ic, ci + 1)],
-        );
-        let nk = ob.cells[2];
-        let qa = BlockFile {
-            vertices: quad([at(ia), at(im), cen, mca]),
-            cells: [n_b, n_c, nk],
-            domain: ob.domain.clone(),
-        };
-        let qb = BlockFile {
-            vertices: quad([at(ib), mbc, cen, at(im)]),
-            cells: [n_c, n_a, nk],
-            domain: ob.domain.clone(),
-        };
-        let qc = BlockFile {
-            vertices: quad([at(ic), mca, cen, mbc]),
-            cells: [n_a, n_b, nk],
-            domain: ob.domain.clone(),
-        };
-        for g in 0..6 {
-            let face = face_vertices(&ob.vertices, g);
-            let mut on: BTreeSet<usize> = face.iter().copied().collect();
-            for w in 0..4 {
-                if let Some(&nv) = new_vertices.get(&key(face[w], face[(w + 1) % 4])) {
-                    on.insert(nv);
-                }
-            }
-            if BLOCK_FACES[g].0 == 2 {
-                on.insert(cen[BLOCK_FACES[g].1]);
-            }
-            let parts: Vec<[usize; 4]> = [&qa, &qb, &qc]
-                .iter()
-                .flat_map(|q| (0..6).map(|h| face_vertices(&q.vertices, h)))
-                .filter(|fv| fv.iter().all(|x| on.contains(x)))
-                .collect();
-            faces_split.insert(face_key(face), parts);
+    let mut out = Vec::new();
+    for c in &cs {
+        let lay = |i: usize, k: usize| c.layv[k][i];
+        let m = |i: usize, j: usize, k: usize| row[&key(lay(i, k), lay(j, k))].vertex;
+        let (ia, im, ib, ic) = (c.ia, c.im, c.ib, c.ic);
+        let (n_a, n_b) = (c.n_a, c.n_b);
+        // the centre at the mean of the three points on the sides (M and
+        // the two new vertices): it lies inside the triangle they span, so
+        // the three quadrilaterals are convex
+        let mut centre = vec![0usize; c.layv.len()];
+        for (k, cv) in centre.iter_mut().enumerate() {
+            let p = |v: usize| v3(file.vertices[v]);
+            let o = (p(lay(im, k)) + p(m(ib, ic, k)) + p(m(ia, ic, k))) / 3.0;
+            file.vertices.push(a3(o));
+            *cv = file.vertices.len() - 1;
+            change.added_vertices.push(*cv);
         }
-        file.blocks[o] = qa;
-        file.blocks.push(qb);
-        file.blocks.push(qc);
-        let n = file.blocks.len();
-        blocks.extend([o, n - 2, n - 1]);
-        change.blocks.push(o);
-        change.added_blocks.extend([n - 2, n - 1]);
+        let mut blocks = Vec::new();
+        for (ci, &o) in c.cols.iter().enumerate() {
+            let ob = file.blocks[o].clone();
+            let at = |i: usize| [lay(i, ci), lay(i, ci + 1)];
+            let cen = [centre[ci], centre[ci + 1]];
+            let (mbc, mca) = (
+                [m(ib, ic, ci), m(ib, ic, ci + 1)],
+                [m(ia, ic, ci), m(ia, ic, ci + 1)],
+            );
+            let nk = ob.cells[2];
+            let qa = BlockFile {
+                vertices: quad([at(ia), at(im), cen, mca]),
+                cells: [n_b, n_c, nk],
+                domain: ob.domain.clone(),
+            };
+            let qb = BlockFile {
+                vertices: quad([at(ib), mbc, cen, at(im)]),
+                cells: [n_c, n_a, nk],
+                domain: ob.domain.clone(),
+            };
+            let qc = BlockFile {
+                vertices: quad([at(ic), mca, cen, mbc]),
+                cells: [n_a, n_b, nk],
+                domain: ob.domain.clone(),
+            };
+            for g in 0..6 {
+                let face = face_vertices(&ob.vertices, g);
+                let mut on: BTreeSet<usize> = face.iter().copied().collect();
+                for w in 0..4 {
+                    if let Some(&nv) = new_vertices.get(&key(face[w], face[(w + 1) % 4])) {
+                        on.insert(nv);
+                    }
+                }
+                if BLOCK_FACES[g].0 == 2 {
+                    on.insert(cen[BLOCK_FACES[g].1]);
+                }
+                let parts: Vec<[usize; 4]> = [&qa, &qb, &qc]
+                    .iter()
+                    .flat_map(|q| (0..6).map(|h| face_vertices(&q.vertices, h)))
+                    .filter(|fv| fv.iter().all(|x| on.contains(x)))
+                    .collect();
+                faces_split.insert(face_key(face), parts);
+            }
+            file.blocks[o] = qa;
+            file.blocks.push(qb);
+            file.blocks.push(qc);
+            let n = file.blocks.len();
+            blocks.extend([o, n - 2, n - 1]);
+            change.blocks.push(o);
+            change.added_blocks.extend([n - 2, n - 1]);
+        }
+        out.push(ColumnSplit {
+            corner_deg: c.corner_deg,
+            column: c.cols.clone(),
+            blocks,
+            centres: centre,
+        });
     }
     file.edges.extend(new_edges);
     let replace = |faces: &mut Vec<[usize; 4]>| {
@@ -674,28 +775,87 @@ pub(crate) fn split_triangle_with(
     for s in &mut file.surfaces {
         replace(&mut s.faces);
     }
-    let counts = match stop {
-        RowStop::Sheet => None,
-        RowStop::TJunction => Some(t_junctions(file, &row, cells_before)?),
-    };
-    Ok(TriangleSplit {
-        block: b0,
-        vertex,
-        corner_deg,
+    Ok(Prisms {
+        columns: out,
         row_cells: n_c,
         row_blocks: crossed.keys().copied().collect(),
-        column: cols,
-        blocks,
-        stop,
-        counts,
+        row,
+        cells_before,
     })
+}
+
+/// Put a new vertex on the edge `from` → `to` (`cells` cells) where the
+/// edge refined to `cells + extra` cells has its node `extra` from
+/// `from`, on the edge's own curve and law; the two halves get curves and
+/// laws fitted to the refined nodes (pushed to `new_edges` unless they are
+/// uniform lines). Returns the vertex, its fraction of the length from
+/// `from`, and the refined nodes.
+pub(crate) fn split_edge(
+    file: &mut TopologyFile,
+    from: usize,
+    to: usize,
+    cells: usize,
+    extra: usize,
+    new_edges: &mut Vec<EdgeFile>,
+    change: &mut Change,
+) -> Result<(usize, f64, Vec<Vec3>), EngineError> {
+    let n_c = extra;
+    let (ev, fr) = edge_fractions(file, from, to, cells + n_c)?;
+    let mut nodes: Vec<Vec3> = fr.iter().map(|&s| ev.at(s)).collect();
+    nodes[0] = v3(file.vertices[from]);
+    nodes[cells + n_c] = v3(file.vertices[to]);
+    let at = fr[n_c];
+    file.vertices.push(a3(nodes[n_c]));
+    let vertex = file.vertices.len() - 1;
+    change.added_vertices.push(vertex);
+    let (curve, law) = edge_of(file, from, to);
+    let halves = match &curve {
+        CurveFile::Spline { through } => {
+            let pts: Vec<Vec3> = through.iter().map(|&p| v3(p)).collect();
+            Some(cut_spline(nodes[0], &pts, nodes[cells + n_c], nodes[n_c]))
+        }
+        _ => None,
+    };
+    for (h, (a, b, part)) in [(from, vertex, &nodes[..=n_c]), (vertex, to, &nodes[n_c..])]
+        .into_iter()
+        .enumerate()
+    {
+        let c = match (&curve, &halves) {
+            (CurveFile::Line, _) => CurveFile::Line,
+            (_, Some((x, y))) => {
+                let pts = if h == 0 { x } else { y };
+                if pts.is_empty() {
+                    fitted_curve(part)
+                } else {
+                    CurveFile::Spline {
+                        through: pts.iter().map(|&p| a3(p)).collect(),
+                    }
+                }
+            }
+            _ => fitted_curve(part),
+        };
+        let d = if law == DistributionFile::Uniform {
+            DistributionFile::Uniform
+        } else {
+            fitted_law(part, &c, &law)
+        };
+        if c != CurveFile::Line || d != DistributionFile::Uniform {
+            new_edges.push(EdgeFile {
+                vertices: [a, b],
+                curve: c,
+                distribution: d,
+            });
+            change.fitted_edges.push([a, b]);
+        }
+    }
+    Ok((vertex, at, nodes))
 }
 
 /// The T-junction end of a split row: every side edge of the triangle
 /// that a neighbour still has whole passes through its new vertex, and the
 /// count solve fits one integer per sheet so the counts add up, starting
 /// from the counts before the split (the pieces' own counts for them).
-fn t_junctions(
+pub(crate) fn t_junctions(
     file: &mut TopologyFile,
     row: &BTreeMap<(usize, usize), RowEdge>,
     cells_before: usize,
@@ -775,7 +935,7 @@ fn issues(issues: Vec<algo::Issue>) -> EngineError {
 /// The angle (degrees) at the corner `slot` of block `b` between its two
 /// grid lines across `axis`, on the first cells of the TFI grid: the
 /// corner of the block's cross-section normal to `axis`.
-fn cross_angle(
+pub(crate) fn cross_angle(
     grid: &algo::BlockGrid,
     file: &TopologyFile,
     b: usize,
@@ -808,7 +968,7 @@ fn corner_angles(grid: &algo::BlockGrid, file: &TopologyFile, b: usize, layer: u
 
 /// The 24 rotations of a block's local frame (right-handed ones only):
 /// new axis d is old axis `p[d]`, reversed when `s[d]`.
-fn rotations() -> Vec<([usize; 3], [bool; 3])> {
+pub(crate) fn rotations() -> Vec<([usize; 3], [bool; 3])> {
     let perms = [
         [0, 1, 2],
         [1, 2, 0],
@@ -831,7 +991,7 @@ fn rotations() -> Vec<([usize; 3], [bool; 3])> {
 }
 
 /// The same block in a rotated local frame (see [`rotations`]).
-fn rotated(b: &BlockFile, p: [usize; 3], s: [bool; 3]) -> BlockFile {
+pub(crate) fn rotated(b: &BlockFile, p: [usize; 3], s: [bool; 3]) -> BlockFile {
     let mut v = [0usize; 8];
     for (slot, x) in v.iter_mut().enumerate() {
         let c = corner_of(slot);
@@ -858,6 +1018,7 @@ fn column(
     b0: usize,
     axis: usize,
     slot: usize,
+    stop_at: &BTreeSet<usize>,
 ) -> Result<Vec<usize>, EngineError> {
     let vertex = file.blocks[b0].vertices[slot];
     let mut c = corner_of(slot);
@@ -890,6 +1051,9 @@ fn column(
                     && (0..6).any(|g| face_key(face_vertices(&file.blocks[o].vertices, g)) == k)
             });
             let Some(o) = next else { break };
+            if stop_at.contains(&o) {
+                break;
+            }
             if cols.contains(&o) {
                 return Err(refused(format!(
                     "the blocks stacked along the flat edge of block {b0} close into a ring; \
@@ -1110,6 +1274,7 @@ fn optimize_layout_3d(
         "before": i.before,
         "after": i.after,
         "prism_splits": {"kept": i.kept, "skipped": i.skipped},
+        "tet_splits": {"kept": i.kept_tets, "skipped": i.skipped_tets},
     });
     let mut out = i.file;
     if let Some(r) = out.reference.as_mut() {
@@ -1425,7 +1590,7 @@ pub(crate) mod tests {
 
     /// Invariant (MB1h): the trigger keeps a triangle split that lowers the
     /// grid's worst angle (here 62° to 26°) without a size jump above the
-    /// growth limit, and records the corners it tried and left with the
+    /// growth limit, and records any corner it tried and left with the
     /// reason; the result checks and keeps the area. A trigger that keeps
     /// every split, judges before the optimisation or ignores the growth
     /// breaks it; the split test above does not run the trigger.
@@ -1447,9 +1612,10 @@ pub(crate) mod tests {
         assert!(before > 60.0 && after < 30.0, "{before} {after}");
         assert!(layout["after"]["max_growth"].as_f64().unwrap() <= GROWTH_LIMIT * GROWTH_SLACK);
         assert_eq!(layout["after"]["folded_corners"], 0);
-        // the second round tried a corner of the new blocks and left it
+        // every corner tried and left has its reason (with the centre at
+        // the mean of the side points the new blocks have no flat corner
+        // left to try)
         let skipped = layout["triangle_splits"]["skipped"].as_array().unwrap();
-        assert!(!skipped.is_empty());
         assert!(
             skipped
                 .iter()
