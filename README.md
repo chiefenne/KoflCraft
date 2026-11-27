@@ -124,9 +124,34 @@ The guiding targets are:
 
 ### Download a release
 
-*Coming soon.* Ready-to-run programs for macOS, Linux and Windows will be
-attached to the [releases](https://github.com/chiefenne/KoflCraft/releases).
-Until then, build KoflCraft from source as below.
+Ready-to-run programs are attached to each
+[release](https://github.com/chiefenne/KoflCraft/releases/latest), with
+`SHA256SUMS.txt` to check them:
+
+| System | File | Then |
+|---|---|---|
+| macOS 11 or newer, Apple silicon and Intel | `koflcraft-<version>-macos-universal.tar.gz` | unpack, run `./kofl commands` |
+| Linux x86-64 (glibc 2.39 or newer: Ubuntu 24.04, Debian 13, Fedora 40) | `koflcraft-<version>-linux-x86_64.tar.gz` | unpack, run `./kofl commands` |
+| Windows 10 or 11, x86-64 | `koflcraft-<version>-windows-x86_64.zip` | unpack, run `kofl.exe commands` |
+
+Each one holds `kofl` (the command line; `kofl mcp` is the MCP server) and
+`mesh-mcp` (the MCP server on its own). To call it by name, put the
+unpacked folder on your `PATH` or copy the programs into a folder that is
+on it, such as `~/.local/bin` or `~/.cargo/bin`.
+
+The Mac programs are not signed with an Apple Developer ID, so macOS stops
+them the first time ("cannot be opened" or "cannot verify the developer").
+Clear the download mark once, in the unpacked folder:
+
+```sh
+xattr -dr com.apple.quarantine .
+```
+
+(or try to start it, then System Settings ▸ Privacy & Security ▸ **Open
+Anyway**). Windows SmartScreen may warn the same way: **More info** ▸
+**Run anyway**. To check a download: `shasum -a 256 -c SHA256SUMS.txt
+--ignore-missing` (macOS), `sha256sum -c SHA256SUMS.txt --ignore-missing`
+(Linux), `certutil -hashfile <file> SHA256` (Windows).
 
 ### Build from source
 

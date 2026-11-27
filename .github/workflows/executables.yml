@@ -1,0 +1,191 @@
+name: Executables
+
+# Builds the ready-to-run programs of a release and attaches them, with
+# SHA256SUMS.txt, to its GitHub release (docs/release.md):
+# - macOS, one universal build for Apple silicon and Intel: .tar.gz;
+# - Linux x86-64: .tar.gz;
+# - Windows x86-64: .zip.
+# The programs are kofl (the command line; `kofl mcp` is the MCP server) and mesh-mcp (the MCP server on its own).
+#
+# Started by the Release workflow right after it creates a release, or by
+# hand for a release that exists already (Actions > Executables > Run
+# workflow, tag = v0.2.0, upload checked). A pull request that changes
+# this file builds everything without uploading, so a change is tested
+# before it is merged; nothing here runs on other pull requests or pushes,
+# so the fast CI stays as it is.
+#
+# The Mac builds are not signed with an Apple Developer ID (only ad hoc, so
+# they run on Apple silicon): macOS asks once before the first start
+# (README, "Download a release").
+on:
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      upload:
+        type: boolean
+        default: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build, for example v0.2.0"
+        required: true
+        type: string
+      upload:
+        description: "Attach the files to the release (unchecked: build only)"
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - ".github/workflows/executables.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: executables-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # empty on pull requests: then the files are named after the commit
+  TAG: ${{ inputs.tag }}
+  # the oldest macOS the Mac build runs on
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+  PACKAGES: -p mesh-cli -p mesh-mcp
+  BINS: kofl mesh-mcp
+  # a quick start of each build: the first program with these arguments
+  SMOKE: commands
+  NAME: koflcraft
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { label: Linux x86-64, os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, platform: linux-x86_64 }
+          - { label: Windows x86-64, os: windows-latest, target: x86_64-pc-windows-msvc, platform: windows-x86_64 }
+          - { label: macOS Apple silicon, os: macos-15, target: aarch64-apple-darwin, platform: macos-arm64 }
+          - { label: macOS Intel, os: macos-15, target: x86_64-apple-darwin, platform: macos-x86_64 }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.sha }}
+      - name: Select stable Rust
+        run: |
+          rustup update stable && rustup default stable
+          rustup target add ${{ matrix.target }}
+      - name: Link the C runtime in (no Visual C++ redistributable needed)
+        if: runner.os == 'Windows'
+        run: echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }} $PACKAGES
+      - name: Collect
+        run: |
+          set -euo pipefail
+          ext=""; [ "${{ runner.os }}" = Windows ] && ext=".exe"
+          mkdir -p bin
+          for b in $BINS; do cp "target/${{ matrix.target }}/release/$b$ext" bin/; done
+          first="${BINS%% *}"
+          if [ "${{ matrix.target }}" != x86_64-apple-darwin ] || [ "$(uname -m)" = x86_64 ]; then
+            "bin/$first$ext" $SMOKE > /dev/null
+          fi
+          ls -l bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.platform }}
+          path: bin/
+          if-no-files-found: error
+
+  package:
+    name: Package
+    needs: build
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.sha }}
+          sparse-checkout: |
+            README.md
+            LICENSE
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          path: bin
+      - name: Package
+        env:
+          # no AppleDouble ._ files in the archives
+          COPYFILE_DISABLE: "1"
+        run: |
+          set -euo pipefail
+          v="${TAG:-dev-${GITHUB_SHA::7}}"; v="${v#v}"
+          mkdir -p dist
+          pack() { # platform, folder of programs
+            local name="$NAME-$v-$1"
+            mkdir -p "stage/$name"
+            cp "$2"/* README.md LICENSE "stage/$name/"
+            chmod +x "stage/$name"/* 2>/dev/null || true
+            chmod -x "stage/$name/README.md" "stage/$name/LICENSE"
+            if [ "$1" = windows-x86_64 ]; then
+              (cd stage && zip -qr "../dist/$name.zip" "$name")
+            else
+              tar -C stage -czf "dist/$name.tar.gz" "$name"
+            fi
+          }
+          pack linux-x86_64 bin/bin-linux-x86_64
+          pack windows-x86_64 bin/bin-windows-x86_64
+          mkdir -p universal
+          for b in $BINS; do
+            lipo -create -output "universal/$b" bin/bin-macos-arm64/$b bin/bin-macos-x86_64/$b
+            chmod +x "universal/$b"
+            codesign --force --sign - "universal/$b"
+            lipo -info "universal/$b"
+          done
+          first="${BINS%% *}"
+          "universal/$first" $SMOKE > /dev/null
+          arch -x86_64 "universal/$first" $SMOKE > /dev/null || echo "no Rosetta on this runner, Intel slice not started"
+          pack macos-universal universal
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-all
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Checksums and upload
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pkg-all
+          path: dist
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          { echo "| File | Size |"; echo "|---|---|"
+            for f in *; do echo "| $f | $(du -h -- "$f" | cut -f1) |"; done; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: dist/*
+      - name: Attach to the release
+        if: ${{ inputs.upload && inputs.tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
