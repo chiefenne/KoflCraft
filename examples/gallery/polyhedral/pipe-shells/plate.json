@@ -1,0 +1,1 @@
+{"partition": "partition-1.json", "output": "partition-2.json", "shell": {"name": "plate", "polygon": [[-2, -1.5, 11], [2, -1.5, 11.8], [2, 1.5, 11.8], [-2, 1.5, 11]]}}

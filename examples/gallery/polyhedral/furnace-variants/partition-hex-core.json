@@ -1,0 +1,30 @@
+{
+ "schema_version": 1,
+ "source_sha256": "6dd86f401b079a43df8b391833fd526536c4727c559abad9c13b1f0c2070aff0",
+ "regions": [],
+ "volume_scaffold": {
+  "build": {
+   "tolerance": 0.005,
+   "min_size": 0.06,
+   "max_size": 0.25,
+   "rate": 0.4,
+   "rim_size": 0.04,
+   "feature_angle": 30.0,
+   "iterations": 10,
+   "thickness": {
+    "across": 1.0,
+    "min_size": 0.03,
+    "wedge_angle": 45.0
+   }
+  },
+  "max_relative_geometry_error": 0.03,
+  "max_wall_deviation": 0.0075,
+  "core": "hex_core"
+ },
+ "first_thickness": 0.004,
+ "growth": 1.2,
+ "layers": 3,
+ "no_layers": [
+  "sides"
+ ]
+}

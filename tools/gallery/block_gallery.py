@@ -136,9 +136,14 @@ def run(kofl, work, entry):
 
 def shoot(d, folder, steps, png, extra=None):
     """One picture of <d>/<folder>/volume.vtu by MurmelCraft's headless export.image."""
+    shoot_file(d / folder / "volume.vtu", steps, png, extra)
+
+
+def shoot_file(mesh, steps, png, extra=None):
+    """One picture of the mesh file <mesh> by MurmelCraft's headless export.image."""
     image = {"path": str(png), "width": SIZE[0], "height": SIZE[1], "scale": 2, "theme": "light"}
     image.update(extra or {})
-    script = ([{"tool": "mesh.open", "input": {"path": str(d / folder / "volume.vtu")}}]
+    script = ([{"tool": "mesh.open", "input": {"path": str(mesh)}}]
               + steps + [{"tool": "export.image", "input": image}])
     path = png.with_suffix(".json")
     path.write_text(json.dumps(script, indent=1))
