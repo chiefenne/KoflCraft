@@ -1375,8 +1375,8 @@ mod tests {
         // the old top faces are interior now; the new top faces are symmetry
         let sym = g.patches.iter_mut().find(|p| p.name == "symmetry").unwrap();
         sym.faces.retain(|f| f.iter().all(|&v| v < 6));
-        for b in 2..4 {
-            let v = g.blocks[b].vertices;
+        for b in &g.blocks[2..4] {
+            let v = b.vertices;
             sym.faces.push([v[4], v[5], v[6], v[7]]);
         }
         let side = |p: usize, q: usize| [p + 6, q + 6, q + 12, p + 12];
