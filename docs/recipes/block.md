@@ -13,7 +13,7 @@ outputs must not exist yet (IO003: delete or rename the old one).
 | 44b | [Smooth the grid and let the wall nodes slide](#block-smooth) |
 | 48 | [Edit a topology: split, recount, move](#block-edit) |
 | 71 | [Split a flat corner into three blocks](#triangle-split) |
-| NNN | [Look at the blocks: colour by block and explode in MurmelCraft](#explode-blocks) |
+| 76 | [Look at the blocks: colour by block and explode in MurmelCraft](#explode-blocks) |
 
 ---
 
@@ -109,7 +109,7 @@ and prism templates are standalone shapes; a tetrahedron is not yet
 injected into a larger 3-D topology.
 
 <a id="explode-blocks"></a>
-## NNN. Look at the blocks: colour by block and explode in MurmelCraft
+## 76. Look at the blocks: colour by block and explode in MurmelCraft
 
 Open the grid's `volume.vtu` (it carries `BlockId`) in
 [MurmelCraft](https://github.com/chiefenne/MurmelCraft) and choose

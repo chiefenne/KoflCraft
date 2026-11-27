@@ -14,7 +14,7 @@ Every entry runs from the folder of its inputs in
 must not exist yet. The whole page is made again with
 `MURMEL=/path/to/murmel python3 tools/gallery/block_gallery.py target/release/kofl target/gallery`
 ([tools/gallery](../../tools/gallery/README.md)). How to explode and colour
-your own block mesh in MurmelCraft: [recipe NNN](../recipes/block.md#explode-blocks).
+your own block mesh in MurmelCraft: [recipe 76](../recipes/block.md#explode-blocks).
 
 | # | Example | Template or tool | Blocks, cells |
 |---|---|---|---|

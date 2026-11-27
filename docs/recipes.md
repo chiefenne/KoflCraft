@@ -10,7 +10,7 @@ its gallery entry.
 
 | Page | What it covers | Recipes |
 |---|---|---|
-| [Block-structured meshes](recipes/block.md) | mesh a template, smooth with wall sliding, edit a topology, split flat corners, look at the blocks coloured and exploded in MurmelCraft | 37, 44b, 48, 71, NNN |
+| [Block-structured meshes](recipes/block.md) | mesh a template, smooth with wall sliding, edit a topology, split flat corners, look at the blocks coloured and exploded in MurmelCraft | 37, 44b, 48, 71, 76 |
 
 ## All recipes by number
 
@@ -20,4 +20,4 @@ its gallery entry.
 | 44b | [Smooth the grid and let the wall nodes slide](recipes/block.md#block-smooth) | [Block-structured meshes](recipes/block.md) |
 | 48 | [Edit a topology: split, recount, move](recipes/block.md#block-edit) | [Block-structured meshes](recipes/block.md) |
 | 71 | [Split a flat corner into three blocks](recipes/block.md#triangle-split) | [Block-structured meshes](recipes/block.md) |
-| NNN | [Look at the blocks: colour by block and explode in MurmelCraft](recipes/block.md#explode-blocks) | [Block-structured meshes](recipes/block.md) |
+| 76 | [Look at the blocks: colour by block and explode in MurmelCraft](recipes/block.md#explode-blocks) | [Block-structured meshes](recipes/block.md) |
