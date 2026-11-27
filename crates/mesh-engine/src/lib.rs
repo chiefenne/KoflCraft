@@ -9,6 +9,7 @@ pub mod handoff;
 pub mod patches;
 pub mod ports;
 pub mod proposals;
+pub mod regions;
 mod report;
 pub mod sizing;
 pub mod skeleton;

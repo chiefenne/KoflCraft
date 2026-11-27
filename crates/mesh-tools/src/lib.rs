@@ -18,6 +18,7 @@ mod markdown;
 mod mesh;
 mod page;
 mod patch;
+mod regions;
 mod schemas;
 mod shell;
 
@@ -304,6 +305,26 @@ pub static TOOLS: &[Tool] = &[
         },
         output_schema: schemas::bc_skeleton,
         run: patch::bc_skeleton,
+    },
+    Tool {
+        id: "regions.propose",
+        version: 1,
+        action: Action::WriteFiles,
+        summary: "Propose where block templates fit (block-dominant meshing): build a tet scaffold of a closed STL, solve the wall distance (heat method) and the inlet-to-outlet potential, find the skeleton with its end and branch points, and mark each region as sweep, junction, obstacle, box or remainder (polyhedral). A second pass tries each box and remainder region again along its own long axis. Writes the report, optionally the fields (VTU) and a picture (SVG); meshes nothing. The map needs an inlet and an outlet.",
+        legacy_name: None,
+        outputs: &["output", "fields", "picture"],
+        input_schema: || {
+            schemas::input(
+                json!({"surface": schemas::path(), "patches": schemas::path(), "output": schemas::path(),
+                       "fields": schemas::path(), "picture": schemas::path(),
+                       "size": {"type": "number", "exclusiveMinimum": 0},
+                       "heat_m": {"type": "number", "exclusiveMinimum": 0, "maximum": 20},
+                       "second_pass": {"type": "boolean"}}),
+                &["fields", "picture", "size", "heat_m", "second_pass"],
+            )
+        },
+        output_schema: || json!({"type": "object", "description": "`koflcraft.region-proposal`"}),
+        run: regions::propose,
     },
     Tool {
         id: "patch.split",

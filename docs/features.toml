@@ -572,3 +572,23 @@ tests = [
 ]
 commands = ["kofl call block.split_triangle", "kofl call block.optimize_layout", "kofl call block.template"]
 gaps = "The automatic trigger works on extruded topologies only, like the layout optimiser (3D trigger is step 2); a column that closes into a ring is refused; the new count always enters as a full sheet (no T-junctions, no count solve yet); the tetrahedron split is a template building block, not an edit of a 3D topology; a corner of exactly 180° cannot be stored (the check refuses the block); the trigger tries at most four corners per round, one layout optimisation each; no template uses a triangle layout yet (the multi-element gaps have none); not in the acceptance runner yet"
+
+[[feature]]
+id = "regions-field-proposal"
+title = "Field-guided region proposal for block-dominant meshing (regions.propose)"
+requirements = ["BS-18", "BS-17"]
+grade = "partial"
+how = "regions.propose builds a tet scaffold of a closed STL (wall remesh, Delaunay scaffold), solves the heat-method wall distance (Crane et al. 2013, t = (3h)^2) and the potential 0 at inlets, 1 at outlets (no flux at walls, symmetry), and cuts the potential into slabs about two edge lengths thick; the connected pieces of the slabs are the Reeb graph (skeleton) with end and branch points, placed on the ridge faces of the distance (grad d flips). Pieces with two pieces above or below are junctions, pieces four times the median volume are boxes (chambers), clean runs (clash c = |cos(grad d, grad p)| >= 0.5 on less than 30 % of the volume) are sweeps or obstacle passages (on a loop), clashing runs and clash clusters above 0.5 % of the volume are remainder. The second pass classifies each box and remainder region again with its Fiedler vector (own long axis) in place of the potential. T and Y (fork) ducts: one branch point, three ends, sweeps above 0.6 and 0.7; elbow: one sweep, two ends, 99.5 % blockable; Manifold: chamber 72 % box, second pass finds sweeps for 42 % of the domain inside it; seven-tube furnace 87 % blocks, 13 % remainder at burner, tube row and outlet (research/field-region-proposal.md)"
+tests = [
+  "crates/mesh-engine/tests/regions.rs::tee_has_one_junction_and_three_ends",
+  "crates/mesh-engine/tests/regions.rs::fork_has_one_junction",
+  "crates/mesh-engine/tests/regions.rs::elbow_is_one_sweep",
+  "crates/mesh-engine/tests/regions.rs::map_without_outlet_is_refused",
+  "crates/mesh-engine/tests/regions.rs::manifold_chamber_is_a_box_the_second_pass_splits",
+  "crates/mesh-algorithms/src/fields/regions.rs::straight_duct_is_one_sweep",
+  "crates/mesh-algorithms/src/fields/mod.rs::potential_of_a_straight_duct_is_linear",
+  "crates/mesh-algorithms/src/fields/mod.rs::heat_distance_peaks_on_the_axis",
+  "crates/mesh-algorithms/src/fields/mod.rs::fiedler_follows_the_long_axis",
+]
+commands = ["kofl call regions.propose"]
+gaps = "Proposal only, nothing is meshed; slabs thicker than a small body do not split around it, so a tube row shows as a clash zone, not as obstacle loops; a chamber that is the whole domain (the furnace) is a sweep, not a box, because box means much larger than the median slab; the second pass labels are noisy on small clash zones; no cross-section shape (O-grid or H) is chosen yet; Jacobi-preconditioned CG only (fine up to about 10^6 nodes); one scaffold spacing for the whole domain"
