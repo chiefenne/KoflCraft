@@ -23,6 +23,7 @@
 #![allow(clippy::needless_range_loop)] // parallel per-node and per-tet arrays
 
 pub mod regions;
+pub mod remainder;
 pub mod sparse;
 pub mod sweep;
 

@@ -1,5 +1,6 @@
 //! Sweep fill (`regions.fill`) on the elbow (a square duct with a mitre
-//! bend) and the Manifold (two round pipes on a box).
+//! bend) and the Manifold (two round pipes on a box), alone and joined to
+//! the polyhedral mesh of the box.
 
 use mesh_core::geometry::Vec3;
 use mesh_engine::fill::{FillOptions, fill};
@@ -13,12 +14,16 @@ fn fixture(name: &str) -> (Vec<u8>, Value) {
     (stl, map)
 }
 
-fn run(name: &str) -> (Value, mesh_io::handoff::HandoffMesh) {
+fn run(name: &str, join: bool) -> (Value, mesh_io::handoff::HandoffMesh) {
     let (stl, map) = fixture(name);
-    let f = fill(&stl, &map, FillOptions::default()).unwrap();
+    let opts = FillOptions {
+        join,
+        ..FillOptions::default()
+    };
+    let f = fill(&stl, &map, opts).unwrap();
     if let Ok(dir) = std::env::var("KOFL_FILL_OUT") {
         std::fs::write(
-            format!("{dir}/{name}-fill.json"),
+            format!("{dir}/{name}-fill-{join}.json"),
             serde_json::to_string_pretty(&f.report).unwrap(),
         )
         .unwrap();
@@ -38,7 +43,7 @@ fn num(v: &Value) -> f64 {
 /// the outer corner jump and cells invert. The region tests never mesh.
 #[test]
 fn elbow_sweeps_through_the_mitre() {
-    let (r, mesh) = run("elbow");
+    let (r, mesh) = run("elbow", true);
     let s = &r["sweeps"][0];
     assert_eq!(r["sweeps"].as_array().unwrap().len(), 1, "{}", r["sweeps"]);
     assert_eq!(r["not_swept"], Value::Array(vec![]));
@@ -61,13 +66,13 @@ fn elbow_sweeps_through_the_mitre() {
 
 /// Keep: in the Manifold both pipes are swept from their port to a calm
 /// cut in front of the box: the cut is planar (every node in its plane, a
-/// flat level set) and square to the pipe, and the box is left for the
-/// polyhedral mesher. The cuts are the interfaces of the conformal join;
-/// a looser calm test once put a cut 3° askew inside the bend's exit. The
-/// region tests do not cut.
+/// flat level set) and square to the pipe; without the join the box is
+/// left out and the cuts are patches. The cuts are the interfaces of the
+/// conformal join; a looser calm test once put a cut 3° askew inside the
+/// bend's exit. The region tests do not cut.
 #[test]
 fn manifold_pipes_end_in_calm_cuts() {
-    let (r, mesh) = run("manifold");
+    let (r, mesh) = run("manifold", false);
     let sweeps = r["sweeps"].as_array().unwrap();
     assert_eq!(sweeps.len(), 2, "{}", r["sweeps"]);
     for s in sweeps {
@@ -88,7 +93,7 @@ fn manifold_pipes_end_in_calm_cuts() {
         assert!(dv < 5e-3, "volume off by {dv}");
         assert!(num(&s["min_scaled_jacobian"]) > 0.5, "{s}");
     }
-    assert!(num(&r["shares"]["left_for_the_polyhedral_mesher"]) > 0.7);
+    assert!(num(&r["shares"]["not_meshed"]) > 0.7, "{}", r["shares"]);
     let v = &r["validity"];
     assert_eq!(v["inverted_faces"], 0);
     assert!(num(&v["max_non_orthogonality_deg"]) < 40.0, "{v}");
@@ -128,4 +133,49 @@ fn manifold_pipes_end_in_calm_cuts() {
             patch.name
         );
     }
+}
+
+/// Keep: with the join the Manifold is one mesh: the box is polyhedra
+/// (median dual with the sweeps' layer stack) and meets each pipe at its
+/// cut in the same points, every hex face of a cut split into the
+/// polyhedral cap faces it holds. The mesh is closed and valid as a whole
+/// (each face shared by two cells with opposite orientation), keeps the
+/// STL's volume and has no bad face at the cuts. Each of the three fixes
+/// behind it fails here first: a band that takes the other pipe (more
+/// holes than cuts), cap quads split about their centres (the scaffold's
+/// boundary recovery splits without end) and a wall offset that only lets
+/// a tetrahedron's own wall vertices yield (a tetrahedron at a box corner
+/// turns over). The sweep test above runs without the join.
+#[test]
+fn manifold_box_joins_the_pipes() {
+    let (r, mesh) = run("manifold", true);
+    let rem = &r["remainder"];
+    assert!(rem.get("error").is_none(), "{rem}");
+    let v = &r["validity"];
+    assert_eq!(v["inverted_faces"], 0, "{v}");
+    assert!(num(&v["min_volume"]) > 0.0);
+    assert!(num(&v["max_relative_closure"]) < 1e-9, "{v}");
+    let names: Vec<&str> = v["patches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["walls", "inlet", "outlet"], "the cuts are interior");
+    let by = &v["non_orthogonality_by_faces"];
+    assert!(num(&by["at_the_cuts"]["max_deg"]) < 60.0, "{by}");
+    assert_eq!(by["at_the_cuts"]["over_70_deg"], 0, "{by}");
+    assert!(num(&by["between_hexahedra"]["max_deg"]) < 40.0, "{by}");
+    // the cuts weld exactly and the cap faces tile the hex faces
+    let d = 50.0;
+    assert!(num(&rem["max_weld_distance"]) < 1e-9 * d, "{rem}");
+    assert!(num(&rem["max_relative_area_error"]) < 1e-9, "{rem}");
+    assert!(num(&rem["cap_faces_joined"]) > 0.0);
+    let shares = &r["shares"];
+    assert!(num(&shares["polyhedral_cells"]) > 0.7, "{shares}");
+    assert!(num(&shares["not_meshed"]) < 0.005, "{shares}");
+    // the whole mesh keeps the STL's volume (faceting of the round pipes)
+    let dv = num(&v["total_volume"]) / num(&r["scaffold"]["stl_volume"]) - 1.0;
+    assert!(dv.abs() < 5e-3, "volume off by {dv}");
+    assert_eq!(mesh.summary().inverted_faces, 0);
 }

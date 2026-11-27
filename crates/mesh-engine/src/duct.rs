@@ -898,6 +898,46 @@ pub fn generate(
     Ok(report)
 }
 
+/// The polyhedral mesh (median dual with wall layers) of a closed surface
+/// built in memory: patch ids 1 and 2 are planar caps, 3 and up walls. The
+/// region behind the cuts of a sweep fill comes this way (MD-25). Returns
+/// the mesh, the scaffold's wall and the build report.
+pub(crate) fn mesh_surface(
+    surface: &mesh_geometry::ClosedSurface,
+    patches: &[usize],
+    build: ScaffoldBuild,
+    steps: &[f64],
+    max_relative_geometry_error: f64,
+) -> Result<(duct::DuctMesh, mesh_geometry::ClosedSurface, Option<Value>), EngineError> {
+    let validated = |e: String| EngineError::new(ErrorCode::ValidationFailed, e);
+    let spec = ScaffoldConfig {
+        file: None,
+        sha256: None,
+        build: Some(build),
+        max_relative_geometry_error,
+        max_wall_deviation: None,
+        core: CoreKind::MedianDual,
+        lloyd_iterations: None,
+        wall_join: WallJoinKind::default(),
+        hex_core: None,
+    };
+    let (input, built, _, _) =
+        load_scaffold(surface, patches, &spec, None, steps.iter().sum(), &[])?;
+    let (mesh, shell) = duct::build_volume_dual(input, steps).map_err(validated)?;
+    let error = shell.volume() / surface.volume() - 1.;
+    if error.abs() > max_relative_geometry_error {
+        return Err(EngineError::new(
+            ErrorCode::InvalidDomain,
+            format!(
+                "the remeshed region behind the cuts differs from its surface by {:.3}% in volume (limit {:.3}%)",
+                100. * error,
+                100. * max_relative_geometry_error
+            ),
+        ));
+    }
+    Ok((mesh, shell, built))
+}
+
 /// The surface and per-facet patch ids (1 inlet, 2 outlet, 3 wall) of a
 /// checked STL, patch map and partition.
 fn prepare(

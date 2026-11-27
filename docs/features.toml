@@ -608,4 +608,18 @@ tests = [
   "crates/mesh-algorithms/src/fields/sweep.rs::hex_measures_of_a_cube",
 ]
 commands = ["kofl call regions.fill"]
-gaps = "Only the sweeps are meshed: boxes, junctions and remainder wait for the polyhedral mesher with the conformal join at the cuts (MD-25); at a mitre the stations fan around the inner corner (non-orthogonality 66 deg on the elbow) where blended stations would give better cells; a sweep needs one closed wall loop per level set and one section type throughout; section rows are not smoothed; not in the acceptance runner yet"
+gaps = "The region behind the cuts is joined as polyhedra (feature regions-sweep-join); at a mitre the stations fan around the inner corner (non-orthogonality 66 deg on the elbow) where blended stations would give better cells; a sweep needs one closed wall loop per level set and one section type throughout; section rows are not smoothed; not in the acceptance runner yet"
+
+[[feature]]
+id = "regions-sweep-join"
+title = "Region behind the sweep cuts meshed as polyhedra and joined conformally at the cuts (regions.fill join)"
+requirements = ["MD-25", "BS-17"]
+grade = "partial"
+how = "regions.fill with join (default): each cut gives the polyhedral mesher a planar cap, the preimage of the cut section under the mesher's cap similarity (x -> c + (x - c)(1 - H/r)), its quads split by the Delaunay diagonal, and the cut's layer rows move to the mesher's layer nodes, so the pipe adapts and the mesher is unchanged. The STL is cut at the ring of plane-crossing facets around each rim, the sweep side dropped by a flood, the hole zipped to the cap rim (Fuchs, Kedem & Uselton 1977), and the closed surface meshed by the median dual with the sweeps' layer stack. The cap points weld to the cut nodes, each hex face of a cut is replaced by the polyhedral cap faces it holds (area checked), and the points on hex-face edges are spliced into the neighbouring faces. Manifold: 132,520 cells (69,632 hexahedra, 62,888 polyhedra), 0 inverted faces, closure 1.9e-14, volume -0.17 % of the STL, weld 6e-14, area match 3e-12, non-orthogonality at the cuts 48.2 deg (research/sweep-fill.md, step 2)"
+tests = [
+  "crates/mesh-engine/tests/fill.rs::manifold_box_joins_the_pipes",
+  "crates/mesh-algorithms/src/fields/remainder.rs::cut_duct_is_closed_by_its_cap",
+  "crates/mesh-algorithms/src/fields/remainder.rs::a_duct_beside_the_cut_stays",
+]
+commands = ["kofl call regions.fill"]
+gaps = "At most two openings behind the cuts (the mesher's two port ids; STL ports behind the cuts take them first), no symmetry planes behind the cuts; the box keeps the polyhedral mesher's own quality (87.7 deg inside the Manifold box); not in the acceptance runner, so CI does not read it back with FoehnCraft (by hand: valid, 0 inverted faces)"
