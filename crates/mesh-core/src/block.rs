@@ -192,6 +192,17 @@ pub struct SurfaceSpec {
     pub faces: Vec<[usize; 4]>,
 }
 
+/// A T-junction (BS-21): the block edge `edge` passes through the
+/// vertices `through`, in order from `edge[0]` to `edge[1]`. The blocks on
+/// one side carry the whole edge; on the other side the pieces between the
+/// vertices are edges of smaller blocks. Its cell count is the sum of the
+/// pieces' counts, and the grids still match node for node.
+#[derive(Clone, Debug, PartialEq)]
+pub struct JunctionSpec {
+    pub edge: [usize; 2],
+    pub through: Vec<usize>,
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct BlockTopology {
     pub vertices: Vec<Vec3>,
@@ -199,6 +210,9 @@ pub struct BlockTopology {
     pub blocks: Vec<BlockSpec>,
     pub patches: Vec<PatchSpec>,
     pub surfaces: Vec<SurfaceSpec>,
+    /// T-junctions on block edges; empty for a topology whose blocks share
+    /// faces whole.
+    pub junctions: Vec<JunctionSpec>,
 }
 
 /// The corner (i, j, k) ∈ {0, 1}³ of the local block frame as a vertex slot.

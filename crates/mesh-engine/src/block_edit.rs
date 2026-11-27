@@ -88,6 +88,12 @@ pub enum Edit {
         along: Option<usize>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cells: Option<usize>,
+        /// Where the new row ends: `sheet` (default) cuts every block on
+        /// its way to the boundary; `t_junction` stops at the neighbours,
+        /// which keep their blocks with a T-junction and carry the new
+        /// cells in their counts (BS-21).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stop: Option<crate::block_triangle::RowStop>,
     },
     /// Rename a patch and/or set its role.
     SetPatch {
@@ -895,6 +901,20 @@ fn split_block(
 pub fn apply(file: &TopologyFile, edit: &Edit) -> Result<(TopologyFile, Change), EngineError> {
     // the input must be a valid topology, so a refusal names this edit
     check(file)?;
+    if !file.junctions.is_empty()
+        && !matches!(
+            edit,
+            Edit::MoveVertex { .. }
+                | Edit::SetPatch { .. }
+                | Edit::SetDistribution { .. }
+                | Edit::SetCurve { .. }
+                | Edit::SplitTriangle { .. }
+        )
+    {
+        return Err(refused(
+            "the topology has T-junctions (BS-21); this edit does not handle them yet",
+        ));
+    }
     let mut out = file.clone();
     let mut change = Change::default();
     match edit {
@@ -1005,13 +1025,15 @@ pub fn apply(file: &TopologyFile, edit: &Edit) -> Result<(TopologyFile, Change),
             vertex,
             along,
             cells,
+            stop,
         } => {
-            crate::block_triangle::split_triangle(
+            crate::block_triangle::split_triangle_with(
                 &mut out,
                 *block,
                 *vertex,
                 *along,
                 *cells,
+                stop.unwrap_or_default(),
                 &mut change,
             )?;
         }

@@ -27,10 +27,10 @@ use mesh_core::block::{
     BLOCK_FACES, Curve, Distribution, EdgeEnd, block_edges, corner_slot, face_key,
 };
 use mesh_core::geometry::Vec3;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::EngineError;
-use crate::block::{BlockFile, CurveFile, DistributionFile, EdgeFile, TopologyFile};
+use crate::block::{BlockFile, CurveFile, DistributionFile, EdgeFile, JunctionFile, TopologyFile};
 use crate::block_edit::{
     Change, a3, cut_spline, face_vertices, fitted_curve, fitted_law, key, refused, reversed_curve,
     reversed_law, v3,
@@ -143,6 +143,29 @@ pub struct TriangleSplit {
     pub column: Vec<usize>,
     /// The three blocks of every block of the column, in its order.
     pub blocks: Vec<usize>,
+    /// Where the row ended, and with `t_junction` what the count solve did.
+    pub stop: RowStop,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub counts: Option<CountSolve>,
+}
+
+/// What the count solve of a T-junction split did (BS-21).
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct CountSolve {
+    /// T-junction edges added (one per side edge of the triangle that a
+    /// neighbour still has whole).
+    pub junctions: usize,
+    /// Sheets of the topology, how many the sums tie, and the sums.
+    pub sheets: usize,
+    pub tied_sheets: usize,
+    pub sums: usize,
+    /// Largest relative change of a sheet's count from its target (the
+    /// counts before the split, the new row's own count for it).
+    pub max_deviation: f64,
+    pub cells_before: usize,
+    pub cells_after: usize,
+    /// Blocks whose counts the solve changed.
+    pub changed_blocks: Vec<usize>,
 }
 
 /// Split block `b0` at its flat corner `vertex` (BS-03); `cells` is the
@@ -163,6 +186,38 @@ pub(crate) fn split_triangle(
     cells: Option<usize>,
     change: &mut Change,
 ) -> Result<TriangleSplit, EngineError> {
+    split_triangle_with(file, b0, vertex, along, cells, RowStop::Sheet, change)
+}
+
+/// Where the new row of a triangle split ends (BS-21).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RowStop {
+    /// The row cuts every block on its way to the boundary in two (a sheet
+    /// of new blocks).
+    #[default]
+    Sheet,
+    /// The row stops at the neighbouring blocks: they keep their blocks,
+    /// get T-junctions on their edges and carry the new cells in their
+    /// counts, which the count solve fits (one integer per sheet).
+    TJunction,
+}
+
+/// [`split_triangle`] with the choice of where the new row ends.
+pub(crate) fn split_triangle_with(
+    file: &mut TopologyFile,
+    b0: usize,
+    vertex: usize,
+    along: Option<usize>,
+    cells: Option<usize>,
+    stop: RowStop,
+    change: &mut Change,
+) -> Result<TriangleSplit, EngineError> {
+    if stop == RowStop::Sheet && !file.junctions.is_empty() {
+        return Err(refused(
+            "the topology has T-junctions; split with stop t_junction (a sheet split does not handle them yet)",
+        ));
+    }
     if b0 >= file.blocks.len() {
         return Err(refused(format!("there is no block {b0}")));
     }
@@ -193,6 +248,11 @@ pub(crate) fn split_triangle(
                 .unwrap_or(2)
         }
     };
+    let cells_before: usize = file
+        .blocks
+        .iter()
+        .map(|b| b.cells.iter().product::<usize>())
+        .sum();
     let cols = column(file, b0, axis, slot)?;
     let colset: BTreeSet<usize> = cols.iter().copied().collect();
     let grid = algo::build(&file.topology()?).map_err(issues)?;
@@ -279,6 +339,9 @@ pub(crate) fn split_triangle(
             .collect()
     };
     loop {
+        if stop != RowStop::Sheet {
+            break;
+        }
         let mut grew = false;
         for (o, b) in file.blocks.iter().enumerate() {
             if colset.contains(&o) || crossed.contains_key(&o) {
@@ -611,6 +674,10 @@ pub(crate) fn split_triangle(
     for s in &mut file.surfaces {
         replace(&mut s.faces);
     }
+    let counts = match stop {
+        RowStop::Sheet => None,
+        RowStop::TJunction => Some(t_junctions(file, &row, cells_before)?),
+    };
     Ok(TriangleSplit {
         block: b0,
         vertex,
@@ -619,6 +686,79 @@ pub(crate) fn split_triangle(
         row_blocks: crossed.keys().copied().collect(),
         column: cols,
         blocks,
+        stop,
+        counts,
+    })
+}
+
+/// The T-junction end of a split row: every side edge of the triangle
+/// that a neighbour still has whole passes through its new vertex, and the
+/// count solve fits one integer per sheet so the counts add up, starting
+/// from the counts before the split (the pieces' own counts for them).
+fn t_junctions(
+    file: &mut TopologyFile,
+    row: &BTreeMap<(usize, usize), RowEdge>,
+    cells_before: usize,
+) -> Result<CountSolve, EngineError> {
+    let mut used: BTreeSet<(usize, usize)> = BTreeSet::new();
+    for b in &file.blocks {
+        for (_, c) in block_edges() {
+            for axis in 0..3 {
+                if c[axis] != 0 {
+                    continue;
+                }
+                let mut e = c;
+                e[axis] = 1;
+                used.insert(key(
+                    b.vertices[corner_slot(c[0], c[1], c[2])],
+                    b.vertices[corner_slot(e[0], e[1], e[2])],
+                ));
+            }
+        }
+    }
+    let mut added = 0;
+    for r in row.values() {
+        if used.contains(&key(r.from, r.to)) {
+            file.junctions.push(JunctionFile {
+                edge: [r.from, r.to],
+                through: vec![r.vertex],
+            });
+            added += 1;
+        }
+    }
+    let t = file.topology()?;
+    let mut problems = Vec::new();
+    let jn = algo::Junctions::read(&t, &mut problems);
+    if !problems.is_empty() {
+        return Err(issues(problems));
+    }
+    let targets: Vec<[f64; 3]> = file
+        .blocks
+        .iter()
+        .map(|b| b.cells.map(|c| c as f64))
+        .collect();
+    let fit = algo::counts::fit(&t, &jn, &targets).map_err(refused)?;
+    let mut changed_blocks = Vec::new();
+    for (b, c) in fit.cells.iter().enumerate() {
+        if file.blocks[b].cells != *c {
+            file.blocks[b].cells = *c;
+            changed_blocks.push(b);
+        }
+    }
+    algo::check(&file.topology()?).map_err(issues)?;
+    Ok(CountSolve {
+        junctions: added,
+        sheets: fit.sheets,
+        tied_sheets: fit.tied_sheets,
+        sums: fit.sums,
+        max_deviation: fit.max_deviation,
+        cells_before,
+        cells_after: file
+            .blocks
+            .iter()
+            .map(|b| b.cells.iter().product::<usize>())
+            .sum(),
+        changed_blocks,
     })
 }
 
@@ -1165,6 +1305,7 @@ mod tests {
             blocks,
             patches,
             surfaces: Vec::new(),
+            junctions: Vec::new(),
             reference: None,
         }
     }
@@ -1192,6 +1333,7 @@ mod tests {
                 vertex: 1,
                 along: None,
                 cells: Some(3),
+                stop: None,
             },
         )
         .unwrap();
@@ -1329,6 +1471,7 @@ mod tests {
                 vertex: 4,
                 along: None,
                 cells: None,
+                stop: None,
             },
         )
         .unwrap_err();
@@ -1344,6 +1487,7 @@ mod tests {
                 vertex: 1,
                 along: Some(9),
                 cells: None,
+                stop: None,
             },
         )
         .unwrap_err();
@@ -1441,6 +1585,75 @@ mod tests {
             .map(|q| q.min_jacobian)
             .fold(f64::INFINITY, f64::min);
         assert!(jmin > 0.0, "{jmin}");
+    }
+
+    /// Invariant (BS-21): with `stop: t_junction` the row stops at the
+    /// neighbouring blocks: no block outside the triangle's column is cut,
+    /// the shared side edges get T-junctions, the count solve makes every
+    /// sum add up, and the grid conforms with the volume kept. A split that
+    /// still cuts the neighbours, leaves a junction out or skips the count
+    /// solve breaks it; the sheet tests above never make a T-junction.
+    #[test]
+    fn a_t_junction_split_keeps_the_neighbours_whole() {
+        let f = two_layers();
+        let mut g = f.clone();
+        let s = split_triangle_with(
+            &mut g,
+            2,
+            13,
+            Some(7),
+            Some(3),
+            RowStop::TJunction,
+            &mut Change::default(),
+        )
+        .unwrap();
+        assert!(s.row_blocks.is_empty(), "{:?}", s.row_blocks);
+        assert_eq!(g.blocks.len(), 4 + 4, "the column's two blocks become six");
+        let counts = s.counts.as_ref().unwrap();
+        assert_eq!(counts.junctions, 3, "one per layer of the shared side");
+        assert_eq!(g.junctions.len(), 3);
+        assert!(counts.sums >= 3 && counts.tied_sheets >= 3, "{counts:?}");
+        let checked = check(&g).unwrap();
+        let cells: usize = g
+            .blocks
+            .iter()
+            .map(|b| b.cells.iter().product::<usize>())
+            .sum();
+        assert_eq!(checked["cells"].as_u64().unwrap() as usize, cells);
+        assert_eq!(counts.cells_after, cells);
+        let (grid, _) = crate::block::grid(&g, &crate::block::VolumeAlgorithm::Tfi).unwrap();
+        let vol: f64 = grid.volumes().iter().sum();
+        let vol0: f64 = algo::build(&f.topology().unwrap())
+            .unwrap()
+            .volumes()
+            .iter()
+            .sum();
+        assert!((vol - vol0).abs() < 1e-12 * vol0, "{vol} {vol0}");
+        assert!((grid.boundary_volume() - vol).abs() < 1e-12 * vol);
+        let names: Vec<&str> = g.patches.iter().map(|p| p.name.as_str()).collect();
+        let mesh = mesh_io::block::handoff(&grid, mesh_io::handoff::patches_from_names(&names))
+            .expect("the cells conform across the T-junction faces");
+        assert_eq!(mesh.summary().inverted_faces, 0);
+        let jmin = grid
+            .quality()
+            .iter()
+            .map(|q| q.min_jacobian)
+            .fold(f64::INFINITY, f64::min);
+        assert!(jmin > 0.0, "{jmin}");
+        // fewer cells than the sheet split, which cuts the neighbours too
+        let mut h = f.clone();
+        split_triangle(&mut h, 2, 13, Some(7), Some(3), &mut Change::default()).unwrap();
+        let sheet: usize = h
+            .blocks
+            .iter()
+            .map(|b| b.cells.iter().product::<usize>())
+            .sum();
+        assert!(h.blocks.len() > g.blocks.len());
+        eprintln!(
+            "t_junction: {} blocks {cells} cells; sheet: {} blocks {sheet} cells; {counts:?}",
+            g.blocks.len(),
+            h.blocks.len()
+        );
     }
 
     /// The wedge turned so that its flat edge runs along x, with the

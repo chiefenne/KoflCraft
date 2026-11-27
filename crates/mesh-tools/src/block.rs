@@ -342,6 +342,8 @@ pub struct SplitTriangleInput {
     pub along: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cells: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop: Option<mesh_engine::block_triangle::RowStop>,
 }
 
 pub(crate) fn split_triangle(input: Value, ctx: &Context) -> Run {
@@ -351,6 +353,7 @@ pub(crate) fn split_triangle(input: Value, ctx: &Context) -> Run {
         vertex: i.vertex,
         along: i.along,
         cells: i.cells,
+        stop: i.stop,
     };
     edit(ctx, &i.topology, &i.output, e)
 }

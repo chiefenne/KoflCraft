@@ -11,8 +11,8 @@ use mesh_algorithms::block::{
     self as algo, BlockGrid, Issue, multi_element, templates, tri_center,
 };
 use mesh_core::block::{
-    BlockSpec, BlockTopology, Curve, Distribution, EdgeEnd, EdgeSpec, PatchSpec, Surface,
-    SurfaceSpec,
+    BlockSpec, BlockTopology, Curve, Distribution, EdgeEnd, EdgeSpec, JunctionSpec, PatchSpec,
+    Surface, SurfaceSpec,
 };
 use mesh_core::geometry::Vec3;
 use mesh_io::handoff::{PatchRole, patches_from_names};
@@ -184,8 +184,20 @@ pub struct TopologyFile {
     pub patches: Vec<PatchFile>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub surfaces: Vec<SurfaceFile>,
+    /// T-junctions (BS-21): block edges that pass through vertices.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub junctions: Vec<JunctionFile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<Reference>,
+}
+
+/// A T-junction in the file: the block edge `edge` passes through the
+/// vertices `through`, in order from `edge[0]`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct JunctionFile {
+    pub edge: [usize; 2],
+    pub through: Vec<usize>,
 }
 
 /// A template and its parameters (BS-03).
@@ -540,6 +552,14 @@ impl TopologyFile {
                     faces: s.faces.clone(),
                 })
                 .collect(),
+            junctions: self
+                .junctions
+                .iter()
+                .map(|j| JunctionSpec {
+                    edge: j.edge,
+                    through: j.through.clone(),
+                })
+                .collect(),
         })
     }
 
@@ -620,6 +640,14 @@ impl TopologyFile {
                         },
                     },
                     faces: s.faces.clone(),
+                })
+                .collect(),
+            junctions: t
+                .junctions
+                .iter()
+                .map(|j| JunctionFile {
+                    edge: j.edge,
+                    through: j.through.clone(),
                 })
                 .collect(),
             reference,
@@ -866,6 +894,12 @@ pub fn check(file: &TopologyFile) -> Result<Value, EngineError> {
         "chains": c.chains.iter().map(|ch| json!({
             "cells": ch.cells, "edges": ch.edges, "blocks": ch.blocks
         })).collect::<Vec<_>>(),
+        "t_junctions": {
+            "edges": t.junctions.len(),
+            "coarse_faces": c.junctions.covers.iter().map(|cv| json!({
+                "block": cv.block, "face": cv.corners, "sub_faces": cv.subs.len()
+            })).collect::<Vec<_>>(),
+        },
     }))
 }
 

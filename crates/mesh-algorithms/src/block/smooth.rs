@@ -1000,6 +1000,13 @@ fn face_corner_ids(b: &Block, f: usize) -> [usize; 4] {
 /// Smooth every node that is not on the boundary, in place.
 pub fn smooth(grid: &mut BlockGrid, options: &SmoothOptions) -> Result<Smoothing, String> {
     let o = options;
+    let junctions = grid.junction_faces.iter().any(|f| f.contains(&true));
+    if junctions && o.max_iterations > 0 {
+        return Err(
+            "elliptic smoothing of a topology with T-junctions is not built yet; use kind tfi"
+                .into(),
+        );
+    }
     let mut blocks: Vec<Block> = (0..grid.blocks.len())
         .map(|b| Block {
             n: grid.blocks[b].cells,
@@ -1012,7 +1019,7 @@ pub fn smooth(grid: &mut BlockGrid, options: &SmoothOptions) -> Result<Smoothing
     let mut by_corners: HashMap<[usize; 4], Vec<(usize, usize)>> = HashMap::new();
     for (b, blk) in blocks.iter().enumerate() {
         for f in 0..6 {
-            if grid.face_patches[b][f].is_none() {
+            if grid.face_patches[b][f].is_none() && !grid.junction_faces[b][f] {
                 by_corners
                     .entry(face_corner_ids(blk, f))
                     .or_default()

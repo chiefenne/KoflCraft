@@ -1371,6 +1371,7 @@ mod tests {
             faces,
         };
         BlockTopology {
+            junctions: Vec::new(),
             vertices,
             edges: Vec::new(),
             blocks: vec![block([0, 1, 4, 3]), block([1, 2, 5, 4])],

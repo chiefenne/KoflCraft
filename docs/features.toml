@@ -574,6 +574,24 @@ commands = ["kofl call block.split_triangle", "kofl call block.optimize_layout",
 gaps = "The automatic trigger works on extruded topologies only, like the layout optimiser (3D trigger is step 2); a column that closes into a ring is refused; the new count always enters as a full sheet (no T-junctions, no count solve yet); the tetrahedron split is a template building block, not an edit of a 3D topology; a corner of exactly 180° cannot be stored (the check refuses the block); the trigger tries at most four corners per round, one layout optimisation each; no template uses a triangle layout yet (the multi-element gaps have none); not in the acceptance runner yet"
 
 [[feature]]
+id = "block-t-junctions"
+title = "Block T-junctions: coarse faces gridded first, count solve with sum rules, triangle split that stops at the neighbours"
+requirements = ["BS-21", "BS-05", "BS-20"]
+grade = "partial"
+how = "A topology lists junctions (edge a-b through vertices); the check requires every piece to be a block edge and the counts to add up, and finds coarse faces that faces of other blocks tile in strips. The grid builder grids coarse faces first (whole edges joined from the pieces, interior by TFI) and stores their strips and cuts, so the blocks on both sides share every node: a T box (one block beside two) conforms with the volume exact, and the whole-edge count must equal the pieces' sum. block::counts::fit fits one integer per chain to target counts with the sum rules (integer kernel by column Hermite reduction, least squares, rounding, lattice moves). block.split_triangle with stop t_junction keeps the neighbours whole: on the two-layer wedge 8 blocks and 126 cells against 10 blocks and 150 for the sheet split, 3 junctions, the grid conforms (hand-off) and keeps the volume (research/block-triangle-split.md, step 2)"
+tests = [
+  "crates/mesh-algorithms/src/block/tests.rs::t_junction_faces_conform",
+  "crates/mesh-algorithms/src/block/tests.rs::t_junction_counts_must_add_up",
+  "crates/mesh-algorithms/src/block/tests.rs::bad_junctions_are_refused",
+  "crates/mesh-algorithms/src/block/tests.rs::count_solve_makes_the_t_junction_add_up",
+  "crates/mesh-algorithms/src/block/counts.rs::kernel_vectors_solve_the_sums",
+  "crates/mesh-algorithms/src/block/counts.rs::lattice_fit_shares_out_the_mismatch",
+  "crates/mesh-engine/src/block_triangle.rs::a_t_junction_split_keeps_the_neighbours_whole",
+]
+commands = ["kofl call block.split_triangle", "kofl call block.check", "kofl call block.grid"]
+gaps = "Strip covers only (no face split both ways, no vertex inside a coarse face); elliptic smoothing, the layout optimiser and the edits that add, remove or split blocks or set chain counts refuse T-junctions; the 3D trigger does not try the T-junction split yet (part 2); no tetrahedron insertion yet (part 3); not in the acceptance runner"
+
+[[feature]]
 id = "regions-field-proposal"
 title = "Field-guided region proposal for block-dominant meshing (regions.propose)"
 requirements = ["BS-18", "BS-17"]

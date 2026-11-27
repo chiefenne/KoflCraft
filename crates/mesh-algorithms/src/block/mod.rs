@@ -5,8 +5,10 @@
 //!
 //! Design notes and sources: `research/block-structured-concept.md`.
 
+pub mod counts;
 pub mod distribution;
 pub mod grid;
+pub mod junction;
 pub mod layout;
 pub mod multi_element;
 pub mod smooth;
@@ -22,6 +24,7 @@ use mesh_core::block::{
 use mesh_core::geometry::Vec3;
 
 pub use grid::{BlockGrid, BlockQuality, BlockRange, EdgeReport, build};
+pub use junction::{Cover, Junctions};
 
 /// One finding of the topology check.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +58,10 @@ pub struct Checked {
     pub block_faces_shared: usize,
     pub boundary_faces: BTreeMap<String, usize>,
     pub chains: Vec<Chain>,
+    /// The T-junctions and the coarse faces they make (BS-21).
+    pub junctions: Junctions,
+    /// The cell count of every block edge by its key.
+    pub edge_counts: HashMap<(usize, usize), usize>,
 }
 
 pub(crate) fn edge_key(a: usize, b: usize) -> (usize, usize) {
@@ -215,6 +222,50 @@ pub fn check(t: &BlockTopology) -> Result<Checked, Vec<Issue>> {
         .collect();
     chains.sort_by(|a, b| a.blocks.cmp(&b.blocks).then(a.cells.cmp(&b.cells)));
 
+    // T-junctions: each piece an edge of a block, the counts adding up.
+    let mut junctions = Junctions::read(t, &mut issues);
+    let mut jkeys: Vec<_> = junctions.through.keys().copied().collect();
+    jkeys.sort_unstable();
+    for key in jkeys {
+        let chain = junctions.through[&key].clone();
+        let Some(&(whole, _, _)) = edges.get(&key) else {
+            issues.push(issue(
+                "junction",
+                format!(
+                    "the junction edge {}–{} is no edge of any block",
+                    key.0, key.1
+                ),
+            ));
+            continue;
+        };
+        let mut sum = 0;
+        let mut complete = true;
+        for w in chain.windows(2) {
+            match edges.get(&edge_key(w[0], w[1])) {
+                Some(&(n, _, _)) => sum += n,
+                None => {
+                    complete = false;
+                    issues.push(issue(
+                        "junction",
+                        format!(
+                            "the piece {}–{} of junction edge {}–{} is no edge of any block",
+                            w[0], w[1], key.0, key.1
+                        ),
+                    ));
+                }
+            }
+        }
+        if complete && sum != whole {
+            issues.push(issue(
+                "count_chain",
+                format!(
+                    "edge {}–{} has {whole} cells but its pieces through the T-junctions have {sum}; the counts must add up",
+                    key.0, key.1
+                ),
+            ));
+        }
+    }
+
     // Explicit edges.
     let mut seen = HashMap::new();
     for (e, spec) in t.edges.iter().enumerate() {
@@ -226,6 +277,13 @@ pub fn check(t: &BlockTopology) -> Result<Checked, Vec<Issue>> {
         let key = edge_key(a, b);
         if seen.insert(key, e).is_some() {
             issues.push(issue("edge", format!("edge {a}–{b} is given twice")));
+            continue;
+        }
+        if junctions.through.contains_key(&key) {
+            issues.push(issue(
+                "edge",
+                format!("edge {a}–{b} passes through T-junctions; give the curves of its pieces"),
+            ));
             continue;
         }
         let Some(&(n, _, _)) = edges.get(&key) else {
@@ -314,9 +372,74 @@ pub fn check(t: &BlockTopology) -> Result<Checked, Vec<Issue>> {
         }
         boundary_faces.insert(patch.name.clone(), count);
     }
+    let in_patch: std::collections::HashSet<[usize; 4]> = t
+        .patches
+        .iter()
+        .flat_map(|p| p.faces.iter().map(|&f| face_key(f)))
+        .collect();
+    junctions.find_covers(t, &valid_blocks, &faces, &in_patch, &mut issues);
+    for k in junctions.sub.keys() {
+        if in_patch.contains(k) {
+            issues.push(issue(
+                "patch",
+                format!("face {k:?} lies inside a coarse face and cannot be in a patch"),
+            ));
+        }
+    }
+    for cover in &junctions.covers {
+        let m = junctions.coarse_dims(t, cover);
+        let count = |p: usize, q: usize| edges.get(&edge_key(p, q)).map_or(0, |e| e.0);
+        let (run, across) = if cover.along_first { (0, 1) } else { (1, 0) };
+        let mut sum = 0;
+        for s in &cover.subs {
+            let side = [count(s[0], s[1]), count(s[0], s[3])];
+            sum += side[run];
+            if side[across] != m[across] {
+                issues.push(issue(
+                    "count_chain",
+                    format!(
+                        "face {:?} has {} cells across but the coarse face {:?} of block {} has {}",
+                        face_key(*s),
+                        side[across],
+                        face_key(cover.corners),
+                        cover.block,
+                        m[across]
+                    ),
+                ));
+            }
+        }
+        if sum != m[run] {
+            issues.push(issue(
+                "count_chain",
+                format!(
+                    "the faces covering face {:?} of block {} have {sum} cells along it, the face has {}",
+                    face_key(cover.corners),
+                    cover.block,
+                    m[run]
+                ),
+            ));
+        }
+    }
+    for (e, spec) in t.edges.iter().enumerate() {
+        let key = edge_key(spec.vertices[0], spec.vertices[1]);
+        if junctions.cuts.contains_key(&key) {
+            issues.push(issue(
+                "edge",
+                format!(
+                    "edge spec {e} ({}–{}) lies inside a coarse face, whose grid places its nodes",
+                    key.0, key.1
+                ),
+            ));
+        }
+    }
     let mut open: Vec<_> = faces
         .iter()
-        .filter(|(k, b)| b.len() == 1 && !patch_of.contains_key(*k))
+        .filter(|(k, b)| {
+            b.len() == 1
+                && !patch_of.contains_key(*k)
+                && !junctions.coarse.contains_key(*k)
+                && !junctions.sub.contains_key(*k)
+        })
         .map(|(k, b)| (b[0], *k))
         .collect();
     open.sort_unstable();
@@ -344,7 +467,10 @@ pub fn check(t: &BlockTopology) -> Result<Checked, Vec<Issue>> {
         let tol = 1e-6 * spec.surface.scale();
         for &face in &spec.faces {
             let key = face_key(face);
-            if faces.get(&key).map(Vec::len) != Some(1) {
+            if faces.get(&key).map(Vec::len) != Some(1)
+                || junctions.coarse.contains_key(&key)
+                || junctions.sub.contains_key(&key)
+            {
                 issues.push(issue(
                     "surface",
                     format!("surface {}: {face:?} is no boundary block face", spec.name),
@@ -380,25 +506,31 @@ pub fn check(t: &BlockTopology) -> Result<Checked, Vec<Issue>> {
     }
     // points: vertices + edge interiors + face interiors + block interiors
     let mut points = nv;
-    for &(n, _, _) in edges.values() {
-        points += n - 1;
+    for (key, &(n, _, _)) in &edges {
+        if !junctions.through.contains_key(key) && !junctions.cuts.contains_key(key) {
+            points += n - 1;
+        }
     }
     let mut counted = std::collections::HashSet::new();
     for &b in &valid_blocks {
         let n = t.blocks[b].cells;
         for (f, &(_, _, a, c)) in BLOCK_FACES.iter().enumerate() {
-            if counted.insert(face_key(face_vertices(&t.blocks[b].vertices, f))) {
+            let key = face_key(face_vertices(&t.blocks[b].vertices, f));
+            if !junctions.sub.contains_key(&key) && counted.insert(key) {
                 points += (n[a] - 1) * (n[c] - 1);
             }
         }
         points += (n[0] - 1) * (n[1] - 1) * (n[2] - 1);
     }
+    let edge_counts = edges.iter().map(|(&k, &(n, _, _))| (k, n)).collect();
     Ok(Checked {
         cells,
         points,
         block_faces_shared: shared,
         boundary_faces,
         chains,
+        junctions,
+        edge_counts,
     })
 }
 
