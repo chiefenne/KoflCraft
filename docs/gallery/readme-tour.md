@@ -1,6 +1,6 @@
 # README slideshow
 
-Part of the [Example gallery](../gallery.md). The slides of the README's slideshow as still images. Every picture is
+Part of the [Example gallery](../gallery.md). The slides of the slideshow that headed the README up to 0.2.0 ([tour.webp](../../assets/readme/tour.webp)), as still images. Every picture is
 KoflCraft's Manifold mesh opened in [MurmelCraft](https://github.com/chiefenne/MurmelCraft)
 and written by its headless `export.image` (2560 x 1600, scaled to
 1440 x 900), set up by [tools/readme-tour](../../tools/readme-tour/README.md).
