@@ -571,7 +571,21 @@ tests = [
   "crates/mesh-cli/tests/kofl.rs::tri_center_tools_split_blocks_and_build_meshes",
 ]
 commands = ["kofl call block.split_triangle", "kofl call block.optimize_layout", "kofl call block.template"]
-gaps = "The automatic trigger works on extruded topologies only, like the layout optimiser (3D trigger is step 2); a column that closes into a ring is refused; the new count always enters as a full sheet (no T-junctions, no count solve yet); the tetrahedron split is a template building block, not an edit of a 3D topology; a corner of exactly 180° cannot be stored (the check refuses the block); the trigger tries at most four corners per round, one layout optimisation each; no template uses a triangle layout yet (the multi-element gaps have none); not in the acceptance runner yet"
+gaps = "The 2D trigger with layout optimisation works on extruded topologies only; off the z plane block.optimize_layout runs the 3D trigger without layout optimisation (feature block-3d-trigger); a column that closes into a ring is refused; the new count always enters as a full sheet (no T-junctions, no count solve yet); the tetrahedron split is a template building block, not an edit of a 3D topology; a corner of exactly 180° cannot be stored (the check refuses the block); the trigger tries at most four corners per round, one layout optimisation each; no template uses a triangle layout yet (the multi-element gaps have none); not in the acceptance runner yet"
+
+[[feature]]
+id = "block-3d-trigger"
+title = "3D trigger of the prism split: candidates by geometry, kept only when a measured 3D trial is better"
+requirements = ["BS-20", "BS-13"]
+grade = "partial"
+how = "block.optimize_layout on a topology that is not extruded along z (or has T-junctions) runs the 3D trigger instead of the 2D layout optimiser: candidates are the flat block edges (150 degrees or more at both ends), each is split with the T-junction stop and with the sheet, the TFI grid is measured in 3D (finite-volume non-orthogonality and growth across every inner hex face, scaled Jacobian of every corner, per block and whole), and a trial is kept when its blocks' worst angle drops by 2 degrees or more, their worst scaled Jacobian reaches 0.4 and is no worse, and the grid's worst angle, cells over 70 degrees, folds, growth and cell count (at most +10 %) stay in bounds; the better row end wins (gain, then fewer cells). The wedge turned off the z plane: 48.4 to 30.0 degrees, scaled Jacobian 0.16 to 0.52, T-junction end kept (126 cells against 150); with the default cap the same split is left because it adds 54 of 72 cells, and the report says so for both row ends (research/block-triangle-split.md)"
+tests = [
+  "crates/mesh-engine/src/block_insert.rs::the_3d_trigger_keeps_a_prism_split_that_helps",
+  "crates/mesh-engine/src/block_insert.rs::the_3d_trigger_respects_the_cell_cap",
+  "crates/mesh-algorithms/src/block/tests.rs::channel_measures_orthogonal_in_3d",
+]
+commands = ["kofl call block.optimize_layout"]
+gaps = "No 3D layout optimiser (the trial judges the TFI grid as it comes); prism splits only, the tetrahedron insertion is part 3; the cell cap (10 % of the grid) is fixed, not a tool input; the trigger tries at most four candidates per round and four splits; not run on a swept or junction fixture yet"
 
 [[feature]]
 id = "block-t-junctions"
@@ -589,7 +603,7 @@ tests = [
   "crates/mesh-engine/src/block_triangle.rs::a_t_junction_split_keeps_the_neighbours_whole",
 ]
 commands = ["kofl call block.split_triangle", "kofl call block.check", "kofl call block.grid"]
-gaps = "Strip covers only (no face split both ways, no vertex inside a coarse face); elliptic smoothing, the layout optimiser and the edits that add, remove or split blocks or set chain counts refuse T-junctions; the 3D trigger does not try the T-junction split yet (part 2); no tetrahedron insertion yet (part 3); not in the acceptance runner"
+gaps = "Strip covers only (no face split both ways, no vertex inside a coarse face); elliptic smoothing, the layout optimiser and the edits that add, remove or split blocks or set chain counts refuse T-junctions; the 2D trigger of extruded layouts does not try the T-junction split (the 3D trigger does); no tetrahedron insertion yet (part 3); not in the acceptance runner"
 
 [[feature]]
 id = "regions-field-proposal"

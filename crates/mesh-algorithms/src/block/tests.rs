@@ -73,6 +73,21 @@ fn channel_is_exact() {
     }
 }
 
+/// Invariant (BS-20): the 3D quality of a box channel is perfect: no
+/// non-orthogonality, unit growth on a uniform grid, unit scaled
+/// Jacobians, no folds. A wrong face pairing or centroid breaks it.
+#[test]
+fn channel_measures_orthogonal_in_3d() {
+    let t = channel([2.0, 1.0, 0.5], [6, 4, 3], None).unwrap();
+    let g = build(&t.topology).unwrap();
+    let (q, per) = quality3d::measure(&g);
+    assert!(q.max_deg < 1e-6, "{q:?}");
+    assert!((q.max_growth - 1.0).abs() < 1e-12);
+    assert!((q.min_scaled_jacobian - 1.0).abs() < 1e-12);
+    assert_eq!((q.folded_corners, q.cells_over_70), (0, 0));
+    assert_eq!(per.len(), 1);
+}
+
 /// Invariant: two-sided clustering keeps a tensor grid (TFI of straight
 /// edges with equal laws) and reaches the requested wall spacing within
 /// Vinokur's slope approximation.
