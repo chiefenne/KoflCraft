@@ -14,8 +14,17 @@
 
 <sub>KoflCraft's Manifold mesh pictured with <a href="https://github.com/chiefenne/MurmelCraft">MurmelCraft</a>:
 229,615 cells, Voronoi polyhedra in the core with prism layers at the
-walls. The slides are also [still images with captions](docs/gallery.md);
+walls. The slides are also [still images with captions](docs/gallery/readme-tour.md);
 how they were made is in [tools/readme-tour](tools/readme-tour/README.md).</sub>
+
+<p align="center">
+  <b><a href="#install">Install</a></b> ·
+  <b><a href="docs/gallery.md">Example gallery</a></b> ·
+  <b><a href="docs/recipes.md">Recipes</a></b> ·
+  <b><a href="docs/applications.md">Application gallery</a></b> ·
+  <b><a href="docs/status.md">What works today</a></b> ·
+  <b><a href="#documentation">Documentation</a></b>
+</p>
 
 ---
 
@@ -182,6 +191,7 @@ cargo m1 --require-gmsh
 | Block and pipe meshes with wall layers | [docs/analytic-development.md](docs/analytic-development.md) |
 | Nonconvex ducts with exposed prism layers | [docs/nonconvex-duct.md](docs/nonconvex-duct.md) |
 | Block-structured meshes (templates, smoothing, edit tools) | [docs/block-mesher.md](docs/block-mesher.md) |
+| Examples with pictures, recipes, engineering applications | [docs/gallery.md](docs/gallery.md), [docs/recipes.md](docs/recipes.md), [docs/applications.md](docs/applications.md) |
 | Verification grade and gaps of every feature | [docs/status.md](docs/status.md) |
 | Tools of the CLI and the MCP server | [docs/tools.md](docs/tools.md) |
 | Changes and releases | [CHANGELOG.md](CHANGELOG.md), [docs/release.md](docs/release.md) |

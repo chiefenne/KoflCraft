@@ -1,0 +1,4 @@
+{"config": {"template": "elbow", "radius": 0.05, "bend_radius": 0.15, "angle": 90,
+            "inlet_length": 0.15, "outlet_length": 0.15, "core_cells": 10,
+            "radial_cells": 18, "axial_cells": 48, "wall_spacing": 0.0002},
+ "output": "elbow.json"}

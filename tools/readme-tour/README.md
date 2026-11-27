@@ -1,7 +1,7 @@
 # The README slideshow
 
 `assets/readme/tour.webp` (the slideshow near the top of the README) and
-the stills of [docs/gallery.md](../../docs/gallery.md) are pictures of
+the stills of [docs/gallery/readme-tour.md](../../docs/gallery/readme-tour.md) are pictures of
 KoflCraft's Manifold mesh written by MurmelCraft's headless `export.image`, on
 Linux without a screen. The recipe matches MurmelCraft's own README
 slideshow, so the two read the same.

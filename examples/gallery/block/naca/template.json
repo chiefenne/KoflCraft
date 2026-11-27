@@ -1,0 +1,4 @@
+{"config": {"template": "airfoil_cgrid", "naca": "2412", "span": 0.1, "farfield": 5,
+            "wake_length": 5, "surface_cells": 80, "normal_cells": 40, "wake_cells": 30,
+            "wall_spacing": 0.001},
+ "output": "naca.json"}

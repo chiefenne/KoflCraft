@@ -1,0 +1,1 @@
+{"topology": "three.json", "output": "three-mesh", "algorithm": {"kind": "elliptic"}}
