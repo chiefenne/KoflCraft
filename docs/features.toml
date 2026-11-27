@@ -592,3 +592,20 @@ tests = [
 ]
 commands = ["kofl call regions.propose"]
 gaps = "Proposal only, nothing is meshed; slabs thicker than a small body do not split around it, so a tube row shows as a clash zone, not as obstacle loops; a chamber that is the whole domain (the furnace) is a sweep, not a box, because box means much larger than the median slab; the second pass labels are noisy on small clash zones; no cross-section shape (O-grid or H) is chosen yet; Jacobi-preconditioned CG only (fine up to about 10^6 nodes); one scaffold spacing for the whole domain"
+
+[[feature]]
+id = "regions-sweep-fill"
+title = "Sweep regions filled with swept O-grids along the flow potential (regions.fill)"
+requirements = ["BS-18", "BS-03", "BS-17"]
+grade = "partial"
+how = "regions.fill takes the sweep regions of regions.propose and meshes each with hexahedra: stations on level sets of the inlet-to-outlet potential at equal centreline spacing, ends at the port or at a calm cut (wall loop flat to 0.001 of the diameter, tilt at most 0.5 deg) before the next region, a station pinned to each sharp wall edge across the flow (the mitre plane), each section the pipe O-grid (ring corners on the four corners of a rectangular duct, else at 45 deg + 90 deg m of a rotation-minimising frame, Wang et al. 2008), wall rows at the layer heights, interior nodes moved along the station normal onto the level set by a bounded root search; ports and cuts are exactly planar. Elbow: 17,472 hexahedra port to port, volume -0.003 %, no inverted face, min scaled Jacobian 0.26; Manifold: both pipes swept (69,632 hexahedra) to calm planar cuts, min scaled Jacobian 0.70, the box (75 %) left for the polyhedral mesher (research/sweep-fill.md)"
+tests = [
+  "crates/mesh-engine/tests/fill.rs::elbow_sweeps_through_the_mitre",
+  "crates/mesh-engine/tests/fill.rs::manifold_pipes_end_in_calm_cuts",
+  "crates/mesh-algorithms/src/fields/sweep.rs::volume_below_a_level_is_exact",
+  "crates/mesh-algorithms/src/fields/sweep.rs::lift_stays_within_reach",
+  "crates/mesh-algorithms/src/fields/sweep.rs::geometric_rows_keep_first_height_and_length",
+  "crates/mesh-algorithms/src/fields/sweep.rs::hex_measures_of_a_cube",
+]
+commands = ["kofl call regions.fill"]
+gaps = "Only the sweeps are meshed: boxes, junctions and remainder wait for the polyhedral mesher with the conformal join at the cuts (MD-25); at a mitre the stations fan around the inner corner (non-orthogonality 66 deg on the elbow) where blended stations would give better cells; a sweep needs one closed wall loop per level set and one section type throughout; section rows are not smoothed; not in the acceptance runner yet"

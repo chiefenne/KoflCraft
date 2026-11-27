@@ -177,8 +177,35 @@ fn advice(kind: Kind) -> &'static str {
     }
 }
 
-/// Run the proposal on an STL and the role of each of its facets.
-pub fn propose(stl: &[u8], map: &Value, opts: RegionOptions) -> Result<Proposal, EngineError> {
+/// The scaffold and fields of a proposal, shared with [`fill`].
+pub(crate) struct Analysis {
+    pub start: Instant,
+    pub sha: String,
+    pub facets: usize,
+    pub roles: Vec<Role>,
+    pub surface: mesh_geometry::ClosedSurface,
+    pub volume: f64,
+    pub h: f64,
+    pub wall_triangles: usize,
+    pub recovery_points: usize,
+    pub mesh: TetMesh,
+    pub fem: Fem,
+    pub adjacent: Vec<[Option<usize>; 4]>,
+    pub d: Vec<f64>,
+    pub p: Vec<f64>,
+    pub ds: fields::FieldStats,
+    pub ps: fields::FieldStats,
+    pub scaffold_seconds: f64,
+    pub field_seconds: f64,
+}
+
+/// Scaffold, wall distance and potential of an STL and the role of each of
+/// its facets.
+pub(crate) fn analyse(
+    stl: &[u8],
+    map: &Value,
+    opts: RegionOptions,
+) -> Result<Analysis, EngineError> {
     let start = Instant::now();
     let surface = mesh_geometry::import_closed_stl(stl, mesh_geometry::StlOptions::default())
         .map_err(|e| bad(ErrorCode::InvalidDomain, e))?;
@@ -263,6 +290,50 @@ pub fn propose(stl: &[u8], map: &Value, opts: RegionOptions) -> Result<Proposal,
             ),
         ));
     }
+    Ok(Analysis {
+        start,
+        sha,
+        facets,
+        roles,
+        surface,
+        volume,
+        h,
+        wall_triangles: wall.triangles.len(),
+        recovery_points: st.recovery_points,
+        mesh,
+        fem,
+        adjacent,
+        d,
+        p,
+        ds,
+        ps,
+        scaffold_seconds,
+        field_seconds,
+    })
+}
+
+/// Run the proposal on an STL and the role of each of its facets.
+pub fn propose(stl: &[u8], map: &Value, opts: RegionOptions) -> Result<Proposal, EngineError> {
+    let Analysis {
+        start,
+        sha,
+        facets,
+        roles,
+        volume,
+        h,
+        wall_triangles,
+        recovery_points,
+        mesh,
+        fem,
+        adjacent,
+        d,
+        p,
+        ds,
+        ps,
+        scaffold_seconds,
+        field_seconds,
+        ..
+    } = analyse(stl, map, opts)?;
     let t1 = Instant::now();
     let c = regions::classify(&mesh, &fem, &adjacent, &d, &p, opts.classify);
     let second = if opts.second_pass {
@@ -339,11 +410,11 @@ pub fn propose(stl: &[u8], map: &Value, opts: RegionOptions) -> Result<Proposal,
         "scaffold": {
             "nodes": fem.used.iter().filter(|&&u| u).count(),
             "tetrahedra": mesh.tets.len(),
-            "wall_triangles": wall.triangles.len(),
+            "wall_triangles": wall_triangles,
             "mean_edge": fem.h,
             "volume": c.volume,
             "stl_volume": volume,
-            "recovery_points": st.recovery_points,
+            "recovery_points": recovery_points,
         },
         "fields": {
             "heat_time": (opts.heat_m * fem.h).powi(2),

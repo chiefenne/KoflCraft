@@ -24,6 +24,7 @@
 
 pub mod regions;
 pub mod sparse;
+pub mod sweep;
 
 use mesh_core::geometry::Vec3;
 use sparse::{Csr, SolveStats};

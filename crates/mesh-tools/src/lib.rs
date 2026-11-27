@@ -327,6 +327,37 @@ pub static TOOLS: &[Tool] = &[
         run: regions::propose,
     },
     Tool {
+        id: "regions.fill",
+        version: 1,
+        action: Action::StartBuild,
+        summary: "Fill the sweep regions of the region proposal with hexahedra (block-dominant meshing): stations on level sets of the inlet-to-outlet potential, each section the pipe template's O-grid (ring corners on the four corners of a rectangular duct, else at 45° + 90° m of a rotation-minimising frame), the first rows at the layer heights, a station on the plane of each mitre corner. A sweep ends at its port or at a calm (flat) cut before a box, junction or remainder, which are not meshed yet. Validates the swept cells and writes `foehncraft.vtu`, `report.json` and `mesh-evidence.json` into a new directory. The map needs an inlet and an outlet.",
+        legacy_name: None,
+        outputs: &["output"],
+        input_schema: || {
+            schemas::input(
+                json!({"surface": schemas::path(), "patches": schemas::path(), "output": schemas::path(),
+                       "size": {"type": "number", "exclusiveMinimum": 0},
+                       "cells_around": {"type": "integer", "minimum": 8, "multipleOf": 4},
+                       "layers": {"type": "integer", "minimum": 0, "maximum": 50},
+                       "growth": {"type": "number", "minimum": 1, "maximum": 3},
+                       "first_height": {"type": "number", "exclusiveMinimum": 0},
+                       "core_fraction": {"type": "number", "exclusiveMinimum": 0.1, "exclusiveMaximum": 0.9},
+                       "axial_size": {"type": "number", "exclusiveMinimum": 0}}),
+                &[
+                    "size",
+                    "cells_around",
+                    "layers",
+                    "growth",
+                    "first_height",
+                    "core_fraction",
+                    "axial_size",
+                ],
+            )
+        },
+        output_schema: || json!({"type": "object", "description": "`koflcraft.sweep-fill`"}),
+        run: regions::fill,
+    },
+    Tool {
         id: "patch.split",
         version: 1,
         action: Action::WriteFiles,
