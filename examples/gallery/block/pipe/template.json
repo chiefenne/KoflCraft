@@ -1,0 +1,3 @@
+{"config": {"template": "pipe_ogrid", "radius": 0.05, "length": 0.3, "core_cells": 12,
+            "radial_cells": 22, "axial_cells": 30, "wall_spacing": 0.00015},
+ "output": "pipe.json"}

@@ -1,0 +1,2 @@
+{"topology": "naca.json", "output": "naca-mesh",
+ "algorithm": {"kind": "elliptic", "wall_sliding": true}}

@@ -1,0 +1,7 @@
+{"config": {"template": "multi_element_airfoil",
+            "main": {"naca": "0012"},
+            "slat": {"naca": "4410", "chord": 0.16, "deflection": 25, "gap": 0.05, "overlap": -0.04},
+            "flap": {"naca": "4412", "chord": 0.3, "deflection": 30, "gap": 0.03, "overlap": -0.02},
+            "span": 0.1, "farfield": 5, "wake_length": 5, "surface_cells": 24,
+            "normal_cells": 12, "wake_cells": 12, "wall_spacing": 0.002},
+ "output": "three.json"}

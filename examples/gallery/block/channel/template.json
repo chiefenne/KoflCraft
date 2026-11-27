@@ -1,0 +1,3 @@
+{"config": {"template": "channel", "length": 0.4, "width": 0.1, "height": 0.1,
+            "cells": [40, 24, 24], "wall_spacing": 0.0003},
+ "output": "channel.json"}

@@ -1,30 +1,36 @@
-# Gallery
+# Example gallery
 
-The slides of the README's slideshow as still images. Every picture is
-KoflCraft's Manifold mesh opened in [MurmelCraft](https://github.com/chiefenne/MurmelCraft)
-and written by its headless `export.image` (2560 x 1600, scaled to
-1440 x 900), set up by [tools/readme-tour](../tools/readme-tour/README.md).
-The mesh comes from the fixture in this repository; the command is in
-[make-tour.sh](../tools/readme-tour/make-tour.sh).
+What KoflCraft meshes, one picture per example, with the commands that
+make it again. Command sequences for everyday tasks are in
+[Recipes](recipes.md); real engineering geometries are in the
+[Application gallery](applications.md).
 
-## The Manifold duct
+All commands run from the folder of the example's inputs in
+`examples/gallery/`, with `kofl` built by `cargo build --release -p mesh-cli`
+(`target/release/kofl`). The pictures are the meshes opened in
+[MurmelCraft](https://github.com/chiefenne/MurmelCraft) and written by its
+headless `export.image`; the scripts that make them are in
+[tools/gallery](../tools/gallery/README.md).
 
-![The Manifold duct in the dark theme, coloured by patch: the inlet pipe with its bend, the box and the outlet pipe in the wall colour, the inlet cap in orange](../assets/readme/tour/01-manifold-patches.jpg)
+The gallery is split by topic; each page has its own table of contents.
+An example's number is the pull request that added the feature it shows
+("gallery 71" always means the same entry); its recipe carries the same
+number.
 
-The user-supplied Manifold STL (a pipe with a bend, a box, a rounded
-junction and an outlet pipe) meshed by `generate-duct … polyhedral`:
-229,615 cells with the inlet, outlet and wall patches.
+| Page | What it covers | Examples |
+|---|---|---|
+| [Block-structured meshes](gallery/block.md) | multi-block hexahedral meshes from templates (channel, pipe O-grid, elbow, airfoil C-grid, three-element airfoil, triangle and tetrahedron), elliptic smoothing with wall sliding, the edit tools, the tri-center split of flat corners; blocks coloured and exploded | 37, 37b, 44, 44b, 48, 67, 71, 71b |
+| [README slideshow](gallery/readme-tour.md) | the Manifold duct (polyhedral core, prism layers) as still images with captions | — |
 
-## Cell types under a clip plane
+## All examples by number
 
-![The Manifold cut in half along its height and coloured by cell type: polyhedra in teal fill the core of the pipes and the box, prisms in orange line the walls of the inlet pipe](../assets/readme/tour/02-manifold-cell-types.jpg)
-
-Voronoi polyhedra (89,467) in the core and prism layers (140,105) at the
-walls, cut by a crinkle clip that keeps whole cells.
-
-## Cell quality
-
-![The Manifold cut flat along its height in the light theme, coloured by non-orthogonality on a pale yellow to dark red colour bar from 0 to above 60 degrees; most cells are pale, the darker ones lie along the pipe walls](../assets/readme/tour/03-manifold-quality.jpg)
-
-Face non-orthogonality of every cell on the cut, the check a finite-volume
-solver cares about most.
+| # | Example | Page |
+|---|---|---|
+| 37 | [A channel with two-sided wall clustering](gallery/block.md#channel) | [Block-structured meshes](gallery/block.md) |
+| 37b | [A pipe as an O-grid](gallery/block.md#pipe-ogrid) | [Block-structured meshes](gallery/block.md) |
+| 44 | [A 90° elbow](gallery/block.md#elbow) | [Block-structured meshes](gallery/block.md) |
+| 44b | [A C-grid around a NACA 2412](gallery/block.md#naca-cgrid) | [Block-structured meshes](gallery/block.md) |
+| 48 | [Splitting the core of a pipe](gallery/block.md#pipe-split) | [Block-structured meshes](gallery/block.md) |
+| 67 | [A three-element airfoil with an optimised layout](gallery/block.md#multi-element) | [Block-structured meshes](gallery/block.md) |
+| 71 | [A flat corner split into three blocks](gallery/block.md#triangle-split) | [Block-structured meshes](gallery/block.md) |
+| 71b | [A triangle and a tetrahedron as hexahedra](gallery/block.md#tri-center) | [Block-structured meshes](gallery/block.md) |

@@ -9,6 +9,8 @@ counts, the edge curves and spacing laws and the boundary patches.
 tool registry, so the same calls work from `kofl call`, from a journal
 script and from an agent over MCP ([tools.md](tools.md)).
 
+Pictures and commands of every template: [Example gallery](gallery/block.md); short recipes: [recipes/block.md](recipes/block.md).
+
 The concept and the literature are in
 [research/block-structured-concept.md](../research/block-structured-concept.md);
 the grade and the gaps of every part are on the [status page](status.md).
