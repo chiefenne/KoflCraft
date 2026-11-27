@@ -154,6 +154,15 @@ counts before the split, so that every sum adds up. The result reports what
 the solve did (`counts`). In a conforming mesh the new cells still run along
 the chain to the boundary; what stops at the T-junction are the block cuts.
 
+`block.optimize_layout` on a topology that is not extruded along z (or that
+has T-junctions) finds prism-shaped blocks by geometry (a block edge flatter
+than 150° at both ends) and tries the split there, with the T-junction stop
+and with the sheet. It keeps a split only when the blocks it touches get a
+worst angle at least 2° lower and a worst scaled Jacobian of 0.4 or more, and
+the whole grid gets no worse and grows by at most 10 % of its cells. There is
+no 3D layout optimisation; the report (`mode: 3d`) lists every split kept and
+every candidate left, with the reason.
+
 Faces must be covered in strips (the cuts run from one side of the big face
 to the other). Elliptic smoothing and the edits that add, remove or split
 blocks or set chain counts refuse a topology with T-junctions for now; use

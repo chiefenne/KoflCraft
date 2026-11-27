@@ -11,6 +11,7 @@ pub mod grid;
 pub mod junction;
 pub mod layout;
 pub mod multi_element;
+pub mod quality3d;
 pub mod smooth;
 pub mod templates;
 pub mod tri_center;

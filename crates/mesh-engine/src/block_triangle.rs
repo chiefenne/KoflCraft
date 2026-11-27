@@ -1065,13 +1065,53 @@ pub fn optimize_layout(
     file: &TopologyFile,
     splits: bool,
 ) -> Result<(TopologyFile, serde_json::Value), EngineError> {
-    let (mut out, report) = optimized(file, false)?;
+    // a topology that is not extruded along z (or has T-junctions) gets the
+    // 3D trigger without a layout optimisation (BS-20)
+    let two_d = if file.junctions.is_empty() {
+        optimized(file, false)
+    } else {
+        Err(refused("the topology has T-junctions"))
+    };
+    let (mut out, report) = match two_d {
+        Ok(r) => r,
+        Err(e) if !file.junctions.is_empty() || e.message.contains("is not extruded") => {
+            return optimize_layout_3d(file, splits, &e.message);
+        }
+        Err(e) => return Err(e),
+    };
     let mut layout = crate::block::layout_report(&report);
     if splits {
         let injection = inject_triangle_splits(file, Some(&out), MAX_SPLITS)?;
         crate::block::note_injection(&mut layout, &injection);
         out = injection.file;
     }
+    if let Some(r) = out.reference.as_mut() {
+        r.layout = Some(layout.clone());
+    }
+    Ok((out, layout))
+}
+
+/// The 3D path of [`optimize_layout`]: no layout optimisation (the MB1g
+/// optimiser is a 2D model), and with `splits` the 3D trigger.
+fn optimize_layout_3d(
+    file: &TopologyFile,
+    splits: bool,
+    why: &str,
+) -> Result<(TopologyFile, serde_json::Value), EngineError> {
+    let options = crate::block_insert::InsertOptions {
+        max_splits: if splits { MAX_SPLITS } else { 0 },
+        ..Default::default()
+    };
+    let i = crate::block_insert::insert_prism_splits(file, &options)?;
+    let layout = serde_json::json!({
+        "mode": "3d",
+        "layout_optimised": false,
+        "reason": format!("{why}; the layout optimiser works on topologies extruded along z, so only the prism splits of the 3D trigger run"),
+        "before": i.before,
+        "after": i.after,
+        "prism_splits": {"kept": i.kept, "skipped": i.skipped},
+    });
+    let mut out = i.file;
     if let Some(r) = out.reference.as_mut() {
         r.layout = Some(layout.clone());
     }
@@ -1227,7 +1267,7 @@ fn trial(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::block::{PatchFile, TOPOLOGY_FORMAT, TOPOLOGY_FORMAT_VERSION, check};
     use crate::block_edit::{Edit, apply};
@@ -1495,7 +1535,7 @@ mod tests {
     }
 
     /// The wedge with a second layer of blocks on top (z 0.1 to 0.2).
-    fn two_layers() -> TopologyFile {
+    pub(crate) fn two_layers() -> TopologyFile {
         let mut g = wedge();
         let top: Vec<[f64; 3]> = (6..12)
             .map(|v| [g.vertices[v][0], g.vertices[v][1], 0.2])
@@ -1658,7 +1698,7 @@ mod tests {
 
     /// The wedge turned so that its flat edge runs along x, with the
     /// blocks' local frames turned too (k is no longer the edge).
-    fn turned(f: &TopologyFile) -> TopologyFile {
+    pub(crate) fn turned(f: &TopologyFile) -> TopologyFile {
         let mut g = f.clone();
         for v in &mut g.vertices {
             *v = [v[2], v[0], v[1]];

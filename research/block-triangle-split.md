@@ -216,3 +216,35 @@ inside a coarse face); elliptic smoothing, the layout optimiser and the
 edits that add, remove or split blocks or set chain counts refuse
 T-junctions; the 3D trigger (part 2) and the tetrahedron insertion (part 3)
 are next.
+
+## The 3D trigger (step 2, part 2)
+
+`block.optimize_layout` keeps the 2D path (MB1g optimiser plus the MB1h
+trigger) for topologies extruded along z. A topology that is not, or that has
+T-junctions, gets the 3D trigger (`block_insert::insert_prism_splits`) and no
+layout optimisation, because the MB1g optimiser is a 2D model; the report says
+so (`mode: 3d`, `layout_optimised: false`).
+
+- **Measure.** `block::quality3d::measure` works on any block grid: for every
+  inner face of the hexahedra the angle between its normal and the line
+  through the two cell centroids and the ratio of the two centroid distances,
+  for every corner the scaled Jacobian, whole and per block.
+- **Candidates.** The flat block edges (`flat_edges`, 150° or more at both
+  ends), flattest first, four per round, a column tried once.
+- **Trial.** Split with each row end asked for (default both: `t_junction`
+  and `sheet`), build the TFI grid, measure.
+- **Keep rule.** The blocks the split touched (changed or new) get a worst
+  angle lower by at least 2°; their worst scaled Jacobian is at least 0.4
+  (the threshold HexIt uses, from the 3D blocking survey) and no worse than
+  before; the whole grid's worst angle rises by at most 0.05°, no more cells
+  pass 70°, nothing folds, the growth stays within max(2, start) × 1.05, and
+  the split adds at most 10 % of the grid's cells. Of the trials that pass,
+  the larger gain wins, then the fewer cells.
+
+| Case | Before | After | Kept |
+|---|---|---|---|
+| Two-layer wedge turned so the flat edge runs along x (not extruded along z), cap lifted | 48.4°, SJ 0.16, 72 cells | 30.0°, SJ 0.52, 126 cells | `t_junction` (sheet: 150 cells) |
+| Same, default cap 10 % | 48.4° | unchanged | none: "adds 54 cells, more than 10 % of 72" for `t_junction`, 78 for `sheet` |
+
+The cap is the plan's default. On a fixture this small any split passes it;
+on a real topology a split adds a few per cent.
