@@ -5,6 +5,7 @@ pub mod block_edit;
 pub mod block_triangle;
 pub mod channel;
 mod export;
+pub mod fill;
 pub mod handoff;
 pub mod patches;
 pub mod ports;

@@ -3,6 +3,7 @@
 //! STL and its patch map, writes the report and optionally the field file
 //! (VTU) and a picture (SVG). Nothing is meshed.
 
+use mesh_engine::fill::{self, FillOptions};
 use mesh_engine::regions::{self, RegionOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -72,6 +73,57 @@ pub(crate) fn propose(input: Value, ctx: &Context) -> Run {
     report["files"] = json!(files);
     report["next"] = json!(
         "Open the picture (or the VTU: cell field kind 0 sweep, 1 junction, 2 obstacle, 3 box, 4 remainder) and check the proposal. Nothing is meshed yet."
+    );
+    Ok(report)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FillInput {
+    pub surface: String,
+    pub patches: String,
+    /// The new bundle directory.
+    pub output: String,
+    /// Scaffold spacing of the fields (default: about 150 000 tetrahedra).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cells_around: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layers: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub growth: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_height: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core_fraction: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub axial_size: Option<f64>,
+}
+
+pub(crate) fn fill(input: Value, ctx: &Context) -> Run {
+    let i: FillInput = decode(input)?;
+    let stl = ctx.read(&i.surface)?;
+    let map: Value = serde_json::from_slice(&ctx.read(&i.patches)?)
+        .map_err(|e| Diagnostic::new("invalid_patch_map", e).with_path(&i.patches))?;
+    let d = FillOptions::default();
+    let opts = FillOptions {
+        region: RegionOptions {
+            size: i.size,
+            ..d.region
+        },
+        cells_around: i.cells_around.unwrap_or(d.cells_around),
+        layers: i.layers.unwrap_or(d.layers),
+        growth: i.growth.unwrap_or(d.growth),
+        first_height: i.first_height.or(d.first_height),
+        core_fraction: i.core_fraction.unwrap_or(d.core_fraction),
+        axial_size: i.axial_size.or(d.axial_size),
+    };
+    let (dir, name) = ctx.target(&i.output)?;
+    let mut report = fill::generate(&stl, &map, opts, &dir, &name)?;
+    report["output"] = json!(i.output);
+    report["next"] = json!(
+        "Open foehncraft.vtu: the swept hexahedra. The rest of the domain (shares.left_for_the_polyhedral_mesher) is not meshed yet."
     );
     Ok(report)
 }
