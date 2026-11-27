@@ -23,3 +23,19 @@ release whose notes are that version's section of
 
 Tags cannot be pushed from the cloud sessions; the workflow creates them.
 Locally, after the release: `git checkout main && git pull --tags`.
+
+## Executables
+
+After it creates the release, the Release workflow starts **Executables**
+(`.github/workflows/executables.yml`), which builds `kofl` and `mesh-mcp`
+and attaches them to the release:
+`koflcraft-<version>-macos-universal.tar.gz` (Apple silicon and Intel),
+`koflcraft-<version>-linux-x86_64.tar.gz`,
+`koflcraft-<version>-windows-x86_64.zip` and `SHA256SUMS.txt`.
+
+To attach them to a release that exists already, run Executables by hand
+with `tag` = `v<version>` and *upload* checked (unchecked, it only builds,
+and the files are an artifact of the run). A pull request that changes
+`executables.yml` builds everything without uploading. The Mac builds are
+signed ad hoc only, not with an Apple Developer ID, so macOS asks once
+before the first start (README, "Download a release").
