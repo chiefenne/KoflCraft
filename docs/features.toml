@@ -607,8 +607,8 @@ tests = [
   "crates/mesh-algorithms/src/fields/sweep.rs::geometric_rows_keep_first_height_and_length",
   "crates/mesh-algorithms/src/fields/sweep.rs::hex_measures_of_a_cube",
 ]
-commands = ["kofl call regions.fill"]
-gaps = "The region behind the cuts is joined as polyhedra (feature regions-sweep-join); at a mitre the stations fan around the inner corner (non-orthogonality 66 deg on the elbow) where blended stations would give better cells; a sweep needs one closed wall loop per level set and one section type throughout; section rows are not smoothed; not in the acceptance runner yet"
+commands = ["kofl call regions.fill", "cargo m1 --require-foehn (fill: the elbow read back by FoehnCraft)"]
+gaps = "The region behind the cuts is joined as polyhedra (feature regions-sweep-join); at a mitre the stations fan around the inner corner (non-orthogonality 66 deg on the elbow) where blended stations would give better cells; a sweep needs one closed wall loop per level set and one section type throughout; section rows are not smoothed"
 
 [[feature]]
 id = "regions-sweep-join"
@@ -620,6 +620,7 @@ tests = [
   "crates/mesh-engine/tests/fill.rs::manifold_box_joins_the_pipes",
   "crates/mesh-algorithms/src/fields/remainder.rs::cut_duct_is_closed_by_its_cap",
   "crates/mesh-algorithms/src/fields/remainder.rs::a_duct_beside_the_cut_stays",
+  "crates/mesh-tools/src/regions.rs::next_step_names_what_the_file_holds",
 ]
-commands = ["kofl call regions.fill"]
-gaps = "At most two openings behind the cuts (the mesher's two port ids; STL ports behind the cuts take them first), no symmetry planes behind the cuts; the box keeps the polyhedral mesher's own quality (87.7 deg inside the Manifold box); not in the acceptance runner, so CI does not read it back with FoehnCraft (by hand: valid, 0 inverted faces)"
+commands = ["kofl call regions.fill", "cargo m1 --require-foehn (fill: elbow and joined Manifold read back by FoehnCraft)"]
+gaps = "At most two openings behind the cuts (the mesher's two port ids; STL ports behind the cuts take them first), no symmetry planes behind the cuts; the box keeps the polyhedral mesher's own quality (87.7 deg inside the Manifold box)"

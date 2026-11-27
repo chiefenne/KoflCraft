@@ -127,11 +127,65 @@ pub(crate) fn fill(input: Value, ctx: &Context) -> Run {
     let (dir, name) = ctx.target(&i.output)?;
     let mut report = fill::generate(&stl, &map, opts, &dir, &name)?;
     report["output"] = json!(i.output);
-    let whole = report["shares"]["not_meshed"].as_f64().unwrap_or(1.0) == 0.0;
-    report["next"] = json!(if whole {
+    report["next"] = json!(next_step(&report));
+    Ok(report)
+}
+
+/// What the written file holds: sweeps joined to the polyhedra behind the
+/// cuts, one sweep from port to port, or sweeps alone. `shares.not_meshed`
+/// is the faceting gap between scaffold and cells, never exactly 0, so it
+/// cannot tell (the joined Manifold was once told its box was not meshed).
+fn next_step(report: &Value) -> &'static str {
+    let joined = report["remainder"].get("cap_faces_joined").is_some();
+    let polyhedra = report["shares"]["polyhedral_cells"]
+        .as_f64()
+        .is_some_and(|s| s > 0.0);
+    let cuts_left = report["validity"]["patches"].as_array().is_some_and(|ps| {
+        ps.iter()
+            .any(|p| p["name"].as_str().is_some_and(|n| n.starts_with("cut_")))
+    });
+    let all_swept = report["not_swept"].as_array().is_some_and(|a| a.is_empty());
+    if joined && polyhedra && !cuts_left {
         "Open foehncraft.vtu: the swept hexahedra and the polyhedra behind the cuts, one conformal mesh (cell field zone and the patches)."
+    } else if !cuts_left && !polyhedra && all_swept && report["remainder"].is_null() {
+        "Open foehncraft.vtu: the swept hexahedra fill the whole domain from port to port (cell field zone and the patches)."
     } else {
         "Open foehncraft.vtu: the swept hexahedra. The rest of the domain (shares.not_meshed) is not meshed; remainder says why."
-    });
-    Ok(report)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_step;
+    use serde_json::json;
+
+    /// Keep: the next step names what the file holds. A joined mesh has a
+    /// small `not_meshed` share (the faceting gap), and testing that share
+    /// for 0 told the joined Manifold its box was not meshed and the elbow
+    /// (no cut at all) that it held polyhedra. The fill tests read the
+    /// engine's report, not this text.
+    #[test]
+    fn next_step_names_what_the_file_holds() {
+        let joined = json!({
+            "remainder": {"cap_faces_joined": 9088},
+            "shares": {"polyhedral_cells": 0.75, "not_meshed": 0.0008},
+            "validity": {"patches": [{"name": "walls"}, {"name": "inlet"}]},
+            "not_swept": [],
+        });
+        assert!(next_step(&joined).contains("one conformal mesh"));
+        let port_to_port = json!({
+            "remainder": null,
+            "shares": {"polyhedral_cells": 0.0, "not_meshed": 0.0},
+            "validity": {"patches": [{"name": "walls"}]},
+            "not_swept": [],
+        });
+        assert!(next_step(&port_to_port).contains("port to port"));
+        let open_cuts = json!({
+            "remainder": null,
+            "shares": {"polyhedral_cells": 0.0, "not_meshed": 0.75},
+            "validity": {"patches": [{"name": "cut_0_end"}]},
+            "not_swept": [],
+        });
+        assert!(next_step(&open_cuts).contains("is not meshed"));
+    }
 }
