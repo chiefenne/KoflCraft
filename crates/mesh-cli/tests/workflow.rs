@@ -494,6 +494,37 @@ fn nonconvex_manifold_preserves_volume_and_exposes_each_port_layer() {
     nonconvex_duct_preserves_volume_and_exposes_each_port_layer("manifold");
 }
 
+/// Gmsh nodes (MSH 4.1 ASCII) that share their place with another node.
+fn coincident_gmsh_nodes(msh: &str) -> usize {
+    let lines: Vec<&str> = msh.lines().collect();
+    let start = lines.iter().position(|l| *l == "$Nodes").unwrap();
+    let blocks: usize = lines[start + 1]
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut at = start + 2;
+    let mut seen = std::collections::HashSet::new();
+    let mut coincident = 0;
+    for _ in 0..blocks {
+        let n: usize = lines[at]
+            .split_whitespace()
+            .nth(3)
+            .unwrap()
+            .parse()
+            .unwrap();
+        at += 1 + n;
+        for line in &lines[at..at + n] {
+            if !seen.insert(*line) {
+                coincident += 1;
+            }
+        }
+        at += n;
+    }
+    coincident
+}
+
 fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test-fixtures");
     let work = WorkDirectory::new();
@@ -586,8 +617,12 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
                 let thresholds = if dir == "elbow" {
                     [0.45, 0.55, 0.75]
                 } else {
-                    // Manifold 2026-11-25: 0.188, 0.651, 0.787
-                    [0.15, 0.60, 0.75]
+                    // Manifold 2026-11-25: 0.188, 0.651, 0.787. Since
+                    // 2026-11-27 the minimum is 0.107: four cells whose
+                    // kernel point was their own corner (sphericity not
+                    // measured, see the Gmsh check below) now have a strict
+                    // kernel point and count; the cells did not change
+                    [0.10, 0.60, 0.75]
                 };
                 for (metric, minimum) in ["minimum", "p05", "median"].into_iter().zip(thresholds) {
                     let value = shape[metric].as_f64().unwrap();
@@ -598,6 +633,14 @@ fn nonconvex_duct_preserves_volume_and_exposes_each_port_layer(only: &str) {
                 if dir == "manifold" {
                     // median dual 2026-11-25: 25.9 (one cell), 99.9 % below 19.7
                     assert!(maximum_core_span(&vtu, &types) < 30.0);
+                    // Keep: no two Gmsh nodes at one place. The export fans a
+                    // core cell from its kernel point; four Manifold cells had
+                    // their site, at a reflex corner of the cell, as kernel
+                    // point, so the fan had tetrahedra of zero volume and
+                    // FoehnCraft refused the file (acceptance, 2026-11-27).
+                    // The KoflCraft checks use the polyhedra, not the fan.
+                    let msh = fs::read_to_string(work.path().join(&name).join("mesh.msh")).unwrap();
+                    assert_eq!(coincident_gmsh_nodes(&msh), 0);
                 }
                 let offsets = vtu_array(&vtu, "faceoffsets");
                 assert_eq!(types.len() as i64, expected + wall_prisms);
