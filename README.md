@@ -8,14 +8,26 @@
   An open-source polyhedral mesh generator for CFD and multi-physics simulations, written in Rust. The companion mesher of <a href="https://github.com/chiefenne/Foehncraft">Foehncraft</a>.
 </p>
 
-<p align="center">
-  <a href="docs/gallery.md"><img src="assets/readme/tour.webp" width="880" alt="A slideshow of KoflCraft's Manifold mesh, three slides that change every four seconds, pictured with MurmelCraft: the Manifold duct coloured by patch; the Manifold cut in half and coloured by cell type, polyhedra in the core and prisms along the walls; the non-orthogonality of the cells on a flat cut, in the light theme"></a>
-</p>
+<table>
+  <tr>
+    <td><a href="docs/applications.md#furnace-7"><img src="assets/readme/hero_furnace_tube.jpg" alt="A cut through the seven-tube furnace next to one tube: prism layers in rings around the tube, Voronoi polyhedra growing larger away from it" width="300" height="300"></a></td>
+    <td><a href="docs/gallery/block.md#naca-cgrid"><img src="assets/readme/hero_naca_cgrid.jpg" alt="The block-structured C-grid around a NACA 2412 airfoil, each block in its own colour, the grid lines clustered towards the airfoil surface" width="300" height="300"></a></td>
+    <td><a href="docs/gallery/polyhedral.md#manifold"><img src="assets/readme/hero_manifold_bend.jpg" alt="A flat cut through the bend of the Manifold duct coloured by non-orthogonality: dark prism layers along both walls, light polyhedra in the core" width="300" height="300"></a></td>
+  </tr>
+  <tr>
+    <td><a href="docs/gallery/block.md#elbow"><img src="assets/readme/hero_elbow_blocks.jpg" alt="The block-structured 90 degree elbow exploded into its blocks, each block in its own colour, the O-grid core and the wall blocks pulled apart" width="300" height="300"></a></td>
+    <td><a href="docs/applications.md#heat-exchanger"><img src="assets/readme/hero_heat_exchanger.jpg" alt="A cut across the shell side of the shell-and-tube heat exchanger: polyhedral cells between the seven tube holes, the nozzle leaving to the side" width="300" height="300"></a></td>
+    <td><a href="docs/gallery/block.md#multi-element"><img src="assets/readme/hero_three_element.jpg" alt="The block layout around the three-element airfoil (slat, main element, flap), each block in its own colour" width="300" height="300"></a></td>
+  </tr>
+</table>
 
-<sub>KoflCraft's Manifold mesh pictured with <a href="https://github.com/chiefenne/MurmelCraft">MurmelCraft</a>:
-229,615 cells, Voronoi polyhedra in the core with prism layers at the
-walls. The slides are also [still images with captions](docs/gallery/readme-tour.md);
-how they were made is in [tools/readme-tour](tools/readme-tour/README.md).</sub>
+<sub>KoflCraft meshes pictured with <a href="https://github.com/chiefenne/MurmelCraft">MurmelCraft</a>, each linked to its
+entry with the commands that made it: prism layers around a furnace tube; a
+C-grid around a NACA 2412; the Manifold bend in non-orthogonality; an elbow
+exploded into its blocks; the shell side of a heat exchanger; a three-element
+airfoil. The earlier Manifold slideshow is on the
+[tour page](docs/gallery/readme-tour.md); the pictures are made by
+[tools/readme-hero](tools/readme-hero/make_heroes.py).</sub>
 
 <p align="center">
   <b><a href="#install">Install</a></b> ·
