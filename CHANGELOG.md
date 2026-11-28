@@ -8,8 +8,187 @@ Nothing yet.
 
 | Version | Milestone | Highlights |
 |---|---|---|
+| 0.3.0 (2026-11-28) | Block-dominant meshing, first steps | Region proposal (`regions.propose`: heat-method wall distance, flow potential, skeleton, regions) and sweep fill (`regions.fill`: swept O-grids of hexahedra joined conformally to polyhedra, MD-25), with the elbow and the joined Manifold read back by FoehnCraft in the acceptance run; block T-junctions with a count solve, triangle and tet splits in 3D and a measured 3D trigger; ready-to-run programs for macOS, Linux and Windows on each release; README hero pictures. |
 | 0.2.0 (2026-11-27) | Galleries and install guide | Example gallery (eight block-mesher and eleven polyhedral entries), recipes and an application gallery (heat exchanger shell side, seven-tube furnace, three-element airfoil), every entry with its exact commands, checked numbers and a MurmelCraft picture; install guide for macOS, Linux and Windows. No change to the mesher, its file formats or its tools. |
 | 0.1.0 (2026-11-26) | M1 done, M2 to M5 and MB1 as prototypes | First release. Clipped Voronoi polyhedra in a box (M1, verified), convex STL meshing with size fields, geometry-derived sizes and boundary patch tools (M2), nonconvex ducts on a Rust scaffold with prism layers to the ports, named wall patches, flush openings, zero-thickness shells, polygon-prism layers and the solver rules of production codes (M3 to M5 prototypes), a block-structured mesher with templates (pipe, elbow, airfoil C-grid, multi-element airfoil), edit tools, elliptic smoothing and a layout optimiser (MB1), the blocked VTKHDF hand-off read by FoehnCraft and MurmelCraft, and one tool registry behind the CLI and the MCP server. **Every mesh checked before it is written; FoehnCraft reads every acceptance mesh back in CI; the seven-tube furnace (1.9 million cells) passes the solver rules.** |
+
+## 0.3.0 (2026-11-28) – block-dominant meshing: regions, sweep fill and 3D block splits
+
+**In one paragraph.** KoflCraft 0.3.0 takes the first steps towards
+block-dominant meshing of real ducts. From a closed STL and its patch map,
+`regions.propose` finds the duct's skeleton and marks each region as sweep,
+junction, obstacle, box or remainder, and `regions.fill` meshes the sweep
+regions with swept O-grids of hexahedra and joins them conformally to a
+polyhedral mesh of the rest (MD-25): the elbow is hexahedra from port to
+port, the Manifold one valid mesh of hexahedra in the pipes and polyhedra in
+the box, and FoehnCraft reads both back in the acceptance run. The block
+mesher gains T-junctions with an integer count solve, triangle and tet
+splits that work in 3D, and a 3D trigger that keeps a split only when the
+measured grid gets better. Releases now carry ready-to-run programs for
+macOS, Linux and Windows.
+
+### Highlights
+
+- **Region proposal** (`regions.propose`). Wall distance by the heat method,
+  the inlet-to-outlet potential, the skeleton with its end and branch
+  points, regions marked sweep, junction, obstacle, box or remainder, and a
+  second pass along each box's own long axis.
+- **Sweep fill and join** (`regions.fill`). Swept O-grids along the flow
+  potential with blended stations at mitre corners (elbow worst
+  non-orthogonality 66.1° to 59.1°), the box behind the cuts meshed as
+  polyhedra and joined node for node (Manifold: 132,520 cells, no inverted
+  face, volume within 0.2 % of the STL), and more than two openings behind
+  the cuts (a box with three round pipes: 105,638 cells, valid in
+  FoehnCraft).
+- **Block mesher in 3D.** T-junctions (BS-21) with an exact integer count
+  solve, `block.split_triangle` on any topology, `block.split_tet` into four
+  hexahedra, and a 3D trigger in `block.optimize_layout` that measures each
+  candidate split.
+- **Release downloads.** `kofl` and `mesh-mcp` for macOS (universal),
+  Linux x86-64 and Windows x86-64 with `SHA256SUMS.txt`, attached to the
+  release.
+
+### Known limits
+
+- Square pipe sections (the T-junction duct) still fail at the cut of the
+  sweep join; round pipes work.
+- `regions.propose` only proposes; `regions.fill` meshes the sweep regions
+  and the box behind them, while junction and obstacle regions are left to
+  the polyhedral mesher.
+- The tube side and the solids of the heat exchanger still need the
+  multi-domain mesher (MD-06 to MD-18), and there is no STEP reader yet.
+- The Mac programs are signed ad hoc only, so macOS asks once before the
+  first start.
+
+### All changes
+
+#### Region proposal and sweep fill
+
+- **Region proposal for block-dominant meshing** (`regions.propose`). From a
+  closed STL and its patch map, KoflCraft builds a tet scaffold, solves the
+  wall distance (heat method) and the inlet-to-outlet potential, finds the
+  skeleton with its end and branch points, and marks each region as sweep,
+  junction, obstacle, box or remainder (left to the polyhedral mesher). A
+  second pass tries each box and remainder region again along its own long
+  axis. Writes a report, the fields (VTU) and a picture (SVG); nothing is
+  meshed yet.
+- **Sweep regions meshed with hexahedra** (`regions.fill`). The sweep
+  regions of the region proposal are filled with swept O-grids: the
+  stations are level sets of the inlet-to-outlet potential (the meridian
+  planes in a bend, the mitre plane at a mitre corner), each section is the
+  pipe template's O-grid with the first rows at the layer heights, and a
+  sweep ends at its port or at a calm, exactly planar cut in front of the
+  next region. The elbow is swept from port to port (17,472 hexahedra,
+  volume within 0.003 %); in the Manifold both pipes are swept and the box
+  is left for the polyhedral mesher. Writes the validated FoehnCraft VTU,
+  a report and the mesh evidence.
+- **Box joined to the swept pipes** (`regions.fill`, MD-25). The region
+  behind the cuts of the sweeps is now meshed as polyhedra (median dual
+  with the sweeps' wall layers) and joined conformally to the hexahedra:
+  each cut gives the polyhedral mesher a planar cap, the pipe's last
+  section takes the positions the mesher gives that cap, and every hex
+  face at a cut is split into the polyhedral faces it holds. The Manifold
+  is one valid mesh of 132,520 cells (69,632 hexahedra in the pipes,
+  62,888 polyhedra in the box), with no inverted face and its volume
+  within 0.2 % of the STL. `join: false` meshes only the sweeps, as
+  before.
+- **Polyhedral wall layers at box corners.** Where the wall offset kept a
+  scaffold tetrahedron turned over at a corner of three walls, the layers
+  of the third wall now yield too, so thick layer stacks no longer stop
+  the mesh there.
+- **Sweep fill in the acceptance run** (`regions.fill`, FC-06). The full
+  CI run now meshes the elbow (hexahedra port to port) and the joined
+  Manifold (swept pipes and the polyhedral box) and has FoehnCraft read
+  both back: same cells, faces, patches and volume, no inverted face, no
+  cut left as a patch. Each case's non-orthogonality on both measures is
+  saved in `fill/quality.json`.
+- **`regions.fill` names what it wrote.** The joined Manifold was told
+  that its box was not meshed, and the elbow that it held polyhedra; the
+  next step now says which of the three meshes the file is.
+- **Gmsh file of the polyhedral Manifold readable again.** Four core
+  cells had a corner as their kernel point, so their tetrahedral fan in
+  `mesh.msh` held tetrahedra of zero volume and FoehnCraft refused the
+  file. Those cells now get a kernel point strictly inside.
+- **Blended stations at mitre corners** (`regions.fill`). Next to a mitre
+  plane the sweep's stations are now planes that turn step by step from
+  the leg's section to the mitre plane, the classical structured mitre,
+  instead of level sets that crowd at the inner corner. On the elbow the
+  worst non-orthogonality drops from 66.1° to 59.1° (FoehnCraft's measure
+  from 81.9° to 59.1°) and the smallest scaled Jacobian rises from 0.26
+  to 0.37. The report counts the blended stations.
+- **More than two openings behind the cuts** (`regions.fill` with join).
+  The polyhedral mesher now gives each connected cap of a port id its own
+  layer similarity, so several cuts can share one id, and the join tells
+  them apart by their planes. A box with three round pipes joins into one
+  closed, valid mesh of 105,638 cells, and FoehnCraft reads it as valid.
+  A cut that lies next to a ring of STL nodes no longer leaves a strip of
+  needles that the scaffold could not recover. Square sections (the T)
+  still fail at the cut.
+
+#### Block mesher
+
+- **Triangle split in 3D.** `block.split_triangle` now works on any block
+  topology, not only extruded ones. The flat corner is a block edge (new
+  input `along`, or the flattest edge at `vertex`): every block stacked
+  along that edge becomes three blocks around a centre line, and the new
+  cell count runs as a sheet through the neighbouring blocks to the
+  boundary, so all faces stay point-matched. Blocks in any local frame and
+  any direction in space are handled.
+- **T-junctions in block topologies.** A block corner may now sit inside an
+  edge of a bigger block (`junctions` in the topology file, BS-21). The big
+  block's face is gridded first and the smaller blocks take its nodes, so the
+  hexahedra still meet node for node. `block.check` lists the junction edges
+  and the faces they split.
+- **Count solve.** One integer per chain of opposite edges, with the sum rule
+  at every T-junction, fitted to target counts by an exact integer lattice
+  search (`block::counts::fit`).
+- **Triangle split that stops at the neighbours.** `block.split_triangle`
+  takes `"stop": "t_junction"`: the neighbouring blocks stay whole with a
+  T-junction on their edges and carry the new cells in their counts, instead
+  of being cut in two all the way to the boundary. On the two-layer wedge:
+  8 blocks and 126 cells against 10 blocks and 150 cells for the sheet split.
+- **3D trigger of the prism split.** `block.optimize_layout` on a topology
+  that is not extruded along z (or has T-junctions) now finds prism-shaped
+  blocks by geometry, tries the split with the T-junction stop and with the
+  sheet, measures the 3D grid (non-orthogonality, growth, scaled Jacobian)
+  and keeps a split only when its blocks get at least 2° better with a worst
+  scaled Jacobian of 0.4 or more, while the whole grid gets no worse and
+  grows by at most 10 %. The report (`mode: 3d`) names every split kept and
+  every candidate left, with the reason.
+- **Tet split of a block.** `block.split_tet` splits a block shaped like a
+  tetrahedron into the four hexahedra of the tetrahedron. A block on one of
+  the three split triangles is split into three with it (a prism column), so
+  the cells still meet node for node, and the new cells run on as one row,
+  cut as a sheet or stopped with T-junctions. The 3D trigger of
+  `block.optimize_layout` tries tet-shaped blocks too and keeps a split only
+  when it measurably helps (on the test tet: worst scaled Jacobian 0.04 to
+  0.49, worst angle 82° to 51°).
+- The triangle split now puts its centre at the mean of the three points on
+  the triangle's sides, which keeps its three quadrilaterals convex.
+
+#### Requirements
+
+- **Requirements v1.2.** MD-25 (block next to poly) now gives the
+  polyhedral scaffold each interface quad split along its Delaunay
+  diagonal instead of about its centre, as the sweep join builds it: the
+  centre split stalls the scaffold's boundary recovery at thin wall rows.
+
+#### Releases and documents
+
+- **Release downloads**: the new workflow Executables builds `kofl` and
+  `mesh-mcp` for macOS (one universal build for Apple silicon and Intel),
+  Linux x86-64 and Windows x86-64 and attaches them with `SHA256SUMS.txt`
+  to the release; the Release workflow starts it after each release, and it
+  can be run by hand for an existing one (docs/release.md). The README's
+  "Download a release" says which file to take and how to start the
+  unsigned Mac programs the first time.
+- **README hero pictures.** Six square pictures on white, like FoehnCraft's
+  hero row, each linked to its gallery or application entry: prism layers
+  around a furnace tube, the NACA 2412 C-grid, the Manifold bend in
+  non-orthogonality, the exploded elbow blocks, the heat exchanger shell side
+  and the three-element airfoil blocks. They replace the Manifold slideshow,
+  which stays on the tour page. `tools/readme-hero/make_heroes.py` renders
+  them again with MurmelCraft from the gallery runs' meshes.
 
 ## 0.2.0 (2026-11-27) – example gallery, application gallery and install guide
 
