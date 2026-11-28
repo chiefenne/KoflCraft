@@ -648,17 +648,18 @@ id = "regions-sweep-fill"
 title = "Sweep regions filled with swept O-grids along the flow potential (regions.fill)"
 requirements = ["BS-18", "BS-03", "BS-17"]
 grade = "partial"
-how = "regions.fill takes the sweep regions of regions.propose and meshes each with hexahedra: stations on level sets of the inlet-to-outlet potential at equal centreline spacing, ends at the port or at a calm cut (wall loop flat to 0.001 of the diameter, tilt at most 0.5 deg) before the next region, a station pinned to each sharp wall edge across the flow (the mitre plane), each section the pipe O-grid (ring corners on the four corners of a rectangular duct, else at 45 deg + 90 deg m of a rotation-minimising frame, Wang et al. 2008), wall rows at the layer heights, interior nodes moved along the station normal onto the level set by a bounded root search; ports and cuts are exactly planar. Elbow: 17,472 hexahedra port to port, volume -0.003 %, no inverted face, min scaled Jacobian 0.26; Manifold: both pipes swept (69,632 hexahedra) to calm planar cuts, min scaled Jacobian 0.70, the box (75 %) left for the polyhedral mesher (research/sweep-fill.md)"
+how = "regions.fill takes the sweep regions of regions.propose and meshes each with hexahedra: stations on level sets of the inlet-to-outlet potential at equal centreline spacing, ends at the port or at a calm cut (wall loop flat to 0.001 of the diameter, tilt at most 0.5 deg) before the next region, a station pinned to each sharp wall edge across the flow (the mitre plane), each section the pipe O-grid (ring corners on the four corners of a rectangular duct, else at 45 deg + 90 deg m of a rotation-minimising frame, Wang et al. 2008), wall rows at the layer heights, interior nodes moved along the station normal onto the level set by a bounded root search; ports and cuts are exactly planar. Next to each mitre plane the stations are blended planes (normals turned by slerp from the leg section to the mitre plane over z >= 3 r theta / spacing stations, the classical structured mitre). Elbow: 17,472 hexahedra port to port, volume -0.002 %, no inverted face, min scaled Jacobian 0.37, non-orthogonality 59.1 deg (66.1 deg with level sets at the mitre); Manifold: both pipes swept (69,632 hexahedra) to calm planar cuts, min scaled Jacobian 0.70, the box (75 %) left for the polyhedral mesher (research/sweep-fill.md)"
 tests = [
   "crates/mesh-engine/tests/fill.rs::elbow_sweeps_through_the_mitre",
   "crates/mesh-engine/tests/fill.rs::manifold_pipes_end_in_calm_cuts",
+  "crates/mesh-engine/tests/fill.rs::mitre_blend_beats_the_level_sets",
   "crates/mesh-algorithms/src/fields/sweep.rs::volume_below_a_level_is_exact",
   "crates/mesh-algorithms/src/fields/sweep.rs::lift_stays_within_reach",
   "crates/mesh-algorithms/src/fields/sweep.rs::geometric_rows_keep_first_height_and_length",
   "crates/mesh-algorithms/src/fields/sweep.rs::hex_measures_of_a_cube",
 ]
 commands = ["kofl call regions.fill", "cargo m1 --require-foehn (fill: the elbow read back by FoehnCraft)"]
-gaps = "The region behind the cuts is joined as polyhedra (feature regions-sweep-join); at a mitre the stations fan around the inner corner (non-orthogonality 66 deg on the elbow) where blended stations would give better cells; a sweep needs one closed wall loop per level set and one section type throughout; section rows are not smoothed"
+gaps = "The region behind the cuts is joined as polyhedra (feature regions-sweep-join); the square O-grid section has 45 deg at its diagonals in straight legs, which adds to the mitre tilt (59 deg on the elbow); a sweep needs one closed wall loop per level set and one section type throughout; section rows are not smoothed"
 
 [[feature]]
 id = "regions-sweep-join"
