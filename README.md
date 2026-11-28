@@ -34,6 +34,7 @@ airfoil. The earlier Manifold slideshow is on the
   <b><a href="docs/gallery.md">Example gallery</a></b> ·
   <b><a href="docs/recipes.md">Recipes</a></b> ·
   <b><a href="docs/applications.md">Application gallery</a></b> ·
+  <b><a href="docs/chats.md">Example chats</a></b> ·
   <b><a href="docs/status.md">What works today</a></b> ·
   <b><a href="#documentation">Documentation</a></b>
 </p>
@@ -59,6 +60,31 @@ airfoil. The earlier Manifold slideshow is on the
 [![Release](https://img.shields.io/github/v/release/chiefenne/KoflCraft)](https://github.com/chiefenne/KoflCraft/releases)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](#install)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+## From one sentence to a FoehnCraft case
+
+> *"Here is pipe.stl, a round pipe 40 long with radius 5, flow along z.
+> Put a baffle across the lower half at z = 24, mesh it with prism layers
+> for FoehnCraft and give me the case file."*
+
+One sentence in a chat with an AI assistant connected to KoflCraft's MCP
+server (`kofl mcp`). The STL had no names. The assistant split it into a
+wall and two openings (`patch.propose`), named them inlet and outlet, sized
+the mesh from the pipe radius, added the baffle as a zero-thickness wall
+(`shell.add`), checked the estimate, built the mesh and wrote the
+FoehnCraft case skeleton (`bc.skeleton`): **31,882 cells with three prism
+layers, 0 inverted faces, in 21 s**, and a `case.toml` with only the inlet
+velocity, the outlet pressure and the fluid left to fill in.
+
+<p align="center">
+  <a href="docs/chats.md#pipe-baffle"><img src="docs/figures/chats/chat_pipe_baffle.jpg" alt="Left: the pipe with its walls hidden: the inlet disc, the outlet disc and the half-disc baffle between them, coloured by patch. Right: a flat cut along the pipe axis coloured by cell type: prism layers along the wall, polyhedra in the core, the baffle as a thin line from the wall to the axis." width="800" height="250"></a>
+</p>
+
+<sub>The transcript, with the assistant's slips and the two things the
+tools could not do yet, and three more chats (a NACA 2412 C-grid for y+
+about 1, the Manifold with hexahedra in its pipes, the seven-tube furnace
+over the server's limits with the engineer's approval):
+[docs/chats.md](docs/chats.md).</sub>
 
 ## What it is for
 
@@ -236,6 +262,7 @@ cargo m1 --require-gmsh
 | Nonconvex ducts with exposed prism layers | [docs/nonconvex-duct.md](docs/nonconvex-duct.md) |
 | Block-structured meshes (templates, smoothing, edit tools) | [docs/block-mesher.md](docs/block-mesher.md) |
 | Examples with pictures, recipes, engineering applications | [docs/gallery.md](docs/gallery.md), [docs/recipes.md](docs/recipes.md), [docs/applications.md](docs/applications.md) |
+| Recorded chats with an AI assistant over MCP | [docs/chats.md](docs/chats.md) |
 | Verification grade and gaps of every feature | [docs/status.md](docs/status.md) |
 | Tools of the CLI and the MCP server | [docs/tools.md](docs/tools.md) |
 | Changes and releases | [CHANGELOG.md](CHANGELOG.md), [docs/release.md](docs/release.md) |

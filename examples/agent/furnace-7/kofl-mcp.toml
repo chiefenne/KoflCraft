@@ -1,0 +1,4 @@
+# Limits for the furnace study: its STL is 8.5 MB, above the server's
+# 8 MiB read limit. Builds over the other limits still ask first.
+[limits]
+max_file_bytes = 16777216
