@@ -443,3 +443,51 @@ fn pipe_box_joins_three_openings() {
     assert!(num(&r["shares"]["not_meshed"]) < 0.005, "{}", r["shares"]);
     assert_eq!(f.mesh.expect("cells").summary().inverted_faces, 0);
 }
+
+/// Keep: a square to round transition (`ducts::square_to_round`) is one
+/// sweep, from either end: one O-grid whose ring corners sit on the
+/// square's corners and are carried by the rotation-minimising frame where
+/// the corners round off. Before, a sweep needed the same section type
+/// throughout (four sharp corners or none) and the whole duct was left to
+/// the polyhedral mesher. The round end's 32-gon keeps the volume within
+/// 0.5 %.
+#[test]
+fn square_to_round_is_one_sweep() {
+    for reversed in [false, true] {
+        let mut d = ducts::square_to_round();
+        if reversed {
+            for r in d.roles.iter_mut() {
+                *r = [0, 2, 1][*r];
+            }
+        }
+        let (stl, map) = ducts::files(&d);
+        let map: Value = serde_json::from_str(&map).unwrap();
+        let r = fill(&stl, &map, FillOptions::default()).unwrap().report;
+        assert_eq!(r["not_swept"], Value::Array(vec![]), "reversed {reversed}");
+        let sweeps = r["sweeps"].as_array().unwrap();
+        assert_eq!(sweeps.len(), 1, "{}", r["sweeps"]);
+        let s = &sweeps[0];
+        let sec = &s["section"];
+        assert!(
+            sec["kind"].as_str().unwrap().starts_with("transition"),
+            "{sec}"
+        );
+        let sharp = num(&sec["sharp_stations"]);
+        let all = num(&s["stations"]);
+        assert!(sharp > 0.0 && sharp < all, "{sec}");
+        assert_eq!(s["unlifted_nodes"], 0, "{s}");
+        let dv = num(&s["relative_volume_difference"]).abs();
+        assert!(dv < 5e-3, "volume off by {dv}");
+        let v = &r["validity"];
+        assert_eq!(v["inverted_faces"], 0, "{v}");
+        assert!(
+            num(&v["min_scaled_jacobian"]) > 0.5,
+            "reversed {reversed}: {v}"
+        );
+        assert!(
+            num(&v["max_non_orthogonality_deg"]) < 50.0,
+            "reversed {reversed}: {v}"
+        );
+        assert!(num(&r["shares"]["swept_cells"]) > 0.99, "{}", r["shares"]);
+    }
+}

@@ -24,7 +24,12 @@
 //!    carried along the stations. A section with four sharp corners (a
 //!    rectangular duct) is an H-grid ([`HCore`]): the ring holds the wall
 //!    layers, its corners on the section's corners, and the core is a
-//!    tensor grid clustered to all four walls.
+//!    tensor grid clustered to all four walls. A transition (some sections
+//!    with four sharp corners, the others none: a square to round duct) is
+//!    one O-grid whose ring corners sit on the sharp corners and are
+//!    carried by the same frame into the smooth sections
+//!    ([`carried_corners`]); its wall layers are mitred only where a
+//!    corner is sharp.
 //! 3. The first rows of the ring are offsets of the wall at the layer
 //!    heights (first height, growth), the rest grows to the core.
 //! 4. Interior nodes are moved along the station normal onto the station's
@@ -1261,16 +1266,20 @@ pub fn fill(
             }
         }
     }
-    let sharp = rings[0].corners.len() == 4;
     for r in &rings {
         let k = r.corners.len();
-        if !(k == 0 || k == 4) || (k == 4) != sharp {
+        if !(k == 0 || k == 4) {
             return Err(format!(
-                "the section at p = {:.4} has {k} sharp corners; a sweep needs a smooth section or one with four corners throughout",
+                "the section at p = {:.4} has {k} sharp corners; a sweep needs sections with four sharp corners or none",
                 r.level
             ));
         }
     }
+    // a transition (square to round): some sections with four corners,
+    // some without; one O-grid, its ring corners carried through
+    let sharp_at: Vec<bool> = rings.iter().map(|r| r.corners.len() == 4).collect();
+    let sharp = sharp_at.iter().all(|&b| b);
+    let transition = !sharp && sharp_at.iter().any(|&b| b);
     // ring corners as arc lengths
     let arc = |r: &Ring| -> Vec<f64> {
         let n = r.points.len();
@@ -1281,7 +1290,9 @@ pub fn fill(
         s
     };
     let mut corner_at: Vec<[f64; 4]> = Vec::with_capacity(rings.len());
-    if sharp {
+    if transition {
+        corner_at = carried_corners(&rings, &sharp_at)?;
+    } else if sharp {
         let mut prev: Option<[Vec3; 4]> = None;
         for r in &rings {
             let s = arc(r);
@@ -1459,7 +1470,18 @@ pub fn fill(
     let grids = rings
         .iter()
         .enumerate()
-        .map(|(k, r)| section_nodes(r, stl, corner_at[k], sharp, layout, &heights, hcore, &opts))
+        .map(|(k, r)| {
+            section_nodes(
+                r,
+                stl,
+                corner_at[k],
+                sharp_at[k],
+                layout,
+                &heights,
+                hcore,
+                &opts,
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let locator = Locator::new(&sub, mesh_h(&sub));
     let value = |x: Vec3| -> Option<f64> {
@@ -1691,6 +1713,146 @@ fn blend_side(
 
 /// A planar station: the wall loop of the plane (c, n) on the scaffold
 /// wall nearest to c, projected onto the STL in the plane.
+/// Arc length at each point of a closed loop (the last entry the perimeter).
+fn arc_lengths(points: &[Vec3]) -> Vec<f64> {
+    let n = points.len();
+    let mut s = vec![0.0; n + 1];
+    for i in 0..n {
+        s[i + 1] = s[i] + (points[(i + 1) % n] - points[i]).length();
+    }
+    s
+}
+
+/// The O-grid ring corners of a transition, where some sections have four
+/// sharp corners and the others none (a square to round duct). On a sharp
+/// section the ring corners are its corners, numbered to match the
+/// neighbouring station; each corner's direction from the centroid is then
+/// carried by the rotation-minimising frame (double reflection) into the
+/// smooth sections, from the nearer sharp station, and the ring corner is
+/// where that ray meets the wall loop. So the O-grid's corners stay on the
+/// square's corners and run on along the lines where they round off.
+fn carried_corners(rings: &[Ring], sharp_at: &[bool]) -> Result<Vec<[f64; 4]>, String> {
+    let k_n = rings.len();
+    let to_dir = |r: &Ring, p: Vec3| -> Vec3 {
+        let d = p - r.centroid;
+        unit(d - r.normal * d.dot(r.normal))
+    };
+    let carry = |from: &Ring, to: &Ring, dirs: [Vec3; 4]| -> [Vec3; 4] {
+        std::array::from_fn(|m| {
+            let d = transport(from.centroid, from.normal, dirs[m], to.centroid, to.normal);
+            unit(d - to.normal * d.dot(to.normal))
+        })
+    };
+    // forward: sharp stations set their corners (matched to what is
+    // carried in), smooth stations take the carried directions
+    let mut dirs: Vec<Option<[Vec3; 4]>> = vec![None; k_n];
+    // distance in stations to the sharp station a direction came from
+    let mut reach = vec![usize::MAX; k_n];
+    for k in 0..k_n {
+        let r = &rings[k];
+        let incoming = (k > 0)
+            .then(|| dirs[k - 1].map(|d| carry(&rings[k - 1], r, d)))
+            .flatten();
+        if sharp_at[k] {
+            let c = &r.corners;
+            let corner_dirs: Vec<Vec3> = c.iter().map(|&i| to_dir(r, r.points[i])).collect();
+            let mut best_shift = 0;
+            if let Some(inc) = incoming {
+                let mut best = f64::NEG_INFINITY;
+                for shift in 0..4 {
+                    let d: f64 = (0..4)
+                        .map(|m| corner_dirs[(m + shift) % 4].dot(inc[m]))
+                        .sum();
+                    if d > best {
+                        best = d;
+                        best_shift = shift;
+                    }
+                }
+            }
+            dirs[k] = Some(std::array::from_fn(|m| corner_dirs[(m + best_shift) % 4]));
+            reach[k] = 0;
+        } else if let Some(inc) = incoming {
+            dirs[k] = Some(inc);
+            reach[k] = reach[k - 1] + 1;
+        }
+    }
+    // backward: smooth stations nearer to a later sharp station take its
+    // directions (also those before the first sharp station)
+    let mut back: Option<([Vec3; 4], usize)> = None;
+    for k in (0..k_n).rev() {
+        if sharp_at[k] {
+            back = dirs[k].map(|d| (d, 0));
+            continue;
+        }
+        if let Some((d, steps)) = back {
+            let d = carry(&rings[k + 1], &rings[k], d);
+            let steps = steps + 1;
+            back = Some((d, steps));
+            if steps < reach[k] {
+                // same numbering as the forward value where both exist
+                let d = match dirs[k] {
+                    Some(f) => {
+                        let mut best = (f64::NEG_INFINITY, 0);
+                        for shift in 0..4 {
+                            let s: f64 = (0..4).map(|m| d[(m + shift) % 4].dot(f[m])).sum();
+                            if s > best.0 {
+                                best = (s, shift);
+                            }
+                        }
+                        std::array::from_fn(|m| d[(m + best.1) % 4])
+                    }
+                    None => d,
+                };
+                dirs[k] = Some(d);
+                reach[k] = steps;
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(k_n);
+    for (k, r) in rings.iter().enumerate() {
+        let s = arc_lengths(&r.points);
+        let perimeter = s[s.len() - 1];
+        let d = dirs[k].ok_or("a transition station without carried corners")?;
+        let mut at = [0.0; 4];
+        for m in 0..4 {
+            at[m] = if sharp_at[k] {
+                // the corner point itself
+                let i = r
+                    .corners
+                    .iter()
+                    .copied()
+                    .max_by(|&a, &b| {
+                        to_dir(r, r.points[a])
+                            .dot(d[m])
+                            .total_cmp(&to_dir(r, r.points[b]).dot(d[m]))
+                    })
+                    .unwrap_or(0);
+                s[i]
+            } else {
+                ray_hit(&r.points, &s, r.centroid, d[m], r.normal).ok_or_else(|| {
+                    format!(
+                        "the section at p = {:.4} is not star-shaped about its centre",
+                        r.level
+                    )
+                })?
+            };
+        }
+        for m in 1..4 {
+            while at[m] <= at[m - 1] {
+                at[m] += perimeter;
+            }
+        }
+        if at[3] - at[0] >= perimeter {
+            return Err(format!(
+                "the O-grid corners of the section at p = {:.4} are out of order",
+                r.level
+            ));
+        }
+        out.push(at);
+    }
+    Ok(out)
+}
+
 fn plane_ring(
     level: f64,
     c: Vec3,

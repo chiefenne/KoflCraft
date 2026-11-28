@@ -480,6 +480,46 @@ now refused when its centreline is shorter than half an axial cell, and
 any sweep whose cells fold (smallest scaled Jacobian not above 0) is
 refused, so its region goes behind the cuts.
 
+## Square to round transition
+
+Date: 2026-11-28. Decided by the maintainer on a card: one sweep, its ring
+corners carried through. Before, a sweep needed the same section type
+throughout, so a duct changing from a square to a round section (one
+sweep region of the proposal) was refused at the first smooth station and
+left to the polyhedral mesher.
+
+1. **One O-grid.** A sweep whose stations have four sharp corners at some
+   levels and none at the others is a transition. Its section is the pipe
+   O-grid throughout (the H-grid needs four corners at every station and
+   has another node count).
+2. **Corners carried.** On a sharp station the ring corners are its
+   corners, numbered to match the station before. Each corner's direction
+   from the centroid is carried station by station with the
+   rotation-minimising frame (double reflection, Wang et al. 2008, as for
+   the smooth O-grid) into the smooth stations, from the nearer sharp
+   station (a backward pass covers smooth stations before the first sharp
+   one, so the flow direction does not matter). The ring corner is where
+   that ray meets the wall loop, so the O-grid's corners stay on the lines
+   where the square's corners round off.
+3. **Layers.** The wall offsets are mitred at a ring corner only where the
+   station's corner is sharp; on a smooth station they follow the wall
+   normal, as in a round pipe.
+
+The fixture is `ducts::square_to_round`: a square duct of side 1 over
+x = 0..2, a transition over x = 2..4 whose corner radius grows from 0 to
+0.5 (smoothstep), and a round pipe of diameter 1 (the inscribed circle)
+over x = 4..6; 64 points around, at equal polar angles. Fill test
+`square_to_round_is_one_sweep` (both flow directions).
+
+| Case | Before | Now |
+|---|---|---|
+| Square to round, inlet at the square | refused at p = 0.41 (0 sharp corners), all polyhedra | one sweep, 49 stations (22 sharp), 21,504 hexahedra, 0 inverted faces, scaled Jacobian ≥ 0.69, non-orthogonality ≤ 44.9°, volume −0.28 % (the 32-gon at the round end) |
+| Same, inlet at the round end | refused | one sweep, within the test's bounds (scaled Jacobian > 0.5, non-orthogonality < 50°, volume within 0.5 %) |
+
+Limits: a rectangle to round transition keeps the rectangle's corner
+directions into the round part (uneven ring blocks there); the square part
+of a transition is an O-grid, not an H-grid.
+
 ## Limits and next steps
 
 - Behind the cuts the join takes any number of openings, round or
@@ -500,8 +540,8 @@ refused, so its region goes behind the cuts.
   An H-grid has twice the cells of the O-grid.
 - Section rows of the ring blocks bow slightly inwards (each column is
   graded on its own); a 2D smoothing of the section is open.
-- A sweep needs one closed wall loop per level set and the same section
-  type throughout (four sharp corners or none). Junctions, obstacle
+- A sweep needs one closed wall loop per level set, each with four sharp
+  corners or none; a mix is a transition (next section). Junctions, obstacle
   passages and boxes have no template yet; 3D tetrahedron and prism blocks
   are planned in the thread on 3D tetrahedron insertion.
 
