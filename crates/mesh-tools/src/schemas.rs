@@ -829,6 +829,16 @@ pub(crate) fn block_split_triangle() -> Value {
     )
 }
 
+pub(crate) fn block_split_tet() -> Value {
+    input(
+        json!({"topology": path(), "output": path(), "block": index(),
+               "corner": {"type": "integer", "minimum": 0, "description": "The tet's corner P0, where three of the block's faces are triangles with one flat corner each; the best one when absent"},
+               "cells": {"type": "integer", "minimum": 1, "description": "The new count n0, added to the three edges at `corner`; the mean of the block's counts when absent"},
+               "stop": {"type": "string", "enum": ["sheet", "t_junction"], "description": "Where the new row ends beyond the tet and its neighbour columns: `sheet` (default) cuts every block on its way to the boundary in two; `t_junction` keeps those blocks whole with a T-junction on their edges and fits the counts"}}),
+        &["corner", "cells", "stop"],
+    )
+}
+
 pub(crate) fn block_optimize_layout() -> Value {
     input(
         json!({"topology": path(), "output": path(),

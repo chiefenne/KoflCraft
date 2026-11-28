@@ -248,3 +248,50 @@ so (`mode: 3d`, `layout_optimised: false`).
 
 The cap is the plan's default. On a fixture this small any split passes it;
 on a real topology a split adds a few per cent.
+
+## The tet split (step 2, part 3)
+
+A hexahedral block shaped like a tetrahedron is split into the four
+hexahedra of the tetrahedron (`block_tet::split_tet`, tool `block.split_tet`).
+
+- **Detection.** Over the 24 right-handed frames of the block, the frame
+  whose new slots 2, 5 and 7 are flat across axes 2, 1 and 0 (the flat
+  corners of the triangles k = 0, j = 0 and i = 0 at P0 = v0) and whose v6
+  has a scaled Jacobian of at most 0.5 in magnitude (the three faces there
+  nearly coplanar: they are the fourth triangle's three quadrilaterals). The
+  angles are read once in the block's own frame and mapped through each
+  rotation. 150° for the detection, 120° by hand.
+- **Counts.** The block's counts (a, b, c) along P0P1, P0P2, P0P3 are the
+  corner counts n1, n2, n3 of the tri-center map of the tetrahedron, which
+  the face P1P2P3 already carries; n0 is new, the mean of a, b and c by
+  default, and the edges at P0 get n0 more cells, the new vertex n0 nodes
+  from the far end (so for equal counts it lies at the middle).
+- **Centres.** A triangle's centre at the mean of its three edge points (the
+  two new vertices and the flat one), not of its corners: the mean of three
+  points is inside the triangle they span, so the three quadrilaterals are
+  convex for any n0. With the corner centroid an explicit n0 = 3 on counts
+  (4, 5, 6) left a corner at 180° and a scaled Jacobian of 0.06; with the
+  edge-point mean it is 0.35, and 0.49 for the default n0 = 5. The triangle
+  split (`split_triangle`) now places its centre the same way; on the 2D
+  wedge the kept split is unchanged and the new blocks no longer have a flat
+  corner left to try.
+- **Neighbours (maintainer card, "Conformal, prism columns").** A T-junction
+  face cannot hold the three quadrilaterals of a triangle (its centre has
+  valence 3 inside the face), so a block on a triangle at P0 is split with
+  the tet: a triangle split along its edge away from the tet, with every
+  block stacked on it. The columns of all three triangles and the tet's own
+  edges at P0 share one row of n0 cells (`split_prisms`: several columns, one
+  row, blocks to leave out, extra row edges), which runs on through the
+  blocks on those edges as a sheet or stops there with T-junctions and the
+  count solve. The columns reuse the tet's new edge vertices; the tet reuses
+  the columns' centres at its faces.
+
+| Case | Before | After |
+|---|---|---|
+| Tet (counts 4, 5, 6), boundary faces, default n0 = 5 | SJ about 0, flat corners | 4 blocks, SJ 0.49, worst angle 50.8°, no folds |
+| Tet on a slab (the slab under the triangle P0P1P2, counts 4, 5, 6), trigger with the cap lifted | 81.6°, SJ 0.04, 33 cells above 70°, 240 cells | 50.8°, SJ 0.49, none above 70°, 880 cells; slab split into three |
+| Same, default cap 10 % | | left: adds more than 10 % |
+| Box on the edge P0P1 only | | `sheet` cuts it in two; `t_junction` keeps it whole with one junction and a count solve |
+
+The fixture's tet is a single block of a tiny grid, so every split adds many
+cells; the cap is meant for real topologies.

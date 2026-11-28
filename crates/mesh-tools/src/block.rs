@@ -360,6 +360,31 @@ pub(crate) fn split_triangle(input: Value, ctx: &Context) -> Run {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct SplitTetInput {
+    pub topology: String,
+    pub output: String,
+    pub block: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corner: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cells: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop: Option<mesh_engine::block_triangle::RowStop>,
+}
+
+pub(crate) fn split_tet(input: Value, ctx: &Context) -> Run {
+    let i: SplitTetInput = decode(input)?;
+    let e = Edit::SplitTet {
+        block: i.block,
+        corner: i.corner,
+        cells: i.cells,
+        stop: i.stop,
+    };
+    edit(ctx, &i.topology, &i.output, e)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct OptimizeLayoutInput {
     pub topology: String,
     pub output: String,

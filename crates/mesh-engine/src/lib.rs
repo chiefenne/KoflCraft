@@ -3,6 +3,7 @@ mod assembly;
 pub mod block;
 pub mod block_edit;
 pub mod block_insert;
+pub mod block_tet;
 pub mod block_triangle;
 pub mod channel;
 mod export;

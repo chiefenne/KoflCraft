@@ -571,7 +571,7 @@ tests = [
   "crates/mesh-cli/tests/kofl.rs::tri_center_tools_split_blocks_and_build_meshes",
 ]
 commands = ["kofl call block.split_triangle", "kofl call block.optimize_layout", "kofl call block.template"]
-gaps = "The 2D trigger with layout optimisation works on extruded topologies only; off the z plane block.optimize_layout runs the 3D trigger without layout optimisation (feature block-3d-trigger); a column that closes into a ring is refused; the new count always enters as a full sheet (no T-junctions, no count solve yet); the tetrahedron split is a template building block, not an edit of a 3D topology; a corner of exactly 180° cannot be stored (the check refuses the block); the trigger tries at most four corners per round, one layout optimisation each; no template uses a triangle layout yet (the multi-element gaps have none); not in the acceptance runner yet"
+gaps = "The 2D trigger with layout optimisation works on extruded topologies only; off the z plane block.optimize_layout runs the 3D trigger without layout optimisation (feature block-3d-trigger); a column that closes into a ring is refused; the new count enters as a full sheet or stops at T-junctions with a count solve (feature block-t-junctions); a tet-shaped block of a 3D topology is split by block.split_tet (feature block-tet-split); a corner of exactly 180° cannot be stored (the check refuses the block); the trigger tries at most four corners per round, one layout optimisation each; no template uses a triangle layout yet (the multi-element gaps have none); not in the acceptance runner yet"
 
 [[feature]]
 id = "block-3d-trigger"
@@ -582,10 +582,28 @@ how = "block.optimize_layout on a topology that is not extruded along z (or has 
 tests = [
   "crates/mesh-engine/src/block_insert.rs::the_3d_trigger_keeps_a_prism_split_that_helps",
   "crates/mesh-engine/src/block_insert.rs::the_3d_trigger_respects_the_cell_cap",
+  "crates/mesh-engine/src/block_insert.rs::the_3d_trigger_keeps_a_tet_split_that_helps",
   "crates/mesh-algorithms/src/block/tests.rs::channel_measures_orthogonal_in_3d",
 ]
 commands = ["kofl call block.optimize_layout"]
-gaps = "No 3D layout optimiser (the trial judges the TFI grid as it comes); prism splits only, the tetrahedron insertion is part 3; the cell cap (10 % of the grid) is fixed, not a tool input; the trigger tries at most four candidates per round and four splits; not run on a swept or junction fixture yet"
+gaps = "No 3D layout optimiser (the trial judges the TFI grid as it comes); tet splits are tried too (feature block-tet-split); the cell cap (10 % of the grid) is fixed, not a tool input; the trigger tries at most four candidates per round and four splits; not run on a swept or junction fixture yet"
+
+[[feature]]
+id = "block-tet-split"
+title = "Tet split of a block: a tetrahedron-shaped hex block becomes four hexahedra, its neighbours prism columns"
+requirements = ["BS-20", "BS-21", "BS-05"]
+grade = "partial"
+how = "block.split_tet finds the frame where three faces at a corner P0 are triangles with one flat corner each (150 degrees or more for the detection, 120 by hand, and nearly flat at v6) and splits the block into the four hexahedra of the tetrahedron: corner counts n1, n2, n3 are the block's counts, the face P1P2P3 keeps its grid, n0 (the mean of the counts when absent) is added to the three edges at P0, each triangle's centre sits at the mean of its three edge points (convex quads), the tet's centre at the mean of the face centres. Conformal (maintainer card 2026-11-27 \"Conformal, prism columns\"): a block on one of the three triangles is split into three with it, a triangle split along its edge away from the tet with every block stacked on it, all columns and the tet share one new row (block_triangle::split_prisms), which runs on through blocks on the edges at P0 as a sheet or stops there with T-junctions and the count solve. The 3D trigger of block.optimize_layout tries tet-shaped blocks too. Tet fixture: scaled Jacobian 0.04 to 0.49, worst angle 81.6 to 50.8 degrees, 33 cells over 70 degrees to none, 240 to 880 cells (tet on a slab); no folds (research/block-triangle-split.md)"
+tests = [
+  "crates/mesh-engine/src/block_tet.rs::a_tet_shaped_block_is_found",
+  "crates/mesh-engine/src/block_tet.rs::a_tet_becomes_four_hexahedra",
+  "crates/mesh-engine/src/block_tet.rs::a_neighbour_on_the_fourth_face_stays_conformal",
+  "crates/mesh-engine/src/block_tet.rs::a_neighbour_on_a_triangle_becomes_a_prism_column",
+  "crates/mesh-engine/src/block_tet.rs::the_row_runs_on_through_a_block_on_an_edge_at_p0",
+  "crates/mesh-engine/src/block_insert.rs::the_3d_trigger_keeps_a_tet_split_that_helps",
+]
+commands = ["kofl call block.split_tet", "kofl call block.optimize_layout"]
+gaps = "A block on a triangle must be prism-shaped along its edge away from the tet (its far corner 120 degrees or more); two columns that meet, or a row that would enter a block from both ends, are refused; the face and tet centres are straight averages (not projected onto a curved face); the cell cap of the trigger blocks the split on small fixtures; no non-conformal version yet (step 3); not run on a swept or chamfered-corner fixture yet; not in the acceptance runner yet"
 
 [[feature]]
 id = "block-t-junctions"
