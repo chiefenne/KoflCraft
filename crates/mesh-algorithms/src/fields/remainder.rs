@@ -302,39 +302,9 @@ pub fn remainder_surface(
         // round, so both turn the same way
         let p: Vec<(usize, usize)> = holes[h].iter().map(|&(v, f)| (map[v], f)).collect();
         let q: Vec<usize> = q_loop.iter().rev().map(|&v| base + v).collect();
-        let at = |v: usize| out_points[v];
-        let q0 = (0..q.len())
-            .min_by(|&a, &b| {
-                (at(q[a]) - at(p[0].0))
-                    .length()
-                    .total_cmp(&(at(q[b]) - at(p[0].0)).length())
-            })
-            .unwrap_or(0);
-        let (np, nq) = (p.len(), q.len());
-        let (mut i, mut j) = (0, 0);
-        while i < np || j < nq {
-            let pi = p[i % np].0;
-            let qj = q[(q0 + j) % nq];
-            let advance_p = if i == np {
-                false
-            } else if j == nq {
-                true
-            } else {
-                let pn = p[(i + 1) % np].0;
-                let qn = q[(q0 + j + 1) % nq];
-                (at(pn) - at(qj)).length() <= (at(pi) - at(qn)).length()
-            };
-            if advance_p {
-                let pn = p[(i + 1) % np].0;
-                out_triangles.push([pi, pn, qj]);
-                source.push(Source::Strip(p[i % np].1));
-                i += 1;
-            } else {
-                let qn = q[(q0 + j + 1) % nq];
-                out_triangles.push([pi, qn, qj]);
-                source.push(Source::Strip(p[i % np].1));
-                j += 1;
-            }
+        for (t, f) in strip(&out_points, &p, &q, c, n) {
+            out_triangles.push(t);
+            source.push(Source::Strip(f));
         }
     }
     Ok(RemainderSurface {
@@ -343,6 +313,84 @@ pub fn remainder_surface(
         source,
         dropped: dropped.iter().filter(|&&d| d).count(),
     })
+}
+
+/// The strip between a hole `p` (nodes with the STL facet beside each) and
+/// a cap's rim `q`, both running the same way round the cut's axis
+/// `(c, n)`: each triangle with the STL facet it lies next to.
+///
+/// The zip runs from a hole node and the rim node nearest to it, by the
+/// shorter diagonal (Fuchs, Kedem & Uselton 1977), and a strip triangle
+/// must face away from the axis, as the duct wall: the zip never takes the
+/// triangle that folds when the other does not (a hole edge running
+/// steeply along the duct, from a coarse STL, puts the rim node behind
+/// the line of that edge). Its last steps are forced, so the first start
+/// whose strip has no fold is taken (the hole's first node, then the
+/// others in turn), else the start with the fewest folds.
+fn strip(
+    points: &[Vec3],
+    p: &[(usize, usize)],
+    q: &[usize],
+    c: Vec3,
+    n: Vec3,
+) -> Vec<([usize; 3], usize)> {
+    let at = |v: usize| points[v];
+    let faces_out = |t: [usize; 3]| {
+        let [a, b, d] = t.map(at);
+        let g = (a + b + d) / 3.0 - c;
+        (b - a).cross(d - a).dot(g - n * g.dot(n)) > 0.0
+    };
+    let (np, nq) = (p.len(), q.len());
+    let zip = |s: usize| -> (Vec<([usize; 3], usize)>, usize) {
+        let pv = |i: usize| p[(s + i) % np];
+        let q0 = (0..nq)
+            .min_by(|&a, &b| {
+                (at(q[a]) - at(pv(0).0))
+                    .length()
+                    .total_cmp(&(at(q[b]) - at(pv(0).0)).length())
+            })
+            .unwrap_or(0);
+        let qv = |j: usize| q[(q0 + j) % nq];
+        let mut out = Vec::with_capacity(np + nq);
+        let mut folds = 0;
+        let (mut i, mut j) = (0, 0);
+        while i < np || j < nq {
+            let (pi, qj) = (pv(i).0, qv(j));
+            let (pn, qn) = (pv(i + 1).0, qv(j + 1));
+            let advance_p = if i == np {
+                false
+            } else if j == nq {
+                true
+            } else {
+                match (faces_out([pi, pn, qj]), faces_out([pi, qn, qj])) {
+                    (true, false) => true,
+                    (false, true) => false,
+                    _ => (at(pn) - at(qj)).length() <= (at(pi) - at(qn)).length(),
+                }
+            };
+            let (t, facet) = if advance_p {
+                i += 1;
+                ([pi, pn, qj], pv(i - 1).1)
+            } else {
+                j += 1;
+                ([pi, qn, qj], pv(i).1)
+            };
+            folds += usize::from(!faces_out(t));
+            out.push((t, facet));
+        }
+        (out, folds)
+    };
+    let mut best = zip(0);
+    for s in 1..np {
+        if best.1 == 0 {
+            break;
+        }
+        let other = zip(s);
+        if other.1 < best.1 {
+            best = other;
+        }
+    }
+    best.0
 }
 
 #[cfg(test)]
@@ -507,6 +555,50 @@ mod tests {
                     .fold(f64::INFINITY, f64::min);
                 assert!(low < 1.0, "a strip triangle ends at z = {low}");
             }
+        }
+    }
+
+    /// Keep: the strip between a coarse hole and a fine rim has no
+    /// triangle folded inward. Here the hole's last edge runs steeply down
+    /// the tube to its first node, and the rim node nearest that first node
+    /// lies behind the edge: the zip from the first node ends in a forced
+    /// triangle that faces the axis. A 5-tube header's polyhedral layers
+    /// failed on such a fold ("no common inward wall direction").
+    #[test]
+    fn a_steep_hole_edge_does_not_fold_the_strip() {
+        let (c, n) = (Vec3::new(0.0, 0.0, 5.0), Vec3::new(0.0, 0.0, 1.0));
+        let at = |deg: f64, depth: f64| {
+            let a = deg.to_radians();
+            Vec3::new(a.cos(), a.sin(), 5.0 - depth)
+        };
+        let mut points = vec![at(0.0, 0.6)];
+        for k in 1..12 {
+            points.push(at(30.0 * k as f64, if k % 2 == 0 { 0.2 } else { 0.4 }));
+        }
+        points.push(at(359.0, 0.05));
+        let np = points.len();
+        for k in 0..16 {
+            points.push(at(-8.0 + 22.5 * k as f64, 0.0));
+        }
+        let p: Vec<(usize, usize)> = (0..np).map(|i| (i, i)).collect();
+        let q: Vec<usize> = (np..points.len()).collect();
+        let tris = strip(&points, &p, &q, c, n);
+        assert_eq!(tris.len(), np + q.len());
+        for (t, _) in &tris {
+            let [a, b, d] = t.map(|v| points[v]);
+            let g = (a + b + d) / 3.0 - c;
+            let out = (b - a).cross(d - a).dot(g - n * g.dot(n));
+            assert!(out > 0.0, "the strip triangle {t:?} faces the axis");
+        }
+        // every hole edge and every rim edge once
+        let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
+        for (t, _) in &tris {
+            for e in 0..3 {
+                *edges.entry((t[e], t[(e + 1) % 3])).or_default() += 1;
+            }
+        }
+        for i in 0..np {
+            assert_eq!(edges.get(&(i, (i + 1) % np)), Some(&1), "hole edge {i}");
         }
     }
 }
