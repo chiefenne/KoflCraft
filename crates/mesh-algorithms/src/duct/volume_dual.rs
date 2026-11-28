@@ -777,6 +777,24 @@ fn build_part(
     } else {
         strict_witness(p, p[site], &faces, &planes, part_volume)
     };
+    // a site at a reflex corner of its part has no strict kernel point
+    // next to it (the inward step is cut to nothing): take the mean of the
+    // part's nodes when every face (fanned from its first node) sees it
+    let witness = if faces.iter().flatten().any(|&v| p[v] == witness) {
+        let mut nodes: Vec<usize> = faces.iter().flatten().copied().collect();
+        nodes.sort_unstable();
+        nodes.dedup();
+        let mean = nodes.iter().fold(Vec3::ZERO, |s, &v| s + p[v]) / nodes.len() as f64;
+        let sees = faces.iter().all(|f| {
+            (1..f.len() - 1).all(|k| {
+                let (a, b, c) = (p[f[0]], p[f[k]], p[f[k + 1]]);
+                (b - a).cross(c - a).dot(mean - a) < 0.0
+            })
+        });
+        if sees { mean } else { witness }
+    } else {
+        witness
+    };
     let built = Cell {
         element: Element::Polyhedron(Box::new(Polyhedron::new(faces, witness, None, part_volume))),
         layer: 0,

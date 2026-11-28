@@ -426,6 +426,83 @@ fn round_trip(cli: &Path, foehn: &Path, root: &Path, workspace: &Path) -> RunRes
             foehn::Kind::Subdivision,
         )?;
     }
+    let non_orthogonality = |dir: &Path, file: &str| -> RunResult<f64> {
+        let out = dir.join(format!("foehn-{}", file.replace('/', "-")));
+        let report: Value = serde_json::from_slice(&fs::read(out.join("mesh_report.json"))?)?;
+        report["quality"]["non_orthogonality"]["max"]
+            .as_f64()
+            .ok_or_else(|| "missing non_orthogonality in the FoehnCraft report".into())
+    };
+    // BS-18, MD-25: the sweep fill. The elbow is one sweep from port to
+    // port; the Manifold's two pipes are swept to calm cuts and the box
+    // behind them is meshed as polyhedra and joined at the cuts. FoehnCraft
+    // reads both back with the same cells, faces, patches and volume, and
+    // the joined mesh has no cut left as a patch (the cuts are interior).
+    let fills = bundles.join("fill");
+    fs::create_dir(&fills)?;
+    let mut fill_quality = Vec::new();
+    for case in ["elbow", "manifold"] {
+        let file = format!("fill-{case}.json");
+        write_json(
+            &fills.join(&file),
+            &json!({"surface": path(&format!("{case}/{case}.stl")),
+                    "patches": path(&format!("{case}/patches.json")),
+                    "output": case}),
+        )?;
+        let envelope = run_cli(cli, &fills, &["call", "regions.fill", "--input", &file])?;
+        require(
+            envelope["status"] == "finished",
+            &format!("regions.fill {case}: {envelope}"),
+        )?;
+        let report: Value =
+            serde_json::from_slice(&fs::read(fills.join(case).join("report.json"))?)?;
+        let validity = &report["validity"];
+        require(
+            // the faceting gap of the round pipes, not a hole
+            report["shares"]["not_meshed"]
+                .as_f64()
+                .is_some_and(|s| s < 5e-3),
+            &format!(
+                "regions.fill {case} leaves part of the domain unmeshed: {}",
+                report["shares"]
+            ),
+        )?;
+        let cuts_left = validity["patches"]
+            .as_array()
+            .ok_or("missing patches in the fill report")?
+            .iter()
+            .filter(|p| p["name"].as_str().is_some_and(|n| n.starts_with("cut_")))
+            .count();
+        require(
+            cuts_left == 0,
+            &format!("regions.fill {case}: {cuts_left} cuts left as patches, not joined"),
+        )?;
+        let vtu = format!("{case}/foehncraft.vtu");
+        run(
+            &fills,
+            &vtu,
+            &fills.join(case).join("mesh-evidence.json"),
+            foehn::Kind::Faces,
+        )?;
+        let foehn_deg = non_orthogonality(&fills, &vtu)?;
+        println!(
+            "fill {case}: {} cells, max non-orthogonality {:.1}° (KoflCraft), {foehn_deg:.1}° (FoehnCraft)",
+            validity["cells"],
+            validity["max_non_orthogonality_deg"]
+                .as_f64()
+                .unwrap_or(f64::NAN)
+        );
+        fill_quality.push(json!({
+            "case": case,
+            "cells": validity["cells"],
+            "koflcraft_max_non_orthogonality_deg": validity["max_non_orthogonality_deg"],
+            "non_orthogonality_by_faces": validity["non_orthogonality_by_faces"],
+            "min_scaled_jacobian": validity["min_scaled_jacobian"],
+            "foehncraft_max_non_orthogonality_deg": foehn_deg,
+            "seconds": report["seconds"]["total"],
+        }));
+    }
+    write_json(&fills.join("quality.json"), &fill_quality)?;
     // MB1 (BS-13, BS-14): block-structured meshes from the templates, with
     // TFI and with elliptic smoothing, and one split with the edit tools;
     // FoehnCraft reads each back, and smoothing must not make the worst
@@ -451,13 +528,6 @@ fn round_trip(cli: &Path, foehn: &Path, root: &Path, workspace: &Path) -> RunRes
                    "wall_spacing": 2e-3}),
         ),
     ];
-    let non_orthogonality = |dir: &Path, file: &str| -> RunResult<f64> {
-        let out = dir.join(format!("foehn-{}", file.replace('/', "-")));
-        let report: Value = serde_json::from_slice(&fs::read(out.join("mesh_report.json"))?)?;
-        report["quality"]["non_orthogonality"]["max"]
-            .as_f64()
-            .ok_or_else(|| "missing non_orthogonality in the FoehnCraft report".into())
-    };
     let mut block_quality = Vec::new();
     for (case, config) in &block_cases {
         let topology = format!("{case}.json");
