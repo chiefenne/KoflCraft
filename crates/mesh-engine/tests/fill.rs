@@ -259,6 +259,35 @@ fn square_tubes_join_both_headers() {
     assert_eq!(names, ["walls", "inlet", "outlet"], "the cuts are interior");
 }
 
+/// Keep: a chamber whose outlet tube passes through its end plate (the
+/// tube's outer wall meets the plate in a concave 90° corner, as at the
+/// tube plates of a heat exchanger's shell side) is joined with its five
+/// wall layers. At that corner the top layer cell folded (2 cells with a
+/// negative face pyramid that no split removed) and the box failed; the
+/// layers now retract locally under such cells and the dual is built
+/// again. The polyhedral duct tests have no concave corner round a tube.
+#[test]
+fn dip_tube_through_the_plate_joins() {
+    let d = ducts::dip_tube();
+    let (stl, map) = ducts::files(&d);
+    let map: Value = serde_json::from_str(&map).unwrap();
+    let f = fill(&stl, &map, FillOptions::default()).unwrap();
+    let r = &f.report;
+    let rem = &r["remainder"];
+    assert!(rem.get("error").is_none(), "{rem}\nsweeps: {}", r["sweeps"]);
+    assert_eq!(rem["shells"], 1, "{rem}");
+    let v = &r["validity"];
+    assert_eq!(v["inverted_faces"], 0, "{v}");
+    assert!(num(&v["max_relative_closure"]) < 1e-9, "{v}");
+    let names: Vec<&str> = v["patches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["walls", "inlet", "outlet"], "the cuts are interior");
+}
+
 /// Keep: in the Manifold both pipes are swept from their port to a calm
 /// cut in front of the box: the cut is planar (every node in its plane, a
 /// flat level set) and square to the pipe; without the join the box is

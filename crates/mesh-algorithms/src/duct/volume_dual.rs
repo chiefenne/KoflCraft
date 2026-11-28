@@ -1147,6 +1147,16 @@ const OFFSET_FACTOR: f64 = 0.7;
 const OFFSET_MIN: f64 = 0.02;
 
 pub(super) fn prepare(scaffold: &Scaffold, steps: &[f64]) -> Result<Prepared, String> {
+    prepare_within(scaffold, steps, None)
+}
+
+/// [`prepare`] with the layer height at each surface vertex limited to the
+/// share `limit` of it from the start.
+fn prepare_within(
+    scaffold: &Scaffold,
+    steps: &[f64],
+    limit: Option<&[f64]>,
+) -> Result<Prepared, String> {
     if !scaffold.shells.is_empty() {
         return Err("crack the scaffold along its shells before the dual is built".into());
     }
@@ -1252,7 +1262,7 @@ pub(super) fn prepare(scaffold: &Scaffold, steps: &[f64]) -> Result<Prepared, St
     // Squeeze the layers further where the wall offset would turn a
     // scaffold tetrahedron over or flatten it (thin ribs, tight corners).
     let labels = vec![0; ts.len()];
-    let mut front = front::advance(&surface, &patches, &labels, &rims, steps, None, &twins)?;
+    let mut front = front::advance(&surface, &patches, &labels, &rims, steps, limit, &twins)?;
     if !steps.is_empty() {
         let mut neighbours = vec![Vec::new(); scaffold.points.len()];
         for t in &scaffold.tetrahedra {
@@ -1378,11 +1388,67 @@ pub fn build_volume_dual_hex(
     build_dual(scaffold, steps, Some(core))
 }
 
+/// Rebuilds of the dual with thinner layers where layer cells still fail
+/// the solver rules after every split (see [`build_dual`]).
+const LAYER_RETRIES: usize = 3;
+
+/// One build of the dual: the mesh, or the surface vertices under layer
+/// cells that still fail the solver rules after every split, with the
+/// layer shares of that build.
+enum Attempt {
+    Built(Box<(DuctMesh, ClosedSurface)>),
+    Folded { walls: Vec<usize>, scale: Vec<f64> },
+}
+
+/// The dual of the scaffold with the wall layers. A layer cell that still
+/// fails the solver rules when no split is left (a sub-wedge whose own
+/// faces fold: the top of the stack in a concave corner, as where a tube
+/// passes through a plate) is not split or merged away; the layers under
+/// it are squeezed (the share of the height at its surface vertices
+/// times `OFFSET_FACTOR`) and the dual is built again, up to
+/// [`LAYER_RETRIES`] times: the layers retract locally, as the prism
+/// layers of production meshers do in tight corners, and keep their full
+/// height everywhere else.
 fn build_dual(
     scaffold: Scaffold,
     steps: &[f64],
     core: Option<&crate::hexcore::HexCore>,
 ) -> Result<(DuctMesh, ClosedSurface), String> {
+    let mut limit: Option<Vec<f64>> = None;
+    for retry in 0..=LAYER_RETRIES {
+        match build_dual_once(
+            &scaffold,
+            steps,
+            core,
+            limit.as_deref(),
+            retry < LAYER_RETRIES,
+        )? {
+            Attempt::Built(built) => return Ok(*built),
+            Attempt::Folded { walls, mut scale } => {
+                if crate::trace_enabled() {
+                    eprintln!(
+                        "kofl trace: dual retry {}: layers squeezed at {} wall vertices under folded layer cells",
+                        retry + 1,
+                        walls.len()
+                    );
+                }
+                for v in walls {
+                    scale[v] = (scale[v] * OFFSET_FACTOR).max(OFFSET_MIN);
+                }
+                limit = Some(scale);
+            }
+        }
+    }
+    Err("the layer cells still fold after the retries".into())
+}
+
+fn build_dual_once(
+    scaffold: &Scaffold,
+    steps: &[f64],
+    core: Option<&crate::hexcore::HexCore>,
+    limit: Option<&[f64]>,
+    may_retry: bool,
+) -> Result<Attempt, String> {
     let mut stage = std::time::Instant::now();
     let mut lap = |name: &str| {
         if crate::trace_enabled() {
@@ -1398,13 +1464,13 @@ fn build_dual(
         patches,
         mut front,
         surface_ids,
-    } = prepare(&scaffold, steps)?;
+    } = prepare_within(scaffold, steps, limit)?;
     lap("layers");
     let mut cuts = Subdivision::default();
     split_layers(&mut front, &mut cuts)?;
     let layer_parts = merge_layer_prisms(&mut front);
     lap("layer split and polygon prisms");
-    let mapped = map_scaffold(&scaffold, &surface_ids, &mut front)?;
+    let mapped = map_scaffold(scaffold, &surface_ids, &mut front)?;
     lap("interior offset");
     let p = &mut front.points;
     let mut dual: Vec<Dual> = (0..mapped.len()).map(|_| Dual::default()).collect();
@@ -1604,6 +1670,22 @@ fn build_dual(
             );
         }
         if split_core.is_empty() && split_layer.is_empty() {
+            // layer cells that fail with nothing left to split: squeeze the
+            // layers under them and build again
+            let mut walls: Vec<usize> = failing
+                .keys()
+                .filter(|&&id| matches!(origin[id], Origin::Layer(..)))
+                .flat_map(|&id| front.cells[id].element.nodes().to_vec())
+                .filter_map(|n| front.wall_of.get(n).copied())
+                .collect();
+            walls.sort_unstable();
+            walls.dedup();
+            if may_retry && !walls.is_empty() && !steps.is_empty() {
+                return Ok(Attempt::Folded {
+                    walls,
+                    scale: front.scale.clone(),
+                });
+            }
             break;
         }
         let mut owned: HashMap<usize, Vec<usize>> = HashMap::new();
@@ -1709,7 +1791,7 @@ fn build_dual(
         patches.iter().filter(|&&p| is_wall(p)).count() * 6,
     )?;
     lap("final check");
-    Ok((
+    Ok(Attempt::Built(Box::new((
         DuctMesh {
             points: front.points,
             cells: front.cells,
@@ -1718,7 +1800,7 @@ fn build_dual(
             patches: classic_patches(),
         },
         surface,
-    ))
+    ))))
 }
 
 #[cfg(test)]

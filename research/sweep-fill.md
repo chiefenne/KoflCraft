@@ -448,6 +448,30 @@ Its wall remesh finishes; the recovery of the wall in the tetrahedral
 scaffold does not. A square tube flush with a header's end wall (the
 first `header_tubes` layout) was not run again.
 
+6. **Layers retract locally where the top layer folds** (`volume_dual.rs`,
+   `front.rs`). On the heat exchanger's shell side (the fluid around the
+   tubes, between the tube plates and baffles) five top-layer cells at
+   the concave corners where tubes pass through a plate kept a negative
+   face pyramid after every split: each is a sub-wedge whose own faces
+   fold, and splitting it again only makes smaller folded wedges. The
+   wall offset's own squeeze does not see them, because no scaffold
+   tetrahedron turns over there. The mesher now takes the wall vertices
+   under such cells (every layer node records the wall vertex it grows
+   from), cuts their share of the layer height by 0.7 (never below
+   0.02) and builds the dual again, up to three times. This is the local
+   prism-layer retraction of production meshers in tight corners; the
+   layers keep their full height everywhere else.
+
+| Case | Before | After |
+|---|---|---|
+| Heat exchanger shell side (Gmsh fluid, tubes through two plates, baffles) | 5 folded layer cells at the tube plates | one retry (3 wall vertices squeezed): 761,279 cells, 0 inverted faces, 47.4° at the cuts, five layers, 301 s |
+| Chamber with a dip tube through its end plate (`ducts::dip_tube`) | 2 folded layer cells | one retry (1 wall vertex squeezed): 273,412 cells, 0 inverted faces, 48.4° at the cuts (fill test `dip_tube_through_the_plate_joins`) |
+
+A smaller chamber (radius 1.2 instead of 2) and other ring spacings do
+not fold at all here, so the fold depends on the scaffold's exact
+tetrahedra at the corner; the test keeps the geometry that folds on
+this machine and asserts only that it meshes.
+
 ## Limits and next steps
 
 - Behind the cuts the join takes any number of openings, round or
