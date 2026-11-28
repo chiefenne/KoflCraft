@@ -1,0 +1,34 @@
+# FoehnCraft boundary-condition skeleton, written by KoflCraft 0.3.0 (BC-05).
+#
+# KoflCraft names the patches and their types; it sets no physical value.
+# Fill in every TODO with FoehnCraft (`foehn case check` lists what is missing).
+# Surface sha256: f7f5ce89594256de7db09d4aaffe1fd819f09e204b38e516d5d04e206907a17e
+
+case_format = "0.7"
+
+[mesh]
+file = "foehncraft.vtu"
+
+# TODO [fluid]: density (kg/m³) and viscosity (Pa s).
+
+# inlet: 96 facets, area 7.848376e1, plane with normal [0.000000e0, 0.000000e0, -1.000000e0], centre of bounds [0.000000e0, 0.000000e0, 0.000000e0]
+[boundary.inlet]
+type = "velocity-inlet"
+# TODO normal_velocity = …  (m/s into the domain; or `velocity`, `profile`, `table` (foehn case schema))
+
+# outlet: 96 facets, area 7.848376e1, plane with normal [0.000000e0, 0.000000e0, 1.000000e0], centre of bounds [0.000000e0, 0.000000e0, 4.000000e1]
+[boundary.outlet]
+type = "static-pressure-outlet"
+# TODO pressure = …  (Pa; FoehnCraft takes 0 when it is left out)
+
+# walls: 192 facets, area 1.256413e3, centre of bounds [0.000000e0, 0.000000e0, 2.000000e1]
+[boundary.walls]
+type = "wall"
+
+# baffle and baffle_back: the two sides of the zero-thickness baffle (shell.add);
+# added by the assistant, bc.skeleton does not list shells yet.
+[boundary.baffle]
+type = "wall"
+
+[boundary.baffle_back]
+type = "wall"
