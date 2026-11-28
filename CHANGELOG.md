@@ -24,8 +24,11 @@ port, the Manifold one valid mesh of hexahedra in the pipes and polyhedra in
 the box, and FoehnCraft reads both back in the acceptance run. The block
 mesher gains T-junctions with an integer count solve, triangle and tet
 splits that work in 3D, and a 3D trigger that keeps a split only when the
-measured grid gets better. Releases now carry ready-to-run programs for
-macOS, Linux and Windows.
+measured grid gets better. Rectangular ducts get an H-grid, so the
+square T and fork join too. Releases now carry ready-to-run programs for
+macOS, Linux (glibc 2.28 or newer) and Windows, with a script for a shared
+install under `/opt`, and four recorded chats show an assistant meshing
+through `kofl mcp`.
 
 ### Highlights
 
@@ -50,8 +53,6 @@ macOS, Linux and Windows.
 
 ### Known limits
 
-- Square pipe sections (the T-junction duct) still fail at the cut of the
-  sweep join; round pipes work.
 - `regions.propose` only proposes; `regions.fill` meshes the sweep regions
   and the box behind them, while junction and obstacle regions are left to
   the polyhedral mesher.
@@ -125,6 +126,18 @@ macOS, Linux and Windows.
   needles that the scaffold could not recover. Square sections (the T)
   still fail at the cut.
 
+- **H-grid for rectangular ducts** (`regions.fill`). A section with four
+  sharp corners is now meshed as the wall layers around a tensor core
+  that is clustered to all four walls, in place of the O-grid whose
+  columns fan towards a smaller core. On the elbow the worst
+  non-orthogonality drops from 59.1° to 49.5° (at the mitre) and from 45°
+  to 26.6° in the straight legs, and the smallest scaled Jacobian rises
+  from 0.37 to 0.49, for about twice the cells. Round pipes keep the
+  O-grid. The cut caps of a square duct are now Delaunay, and the polyhedral
+  mesher's wall layers next to a cap take the cap's sideways shift, fading
+  out, so the square T and fork join to the box mesh at the default five
+  layers. Round ports and pipes do not change.
+
 #### Block mesher
 
 - **Triangle split in 3D.** `block.split_triangle` now works on any block
@@ -175,6 +188,9 @@ macOS, Linux and Windows.
 
 #### Releases and documents
 
+- **Shared install on Linux**: `tools/install-shared.sh` installs a release (or, with `--build`, a source build, optionally with a system-wide Rust under `/opt/KoflCraft/rust` and `--native`) once for all users under `/opt/KoflCraft/<version>/`, with `env.sh`/`env.csh`, a module file for Environment Modules and Lmod, and the `current` default. Several versions stay side by side: users switch with `koflcraft-use <version>` or `module load`, the administrator moves the default with `--activate`. The install guide has the new section "Shared install on Linux".
+- **Linux release programs on older systems**: the Linux release build runs in the manylinux_2_28 container and checks the glibc floor, so the programs run on glibc 2.28 or newer (RHEL, Rocky and Alma 8 and 9, Debian 11 to 13, Ubuntu 20.04 and newer).
+- **Example chats**: `docs/chats.md` shows four chats recorded through `kofl mcp`, each from one sentence of an engineer to a mesh: a bare pipe STL with a baffle to a FoehnCraft case, a NACA 2412 C-grid for y+ about 1, the Manifold with hexahedra in its pipes, and the seven-tube furnace over the server's limits with the engineer's approval. Each lists its calls and results, slips included; the journals are in `examples/agent/`, the recording host is `tools/agent/mcp_host.py`, and the README has a short section with the pipe chat.
 - **Release downloads**: the new workflow Executables builds `kofl` and
   `mesh-mcp` for macOS (one universal build for Apple silicon and Intel),
   Linux x86-64 and Windows x86-64 and attaches them with `SHA256SUMS.txt`
