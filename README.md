@@ -131,7 +131,7 @@ Ready-to-run programs are attached to each
 | System | File | Then |
 |---|---|---|
 | macOS 11 or newer, Apple silicon and Intel | `koflcraft-<version>-macos-universal.tar.gz` | unpack, run `./kofl commands` |
-| Linux x86-64 (glibc 2.39 or newer: Ubuntu 24.04, Debian 13, Fedora 40) | `koflcraft-<version>-linux-x86_64.tar.gz` | unpack, run `./kofl commands` |
+| Linux x86-64 (glibc 2.28 or newer: RHEL/Rocky/Alma 8 and 9, Debian 11-13, Ubuntu 20.04 and newer; v0.2.0 needs 2.39) | `koflcraft-<version>-linux-x86_64.tar.gz` | unpack, run `./kofl commands` |
 | Windows 10 or 11, x86-64 | `koflcraft-<version>-windows-x86_64.zip` | unpack, run `kofl.exe commands` |
 
 Each one holds `kofl` (the command line; `kofl mcp` is the MCP server) and

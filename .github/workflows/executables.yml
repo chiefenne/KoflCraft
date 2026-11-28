@@ -4,6 +4,9 @@ name: Executables
 # SHA256SUMS.txt, to its GitHub release (docs/release.md):
 # - macOS, one universal build for Apple silicon and Intel: .tar.gz;
 # - Linux x86-64: .tar.gz;
+#   built in the manylinux_2_28 container (AlmaLinux 8, glibc 2.28), so
+#   it runs on glibc 2.28 or newer: RHEL/Rocky/Alma 8 and 9, Debian 11-13,
+#   Ubuntu 20.04 and newer (checked below);
 # - Windows x86-64: .zip.
 # The programs are kofl (the command line; `kofl mcp` is the MCP server) and mesh-mcp (the MCP server on its own).
 #
@@ -64,11 +67,13 @@ jobs:
   build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    # empty (no container) except for Linux
+    container: ${{ matrix.container || '' }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { label: Linux x86-64, os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, platform: linux-x86_64 }
+          - { label: Linux x86-64, os: ubuntu-24.04, container: 'quay.io/pypa/manylinux_2_28_x86_64', target: x86_64-unknown-linux-gnu, platform: linux-x86_64 }
           - { label: Windows x86-64, os: windows-latest, target: x86_64-pc-windows-msvc, platform: windows-x86_64 }
           - { label: macOS Apple silicon, os: macos-15, target: aarch64-apple-darwin, platform: macos-arm64 }
           - { label: macOS Intel, os: macos-15, target: x86_64-apple-darwin, platform: macos-x86_64 }
@@ -81,6 +86,10 @@ jobs:
           ref: ${{ inputs.tag || github.sha }}
       - name: Select stable Rust
         run: |
+          if ! command -v rustup > /dev/null; then   # the manylinux container has no Rust
+            curl -fsSL --proto '=https' --tlsv1.2 https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"; export PATH="$HOME/.cargo/bin:$PATH"
+          fi
           rustup update stable && rustup default stable
           rustup target add ${{ matrix.target }}
       - name: Link the C runtime in (no Visual C++ redistributable needed)
@@ -99,6 +108,13 @@ jobs:
             "bin/$first$ext" $SMOKE > /dev/null
           fi
           ls -l bin
+      - name: Check the glibc floor (2.28)
+        if: matrix.platform == 'linux-x86_64'
+        run: |
+          set -euo pipefail
+          max="$(objdump -T bin/* | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n1)"
+          echo "newest glibc symbol: $max"
+          [ "$(printf '%s\n' GLIBC_2.28 "$max" | sort -V | tail -n1)" = GLIBC_2.28 ]
       - uses: actions/upload-artifact@v4
         with:
           name: bin-${{ matrix.platform }}
