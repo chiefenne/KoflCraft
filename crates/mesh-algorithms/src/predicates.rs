@@ -1,4 +1,5 @@
-//! Exact orientation and in-sphere signs for 3D Delaunay construction.
+//! Exact orientation and in-sphere signs for 3D Delaunay construction, and
+//! the planar orientation of the block face overlay.
 //!
 //! Each predicate is first evaluated in floating point; when the result is
 //! smaller than a bound on its rounding error, it is evaluated again in
@@ -114,6 +115,20 @@ fn det3(m: [[&Expansion; 3]; 3]) -> Expansion {
 }
 
 const BOUND: f64 = 1e-13;
+
+/// The sign of det[b − a, c − a] for points of the plane: positive when
+/// a, b, c turn counterclockwise, zero when they are collinear.
+pub fn orient2d(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> Ordering {
+    let l = (b[0] - a[0]) * (c[1] - a[1]);
+    let r = (b[1] - a[1]) * (c[0] - a[0]);
+    let det = l - r;
+    if det.abs() > BOUND * (l.abs() + r.abs()) {
+        return det.total_cmp(&0.0);
+    }
+    let (bx, by) = (diff(b[0], a[0]), diff(b[1], a[1]));
+    let (cx, cy) = (diff(c[0], a[0]), diff(c[1], a[1]));
+    sign(&add(&mul(&bx, &cy), &neg(&mul(&by, &cx))))
+}
 
 /// The sign of det[b − a, c − a, d − a]: positive when a, b, c, d form a
 /// positively oriented tetrahedron.
@@ -373,6 +388,29 @@ pub fn offset_side(n: usize, offset: &dyn Fn(usize, Option<usize>) -> Entry) -> 
 
 #[cfg(test)]
 mod tests {
+
+    /// Invariant: the planar orientation is exact for points a rounding
+    /// error off a line, where the naive determinant has the wrong sign or
+    /// zero (the overlay's collinear test relies on it).
+    #[test]
+    fn orient2d_is_exact_near_a_line() {
+        let a = [0.5, 0.5];
+        let b = [12.0, 12.0];
+        let c = [24.0, 24.0];
+        assert_eq!(orient2d(a, b, c), Ordering::Equal);
+        assert_eq!(
+            orient2d(a, b, [24.0, 24.0 + 24.0 * f64::EPSILON]),
+            Ordering::Greater
+        );
+        assert_eq!(
+            orient2d([0.0, 0.0], [1.0, 0.0], [0.5, 1e-300]),
+            Ordering::Greater
+        );
+        assert_eq!(
+            orient2d([0.0, 0.0], [1.0, 0.0], [0.5, -1e-300]),
+            Ordering::Less
+        );
+    }
     use super::*;
 
     fn v(x: f64, y: f64, z: f64) -> Vec3 {
