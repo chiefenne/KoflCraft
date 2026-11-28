@@ -63,7 +63,10 @@ pub fn remainder_surface(
         let t = triangles[f];
         by_edge.get(&(t[(e + 1) % 3], t[e])).copied()
     };
-    let mut dropped = vec![false; triangles.len()];
+    // every cap's band first, so the flood of a duct cut at both ends (a
+    // tube between two headers) stops at the band of its other end
+    let mut band = vec![false; triangles.len()];
+    let mut rings: Vec<(Vec<usize>, Vec3, Vec3, f64)> = Vec::with_capacity(caps.len());
     for cap in caps {
         let (c, n) = (cap.center, cap.normal);
         let reach = cap.points[..cap.rim]
@@ -91,7 +94,6 @@ pub fn remainder_surface(
             let s0 = side(t[0]);
             s0 != side(t[1]) || s0 != side(t[2])
         };
-        let mut band = vec![false; triangles.len()];
         let mut component = vec![usize::MAX; triangles.len()];
         let mut best: Option<(f64, Vec<usize>)> = None;
         for f0 in 0..triangles.len() {
@@ -139,12 +141,14 @@ pub fn remainder_surface(
         for &f in &ring {
             band[f] = true;
         }
+        rings.push((ring, c, n, slack));
+    }
+    let mut dropped = vec![false; triangles.len()];
+    for (ring, c, n, slack) in &rings {
+        let ahead = |x: Vec3| signed(*c, *n, x) > -slack;
         // flood the sweep's side from the band
         let mut stack: Vec<usize> = Vec::new();
-        for f in 0..triangles.len() {
-            if !band[f] {
-                continue;
-            }
+        for &f in ring {
             dropped[f] = true;
             for e in 0..3 {
                 if let Some(g) = across(f, e)

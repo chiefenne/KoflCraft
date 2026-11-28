@@ -102,3 +102,61 @@ fn manifold_chamber_is_a_box_the_second_pass_splits() {
     let gained = r["second_pass"]["template_share_gained"].as_f64().unwrap();
     assert!(gained > 0.3, "{gained}");
 }
+
+/// Keep: three parallel tubes between two headers are three sweeps, not
+/// obstacles, although each lies on a loop of the slab graph (each level
+/// set meets a tube's wall in one closed loop). Labelling a clean run on a
+/// graph loop as an obstacle again breaks it; the T and fork have no
+/// loop, so no other proposal test sees it.
+#[test]
+fn parallel_tubes_are_sweeps() {
+    let d = ducts::header_tubes();
+    let (stl, map) = ducts::files(&d);
+    let r = run(&stl, &map, 0.15);
+    assert!(
+        r["skeleton"]["loops"].as_u64().unwrap() >= 2,
+        "{}",
+        r["skeleton"]
+    );
+    let tubes = r["regions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|g| {
+            g["kind"] == "sweep" && (2.5..6.5).contains(&g["centroid"][0].as_f64().unwrap())
+        })
+        .count();
+    assert_eq!(tubes, 3, "{}", r["regions"]);
+    assert_eq!(share(&r, "obstacle"), 0.0, "{}", r["shares"]);
+}
+
+/// Keep: a round reducer (radius 0.5 to 0.3, area ratio 2.8) is one
+/// sweep. A box test on piece volume reads its wide pipe as a box (a slab
+/// of the wide pipe is also shorter along the flow, so its volume grows
+/// with the area squared, here 7.7 times the narrow pipe's); the other
+/// fixtures have one width or a real chamber.
+#[test]
+fn reducer_is_one_sweep() {
+    let d = ducts::reducer();
+    let (stl, map) = ducts::files(&d);
+    let r = run(&stl, &map, 0.08);
+    assert_eq!(share(&r, "box"), 0.0, "{}", r["shares"]);
+    assert!(share(&r, "sweep") > 0.95, "{}", r["shares"]);
+}
+
+/// Keep: the furnace chamber with a tube through it is an obstacle, not
+/// a sweep: the level sets through the tube meet the wall in two closed
+/// loops (above and below the tube). Calling it a sweep sent regions.fill
+/// into level sets it cannot section; the analytic fixtures have no body
+/// inside a duct.
+#[test]
+fn furnace_chamber_with_a_tube_is_an_obstacle() {
+    let stl = std::fs::read("../../test-fixtures/furnace/furnace.stl").unwrap();
+    let map = std::fs::read_to_string("../../test-fixtures/furnace/furnace.patches.json").unwrap();
+    let map: Value = serde_json::from_str(&map).unwrap();
+    let r = propose(&stl, &map, RegionOptions::default())
+        .unwrap()
+        .report;
+    assert!(share(&r, "obstacle") > 0.8, "{}", r["shares"]);
+    assert!(share(&r, "sweep") < 0.05, "{}", r["shares"]);
+}
