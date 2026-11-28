@@ -315,17 +315,29 @@ pub fn remainder_surface(
     })
 }
 
+/// A rim node where the rim turns by more than this (degrees) is a corner
+/// of the cut's section (a square duct's edge), matched to the hole node
+/// on that edge.
+const CORNER_TURN: f64 = 30.0;
+
 /// The strip between a hole `p` (nodes with the STL facet beside each) and
 /// a cap's rim `q`, both running the same way round the cut's axis
 /// `(c, n)`: each triangle with the STL facet it lies next to.
 ///
-/// The zip runs from a hole node and the rim node nearest to it, by the
-/// shorter diagonal (Fuchs, Kedem & Uselton 1977), and a strip triangle
-/// must face away from the axis, as the duct wall: the zip never takes the
-/// triangle that folds when the other does not (a hole edge running
-/// steeply along the duct, from a coarse STL, puts the rim node behind
-/// the line of that edge). Its last steps are forced, so the first start
-/// whose strip has no fold is taken (the hole's first node, then the
+/// The zip runs by the shorter diagonal (Fuchs, Kedem & Uselton 1977), and
+/// a strip triangle must face away from the axis, as the duct wall: the
+/// zip never takes the triangle that folds when the other does not (a hole
+/// edge running steeply along the duct, from a coarse STL, puts the rim
+/// node behind the line of that edge).
+///
+/// A section with corners (a square duct) is zipped side by side: each
+/// rim corner is matched to the hole node on its edge, and each side runs
+/// from corner to corner, so no triangle spans an edge of the duct (one
+/// that did cut the corner off, and the layer stack squeezed the cap
+/// unevenly there until its facets collided). A round section, or corners
+/// that do not match, are zipped round the loop from the hole's first node
+/// and the rim node nearest to it; its last steps are forced, so the first
+/// start whose strip has no fold is taken (the hole's first node, then the
 /// others in turn), else the start with the fewest folds.
 fn strip(
     points: &[Vec3],
@@ -340,57 +352,133 @@ fn strip(
         let g = (a + b + d) / 3.0 - c;
         (b - a).cross(d - a).dot(g - n * g.dot(n)) > 0.0
     };
-    let (np, nq) = (p.len(), q.len());
-    let zip = |s: usize| -> (Vec<([usize; 3], usize)>, usize) {
-        let pv = |i: usize| p[(s + i) % np];
-        let q0 = (0..nq)
-            .min_by(|&a, &b| {
-                (at(q[a]) - at(pv(0).0))
-                    .length()
-                    .total_cmp(&(at(q[b]) - at(pv(0).0)).length())
-            })
-            .unwrap_or(0);
-        let qv = |j: usize| q[(q0 + j) % nq];
-        let mut out = Vec::with_capacity(np + nq);
+    // zip a hole run onto a rim run, first and last nodes paired
+    let zip = |pr: &[(usize, usize)], qr: &[usize]| -> (Vec<([usize; 3], usize)>, usize) {
+        let (m, l) = (pr.len() - 1, qr.len() - 1);
+        let mut out = Vec::with_capacity(m + l);
         let mut folds = 0;
         let (mut i, mut j) = (0, 0);
-        while i < np || j < nq {
-            let (pi, qj) = (pv(i).0, qv(j));
-            let (pn, qn) = (pv(i + 1).0, qv(j + 1));
-            let advance_p = if i == np {
+        while i < m || j < l {
+            let (pi, qj) = (pr[i].0, qr[j]);
+            let advance_p = if i == m {
                 false
-            } else if j == nq {
+            } else if j == l {
                 true
             } else {
+                let (pn, qn) = (pr[i + 1].0, qr[j + 1]);
                 match (faces_out([pi, pn, qj]), faces_out([pi, qn, qj])) {
                     (true, false) => true,
                     (false, true) => false,
                     _ => (at(pn) - at(qj)).length() <= (at(pi) - at(qn)).length(),
                 }
             };
-            let (t, facet) = if advance_p {
+            let t = if advance_p {
                 i += 1;
-                ([pi, pn, qj], pv(i - 1).1)
+                [pi, pr[i].0, qj]
             } else {
                 j += 1;
-                ([pi, qn, qj], pv(i).1)
+                [pi, qr[j], qj]
             };
             folds += usize::from(!faces_out(t));
-            out.push((t, facet));
+            out.push((t, pr[i.min(m) - usize::from(advance_p)].1));
         }
         (out, folds)
     };
-    let mut best = zip(0);
+    let (np, nq) = (p.len(), q.len());
+    let p_run = |s: usize, len: usize| -> Vec<(usize, usize)> {
+        (0..=len).map(|i| p[(s + i) % np]).collect()
+    };
+    let q_run =
+        |s: usize, len: usize| -> Vec<usize> { (0..=len).map(|j| q[(s + j) % nq]).collect() };
+    if let Some(pairs) = corners(points, p, q, n) {
+        let mut out = Vec::with_capacity(np + nq);
+        for k in 0..pairs.len() {
+            let ((pa, qa), (pb, qb)) = (pairs[k], pairs[(k + 1) % pairs.len()]);
+            let (lp, lq) = ((pb + np - pa) % np, (qb + nq - qa) % nq);
+            let (lp, lq) = if pairs.len() == 1 { (np, nq) } else { (lp, lq) };
+            out.extend(zip(&p_run(pa, lp), &q_run(qa, lq)).0);
+        }
+        return out;
+    }
+    let nearest = |v: usize| {
+        (0..nq)
+            .min_by(|&a, &b| {
+                (at(q[a]) - at(v))
+                    .length()
+                    .total_cmp(&(at(q[b]) - at(v)).length())
+            })
+            .unwrap_or(0)
+    };
+    let around = |s: usize| zip(&p_run(s, np), &q_run(nearest(p[s].0), nq));
+    let mut best = around(0);
     for s in 1..np {
         if best.1 == 0 {
             break;
         }
-        let other = zip(s);
+        let other = around(s);
         if other.1 < best.1 {
             best = other;
         }
     }
     best.0
+}
+
+/// The corners of a cut's section paired with the hole: `(hole index, rim
+/// index)` for every rim node where the rim turns by more than
+/// [`CORNER_TURN`], with the hole node on that duct edge (in the plane's
+/// view within a quarter of the rim spacing of the corner, the nearest to
+/// the plane of those), in the order of both loops. `None` when the rim
+/// has no corner or a corner has no hole node on its edge, or the pairs do
+/// not run round both loops the same way once.
+fn corners(
+    points: &[Vec3],
+    p: &[(usize, usize)],
+    q: &[usize],
+    n: Vec3,
+) -> Option<Vec<(usize, usize)>> {
+    let (np, nq) = (p.len(), q.len());
+    if np < 3 || nq < 3 {
+        return None;
+    }
+    let at = |v: usize| points[v];
+    let flat = |v: Vec3| v - n * v.dot(n);
+    let spacing = (0..nq)
+        .map(|j| (at(q[(j + 1) % nq]) - at(q[j])).length())
+        .sum::<f64>()
+        / nq as f64;
+    let cos_turn = CORNER_TURN.to_radians().cos();
+    let mut pairs = Vec::new();
+    for j in 0..nq {
+        let (a, b, d) = (at(q[(j + nq - 1) % nq]), at(q[j]), at(q[(j + 1) % nq]));
+        let (u, w) = (flat(b - a), flat(d - b));
+        if u.length() == 0.0 || w.length() == 0.0 {
+            return None;
+        }
+        if u.dot(w) / (u.length() * w.length()) > cos_turn {
+            continue;
+        }
+        let i = (0..np)
+            .filter(|&i| flat(at(p[i].0) - b).length() < 0.25 * spacing)
+            .min_by(|&x, &y| {
+                let axial = |i: usize| (at(p[i].0) - b).dot(n).abs();
+                axial(x).total_cmp(&axial(y))
+            })?;
+        pairs.push((i, j));
+    }
+    if pairs.is_empty() {
+        return None;
+    }
+    // the hole indices run round once, in the rim's order
+    let mut turn = 0;
+    for k in 0..pairs.len() {
+        let (a, b) = (pairs[k].0, pairs[(k + 1) % pairs.len()].0);
+        let step = (b + np - a) % np;
+        if step == 0 && pairs.len() > 1 {
+            return None;
+        }
+        turn += step;
+    }
+    (turn == np || pairs.len() == 1).then_some(pairs)
 }
 
 #[cfg(test)]
@@ -599,6 +687,62 @@ mod tests {
         }
         for i in 0..np {
             assert_eq!(edges.get(&(i, (i + 1) % np)), Some(&1), "hole edge {i}");
+        }
+    }
+
+    /// Keep: at a square cut no strip triangle spans an edge of the duct:
+    /// each side of the rim is zipped to the hole from corner to corner.
+    /// Here the hole's corner nodes lie deeper than their neighbours (as
+    /// a Gmsh STL along a box edge), and the zip round the loop joined a
+    /// hole node on one wall to rim nodes on the next. The cut corner was
+    /// cut off, the layer stack squeezed the cap unevenly and its facets
+    /// collided (square tee with a round branch, "surface collision").
+    #[test]
+    fn a_square_strip_keeps_the_duct_edges() {
+        let (c, n) = (Vec3::new(1.0, 1.0, 5.0), Vec3::new(0.0, 0.0, 1.0));
+        // a point on the square's perimeter, counter-clockwise from (0, 0)
+        let around = |t: f64, z: f64| {
+            let (side, u) = ((t / 2.0).floor() as i32 % 4, t % 2.0);
+            let (x, y) = match side {
+                0 => (u, 0.0),
+                1 => (2.0, u),
+                2 => (2.0 - u, 2.0),
+                _ => (0.0, 2.0 - u),
+            };
+            Vec3::new(x, y, z)
+        };
+        let mut points = Vec::new();
+        for k in 0..4 {
+            let t = 2.0 * k as f64;
+            points.push(around(t, 4.4));
+            points.push(around(t + 0.1, 4.9));
+            points.push(around(t + 1.0, 4.7));
+            points.push(around(t + 1.9, 4.9));
+        }
+        let np = points.len();
+        for k in 0..24 {
+            points.push(around(8.0 * k as f64 / 24.0, 5.0));
+        }
+        let p: Vec<(usize, usize)> = (0..np).map(|i| (i, i)).collect();
+        let q: Vec<usize> = (np..points.len()).collect();
+        let tris = strip(&points, &p, &q, c, n);
+        assert_eq!(tris.len(), np + q.len());
+        let wall = |x: Vec3| -> Vec<u8> {
+            let mut w = Vec::new();
+            for (k, on) in [x.y < 1e-9, x.x > 2.0 - 1e-9, x.y > 2.0 - 1e-9, x.x < 1e-9]
+                .into_iter()
+                .enumerate()
+            {
+                if on {
+                    w.push(k as u8);
+                }
+            }
+            w
+        };
+        for (t, _) in &tris {
+            let walls: Vec<Vec<u8>> = t.iter().map(|&v| wall(points[v])).collect();
+            let shared = (0..4u8).any(|k| walls.iter().all(|w| w.contains(&k)));
+            assert!(shared, "the strip triangle {t:?} spans a duct edge");
         }
     }
 }

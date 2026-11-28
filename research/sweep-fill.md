@@ -423,16 +423,30 @@ shells, one per header. Two changes:
 | Case | Result |
 |---|---|
 | Round pipe between two boxes (`ducts::box_pipe_box`) | the pipe swept cut to cut, 2 shells joined, 0 inverted faces, the cuts interior |
-| Three square tubes between two headers (`ducts::header_tubes`) | 3 tubes swept cut to cut, 2 shells joined on one machine; on the CI runner the layer front collides at a square cut corner (the square-corner gap below) |
+| Three square tubes between two headers (`ducts::header_tubes`) | 3 tubes swept cut to cut, 2 shells joined (step 5 below; before, the layer front collided at a square cut corner on the CI runner) |
 | Heat exchanger tube side (Gmsh fluid from the open STEP, 82,044 facets) | 7 tubes swept (679,936 hexahedra), 2 bonnets (691,642 polyhedra), 1,371,578 cells, 0 inverted faces, 50.1° at the cuts, 89.3° inside the bonnets, 230 s |
 | Five round tubes between two box headers (Gmsh, size 0.06 on tubes of radius 0.2) | 7 sweeps (5 tubes cut to cut, 2 pipes), 2 headers joined: 419,287 cells, 0 inverted faces, 50.3° at the cuts, 89.6° inside the headers (step 4 below; before: "no common inward wall direction" at a rim node) |
 
-A square tube flush with a header wall (the first `header_tubes` layout,
-its outer tubes flush with the header's end walls) collides in the
-polyhedral layer front at the cut corner on the flush side; the square
-offset tee with its branch flush with the floor does not finish its
-polyhedral build. Both are open (the same gap as the square tee with a
-round branch).
+5. **Square strips side by side** (`remainder.rs`): a square cut's strip
+   was zipped round the loop, and where the hole's node on a duct edge
+   lies deeper than its neighbours (a Gmsh STL along a box edge), a strip
+   triangle joined a hole node on one wall to rim nodes on the next and
+   cut the corner off. The layer stack then squeezed the cap unevenly at
+   that corner (scales 1, 0.7, 0.49 on one cap facet) and its facets
+   collided at layer 4. Every rim corner (a turn above 30°) is now
+   matched to the hole node on its edge, and each side is zipped from
+   corner to corner.
+
+| Case | Before | After |
+|---|---|---|
+| Square tee 1 x 1, round branch r 0.3 (Gmsh) | layer 4 front collision at a cut corner | 119,468 cells, 0 inverted faces, 48.4° at the cuts, 88.2° inside the polyhedra |
+| Three square tubes between two headers | collided on the CI runner only | joined (fill test `square_tubes_join_both_headers`) |
+| Square offset tee, branch flush with the floor (Gmsh) | build does not finish | unchanged: the scaffold's boundary recovery splits without end (pass 11: 2.8 million edges to split, shortest 8.7e-7) |
+
+The flush branch is a different gap: the corner zip does not touch it.
+Its wall remesh finishes; the recovery of the wall in the tetrahedral
+scaffold does not. A square tube flush with a header's end wall (the
+first `header_tubes` layout) was not run again.
 
 ## Limits and next steps
 
