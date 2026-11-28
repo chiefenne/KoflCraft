@@ -1219,6 +1219,7 @@ pub fn optimized(
     .map_err(refused)?;
     let mut out = TopologyFile::from_topology(&t, file.reference.clone());
     out.patches = file.patches.clone();
+    out.interfaces = file.interfaces.clone();
     Ok((out, report))
 }
 
@@ -1511,6 +1512,7 @@ pub(crate) mod tests {
             patches,
             surfaces: Vec::new(),
             junctions: Vec::new(),
+            interfaces: Vec::new(),
             reference: None,
         }
     }

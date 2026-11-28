@@ -603,7 +603,27 @@ tests = [
   "crates/mesh-engine/src/block_insert.rs::the_3d_trigger_keeps_a_tet_split_that_helps",
 ]
 commands = ["kofl call block.split_tet", "kofl call block.optimize_layout"]
-gaps = "A block on a triangle must be prism-shaped along its edge away from the tet (its far corner 120 degrees or more); two columns that meet, or a row that would enter a block from both ends, are refused; the face and tet centres are straight averages (not projected onto a curved face); the cell cap of the trigger blocks the split on small fixtures; no non-conformal version yet (step 3); not run on a swept or chamfered-corner fixture yet; not in the acceptance runner yet"
+gaps = "A block on a triangle must be prism-shaped along its edge away from the tet (its far corner 120 degrees or more); two columns that meet, or a row that would enter a block from both ends, are refused; the face and tet centres are straight averages (not projected onto a curved face); the cell cap of the trigger blocks the split on small fixtures; the split falls back to a non-conformal interface where a neighbour is not prism-shaped (block-non-conformal-join); not run on a swept or chamfered-corner fixture yet; not in the acceptance runner yet"
+
+[[feature]]
+id = "block-non-conformal-join"
+title = "Non-conformal block interfaces: a split piece keeps its counts, the two grids on the shared face are overlaid into polyhedra"
+requirements = ["BS-16", "BS-20", "BS-13"]
+grade = "partial"
+how = "block.split_tet with join auto (default, card A 2026-11-28) falls back to a non-conformal interface when a block on a triangle cannot take a prism column: the neighbour stays whole, its face becomes the coarse patch and the tet's three parts the fine patch of one interface, and n0 is the coarsest count from half the tet's largest count up whose four hexahedra reach a scaled Jacobian of 0.4 (cards C and E; n0 = 3 gave 0.35, 4 gives 0.43). The 3D trigger of block.optimize_layout tries tets with the same automatic join, so it keeps this split too. The grid joins each interface in the coarse face's grid parameters: fine nodes by inverting its bilinear quads, the two quad tilings overlaid as a planar arrangement with exact orientation predicates and a 2 % snap (card B; block/overlay.rs, Farrell et al. 2009, Cherchi et al. 2020), each overlap polygon one internal face, the points inside every edge put into all faces at that edge. Tet on a box: 462 cells, 57 polyhedra, 113 interface faces, 0 inverted faces, cells closed, polyhedral volume equal to the hexahedra's to 1e-9. volume.vtu and foehncraft.vtu hold the polyhedra, mesh.msh hexahedra plus pyramids and tetrahedra per polyhedron with parents (card D) (research/non-conformal-block-join.md)"
+tests = [
+  "crates/mesh-algorithms/src/block/overlay.rs::distinct_grids_give_the_product_of_columns_and_rows",
+  "crates/mesh-algorithms/src/block/overlay.rs::shared_lines_merge_exactly",
+  "crates/mesh-algorithms/src/block/overlay.rs::skewed_cells_conserve_area_and_order_edge_points",
+  "crates/mesh-algorithms/src/block/overlay.rs::tri_center_sub_faces_overlay_a_full_grid",
+  "crates/mesh-algorithms/src/block/overlay.rs::cells_with_edge_points_close_on_their_faces",
+  "crates/mesh-algorithms/src/block/overlay.rs::snap_removes_near_coincident_slivers",
+  "crates/mesh-algorithms/src/block/overlay.rs::different_regions_are_refused",
+  "crates/mesh-engine/src/block_tet.rs::a_box_neighbour_joins_non_conformally",
+  "crates/mesh-engine/src/block_insert.rs::the_3d_trigger_falls_back_to_a_non_conformal_tet_split",
+]
+commands = ["kofl call block.split_tet", "kofl call block.optimize_layout", "kofl call block.grid"]
+gaps = "Tet split only (the prism split is still conformal); the trigger's quality measure does not see the interface faces; coarse side must be one whole block face; only flat interface faces tested (curved faces carry a gap between the two sides, reported as max_gap); not in the acceptance runner yet"
 
 [[feature]]
 id = "block-t-junctions"

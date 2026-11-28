@@ -13,6 +13,17 @@ one conformal polyhedral mesh (plan card 2, option B1).
 | A When non-conformal is used | automatic fallback: conformal where it works; when a neighbour cannot take prism columns the split joins non-conformally and the report says so; `conformal_only` forbids it |
 | B Sliver faces | snap within 2 % of the shortest edge at a point; the largest snap is reported |
 | C Count n0 of the piece | match the neighbours' cell size along the interface |
+| E Count when size match fails the bar | coarsest n0 from half the largest count up that reaches scaled Jacobian 0.4 |
+| D `mesh.msh` | polyhedra split into pyramids and tetrahedra from the centroid, with parents, as the duct mesher writes them |
+
+Reading of card C: the tet keeps the counts a, b, c of its fourth face, so
+its edge P0–P1 carries a + n0 cells against the neighbour's a, and the piece
+is always finer. The coarsest n0 its shape allows is half its largest count
+(the new vertex then sits at most 2/3 of the way from P0, spacing equal on
+both sides of it). Measured on the tet on a box it is too coarse for the
+quality bar: n0 = 3 gives the tet's cells a worst scaled Jacobian of 0.35,
+4 gives 0.43, 5 (the mean) 0.49. So the default (card E, maintainer 2026-11-28 08:25 UTC) is the coarsest n0 from half the largest count up
+whose four hexahedra reach 0.4.
 
 ## Method
 
@@ -68,6 +79,28 @@ that edge so every cell closes (as `join.rs` does for the sweep cut).
 | sheared 5 × 4 against 7 × 3 | per cell conserved | < 1e-12 |
 | tri-center quads against 7 × 6, snap 2 % | per cell conserved | < 1e-9 |
 | lines 1e-5 apart, exact / snap 2 % | 9 / 6, smallest 2-area < 1e-4 / > 0.1 | < 1e-12 |
+
+## The 3D assembly (PR 3b, `mesh-io/src/block_join.rs`)
+
+An interface in the topology names two patches: `coarse` is one whole block
+face (the neighbour's), `fine` the tet's three parts of it. Each side is
+gridded on its own as boundary faces. The coarse face's grid gives the
+parameters (node (i, j) at (i / n_i, j / n_j)); fine nodes are placed there
+by inverting the coarse bilinear quads (Gauss–Newton per quad, nearest
+kept), fine nodes on the border are put exactly on it. A crossing point is
+put on its coarse quad, so the coarse cells keep their shape. Each
+overlap polygon replaces the two cell faces it lies in; the points inside
+every edge are put into every other face of the mesh at that edge (side
+faces of both layers, boundary faces along the face's border). Merged fine
+nodes are aliased to their coarse twins everywhere.
+
+| Fixture | Cells | Polyhedra | Interface faces | Inverted | Volume (poly / hex − 1) |
+| --- | --- | --- | --- | --- | --- |
+| tet on a box (bottom not flat, so no prism column) | 462 | 57 | 113 (20 coarse, 47 fine, 45 crossings) | 0 | < 1e-9 |
+
+FoehnCraft (`foehn mesh`, main of 2026-11-28) reads `foehncraft.vtu` as
+valid: 462 cells, 0 inverted faces, closure 1.3e-16. It reads `mesh.msh` as
+1,676 cells (the pieces), same volume, 0 inverted faces.
 
 ## Next
 

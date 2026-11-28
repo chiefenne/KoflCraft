@@ -31,7 +31,7 @@ use std::collections::BTreeSet;
 use mesh_algorithms::block as algo;
 use mesh_core::block::{corner_slot, face_key};
 use mesh_core::geometry::Vec3;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::EngineError;
 use crate::block::{BlockFile, TopologyFile};
@@ -88,6 +88,30 @@ pub struct TetSplit {
     pub counts: Option<CountSolve>,
     pub cells_before: usize,
     pub cells_after: usize,
+    /// How the tet meets its neighbours: `conformal` (prism columns) or
+    /// `non_conformal` (interfaces joined into polyhedra, BS-16).
+    pub join: &'static str,
+    /// The coarse patch of every interface the split made.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub interfaces: Vec<String>,
+    /// Why the conformal split was refused, when the automatic join fell
+    /// back to non-conformal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
+}
+
+/// How a split piece meets its neighbours (card A of step 3,
+/// 2026-11-28).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Join {
+    /// Conformal where the neighbours can take it, else non-conformal.
+    #[default]
+    Auto,
+    /// Conformal only; refused where the neighbours cannot take it.
+    ConformalOnly,
+    /// Non-conformal: the neighbours stay as they are.
+    NonConformal,
 }
 
 /// The rotations that put a tet's P0 at v0, with the least flat angle of
@@ -153,6 +177,50 @@ fn add(file: &mut TopologyFile, p: Vec3, change: &mut Change) -> usize {
     n
 }
 
+/// The non-conformal split with the coarsest n0, from half the tet's
+/// largest count up, whose four hexahedra reach a worst scaled Jacobian of
+/// [`crate::block_insert::MIN_SCALED_JACOBIAN`] (card E of step 3, the
+/// closest the piece's cells come to the neighbours' size at that
+/// quality); the best one tried when none does.
+fn non_conformal_count(
+    file: &mut TopologyFile,
+    b: usize,
+    corner: Option<usize>,
+    stop: RowStop,
+    change: &mut Change,
+) -> Result<TetSplit, EngineError> {
+    let Some(block) = file.blocks.get(b) else {
+        return Err(refused(format!("there is no block {b}")));
+    };
+    let largest = block.cells.iter().copied().max().unwrap_or(1);
+    let mut best: Option<(f64, TopologyFile, Change, TetSplit)> = None;
+    for n in largest.div_ceil(2).max(1)..=largest.max(1) {
+        let mut f = file.clone();
+        let mut c = change.clone();
+        let split = split_tet_with(&mut f, b, corner, Some(n), stop, true, &mut c)?;
+        let g = grid(&f)?;
+        let (_, per) = algo::quality3d::measure(&g);
+        let sj = split
+            .blocks
+            .iter()
+            .map(|&x| per[x].min_scaled_jacobian)
+            .fold(f64::INFINITY, f64::min);
+        let good = sj >= crate::block_insert::MIN_SCALED_JACOBIAN;
+        if best.as_ref().is_none_or(|x| sj > x.0) {
+            best = Some((sj, f, c, split));
+        }
+        if good {
+            break;
+        }
+    }
+    let Some((_, f, c, split)) = best else {
+        return Err(refused(format!("block {b} has no cells")));
+    };
+    *file = f;
+    *change = c;
+    Ok(split)
+}
+
 /// The tet-shaped blocks of a topology whose flat corners are flatter
 /// than `min_deg`, flattest first.
 pub fn tet_blocks(file: &TopologyFile, min_deg: f64) -> Result<Vec<TetBlock>, EngineError> {
@@ -198,8 +266,61 @@ pub(crate) fn split_tet(
     corner: Option<usize>,
     cells: Option<usize>,
     stop: RowStop,
+    join: Join,
     change: &mut Change,
 ) -> Result<TetSplit, EngineError> {
+    match join {
+        Join::ConformalOnly => split_tet_with(file, b, corner, cells, stop, false, change),
+        Join::NonConformal => split_tet_with(file, b, corner, cells, stop, true, change),
+        Join::Auto => {
+            let mut trial = file.clone();
+            let mut trial_change = change.clone();
+            match split_tet_with(&mut trial, b, corner, cells, stop, false, &mut trial_change) {
+                Ok(done) => {
+                    *file = trial;
+                    *change = trial_change;
+                    Ok(done)
+                }
+                Err(conformal) => {
+                    let mut trial = file.clone();
+                    let mut trial_change = change.clone();
+                    match split_tet_with(
+                        &mut trial,
+                        b,
+                        corner,
+                        cells,
+                        stop,
+                        true,
+                        &mut trial_change,
+                    ) {
+                        Ok(mut done) if !done.interfaces.is_empty() => {
+                            *file = trial;
+                            *change = trial_change;
+                            done.fallback = Some(conformal.message);
+                            change.fallback = done.fallback.clone();
+                            Ok(done)
+                        }
+                        _ => Err(conformal),
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// [`split_tet`] in one join mode.
+fn split_tet_with(
+    file: &mut TopologyFile,
+    b: usize,
+    corner: Option<usize>,
+    cells: Option<usize>,
+    stop: RowStop,
+    non_conformal: bool,
+    change: &mut Change,
+) -> Result<TetSplit, EngineError> {
+    if non_conformal && cells.is_none() {
+        return non_conformal_count(file, b, corner, stop, change);
+    }
     if b >= file.blocks.len() {
         return Err(refused(format!("there is no block {b}")));
     }
@@ -276,23 +397,39 @@ pub(crate) fn split_tet(
             along,
         });
     }
+    // the faces shared with neighbours, which become interfaces when the
+    // join is non-conformal
+    let shared: Vec<usize> = (0..3).filter(|&t| started[t].is_some()).collect();
     let exclude: BTreeSet<usize> = [b].into_iter().collect();
-    let prisms = split_prisms(
-        file,
-        &starts,
-        Some(n0),
-        stop,
-        &exclude,
-        &[(p1, p0, a), (p2, p0, bb), (p3, p0, c)],
-        change,
-    )
-    .map_err(|e| {
-        refused(format!(
-            "the new row of tet block {b} cannot run through its neighbours: {}",
-            e.message
-        ))
-    })?;
-    let m0 = [p1, p2, p3].map(|q| prisms.row[&key(p0, q)].vertex);
+    let (prisms, m0) = if non_conformal {
+        let mut new_edges = Vec::new();
+        let mut m0 = [0usize; 3];
+        for (i, (q, n)) in [(p1, a), (p2, bb), (p3, c)].into_iter().enumerate() {
+            m0[i] =
+                crate::block_triangle::split_edge(file, q, p0, n, n0, &mut new_edges, change)?.0;
+        }
+        file.edges.extend(new_edges);
+        started = vec![None; 3];
+        (None, m0)
+    } else {
+        let prisms = split_prisms(
+            file,
+            &starts,
+            Some(n0),
+            stop,
+            &exclude,
+            &[(p1, p0, a), (p2, p0, bb), (p3, p0, c)],
+            change,
+        )
+        .map_err(|e| {
+            refused(format!(
+                "the new row of tet block {b} cannot run through its neighbours: {}",
+                e.message
+            ))
+        })?;
+        let m0 = [p1, p2, p3].map(|q| prisms.row[&key(p0, q)].vertex);
+        (Some(prisms), m0)
+    };
     let [m01, m02, m03] = m0;
     // each triangle's centre: the neighbour column's centre, else the mean
     // of its three edge points (the new vertices and the flat one), which
@@ -307,7 +444,10 @@ pub(crate) fn split_tet(
     let mut centres = [0usize; 3];
     for t in 0..3 {
         centres[t] = match started[t] {
-            Some(i) => prisms.columns[i].centres[0],
+            Some(i) => match &prisms {
+                Some(p) => p.columns[i].centres[0],
+                None => add(file, own[t], change),
+            },
             None => add(file, own[t], change),
         };
     }
@@ -387,9 +527,41 @@ pub(crate) fn split_tet(
     for s in &mut file.surfaces {
         replace(&mut s.faces);
     }
-    let counts = match stop {
-        RowStop::Sheet => None,
-        RowStop::TJunction => Some(t_junctions(file, &prisms.row, cells_before)?),
+    // non-conformal: each shared triangle becomes an interface, the
+    // neighbour's whole face coarse, the tet's three parts fine
+    let mut interfaces = Vec::new();
+    if non_conformal {
+        for &t in &shared {
+            let face = triangles[t].0;
+            let parts = faces_split
+                .iter()
+                .find(|(k, _)| *k == face_key(face))
+                .map(|(_, parts)| parts.clone())
+                .unwrap_or_default();
+            let n = file.interfaces.len();
+            let (coarse, fine) = (format!("interface{n}_coarse"), format!("interface{n}_fine"));
+            for (name, faces) in [(&coarse, vec![face]), (&fine, parts)] {
+                if file.patches.iter().any(|p| p.name == *name) {
+                    return Err(refused(format!("a patch is already named {name}")));
+                }
+                file.patches.push(crate::block::PatchFile {
+                    name: name.clone(),
+                    role: Some(mesh_io::handoff::PatchRole::Interface),
+                    faces,
+                });
+                change.patches.push(name.clone());
+            }
+            file.interfaces.push(crate::block::InterfaceFile {
+                coarse: coarse.clone(),
+                fine: fine.clone(),
+            });
+            change.interfaces.push(coarse.clone());
+            interfaces.push(coarse);
+        }
+    }
+    let counts = match (stop, &prisms) {
+        (RowStop::TJunction, Some(p)) => Some(t_junctions(file, &p.row, cells_before)?),
+        _ => None,
     };
     Ok(TetSplit {
         block: b,
@@ -398,13 +570,24 @@ pub(crate) fn split_tet(
         cells: n0,
         blocks: [b, n - 3, n - 2, n - 1],
         neighbours: prisms
-            .columns
-            .iter()
-            .flat_map(|c| c.column.iter().copied())
-            .collect(),
-        row_blocks: prisms.row_blocks,
+            .as_ref()
+            .map(|p| {
+                p.columns
+                    .iter()
+                    .flat_map(|c| c.column.iter().copied())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        row_blocks: prisms.map(|p| p.row_blocks).unwrap_or_default(),
         stop,
         counts,
+        join: if non_conformal {
+            "non_conformal"
+        } else {
+            "conformal"
+        },
+        interfaces,
+        fallback: None,
         cells_before,
         cells_after: file
             .blocks
@@ -468,6 +651,7 @@ pub(crate) mod tests {
             ],
             surfaces: Vec::new(),
             junctions: Vec::new(),
+            interfaces: Vec::new(),
             reference: None,
         }
     }
@@ -517,6 +701,7 @@ pub(crate) mod tests {
                 corner: None,
                 cells: Some(3),
                 stop: None,
+                join: None,
             },
         )
         .unwrap();
@@ -554,6 +739,7 @@ pub(crate) mod tests {
                 corner: None,
                 cells: None,
                 stop: None,
+                join: None,
             },
         )
         .unwrap();
@@ -613,6 +799,7 @@ pub(crate) mod tests {
                 corner: None,
                 cells: None,
                 stop: None,
+                join: None,
             },
         )
         .unwrap();
@@ -660,7 +847,16 @@ pub(crate) mod tests {
         let f = tet_on_slab();
         for stop in [RowStop::Sheet, RowStop::TJunction] {
             let mut g = f.clone();
-            let split = split_tet(&mut g, 0, None, None, stop, &mut Change::default()).unwrap();
+            let split = split_tet(
+                &mut g,
+                0,
+                None,
+                None,
+                stop,
+                Join::ConformalOnly,
+                &mut Change::default(),
+            )
+            .unwrap();
             assert_eq!(split.neighbours, vec![1]);
             assert!(split.row_blocks.is_empty());
             assert_eq!(g.blocks.len(), 7);
@@ -681,6 +877,92 @@ pub(crate) mod tests {
             assert_eq!(after.folded_corners, 0, "{after:?}");
             assert!(after.min_scaled_jacobian > 0.4, "{after:?}");
         }
+    }
+
+    /// The tet on a box whose bottom is a real quadrilateral (no flat
+    /// corner), so the box cannot take a prism column.
+    pub(crate) fn tet_on_box() -> TopologyFile {
+        let mut f = tet_on_slab();
+        let base = f.vertices.len() - 4;
+        for (i, p) in [[-0.2, -0.2], [1.2, -0.2], [1.2, 1.2], [-0.2, 1.2]]
+            .iter()
+            .enumerate()
+        {
+            f.vertices[base + i] = [p[0], p[1], -0.5];
+        }
+        check(&f).unwrap();
+        f
+    }
+
+    /// Invariant (BS-16, card A of step 3 "Automatic fallback"): when the
+    /// neighbour on a triangle cannot take a prism column, the automatic
+    /// join leaves it whole and makes the shared face a non-conformal
+    /// interface; `conformal_only` refuses. The joined hand-off mesh closes
+    /// every cell, has no inverted face, conserves the volume and the
+    /// interface area, and only the cells at the interface are polyhedra.
+    #[test]
+    fn a_box_neighbour_joins_non_conformally() {
+        let f = tet_on_box();
+        let mut refused_copy = f.clone();
+        assert!(
+            split_tet(
+                &mut refused_copy,
+                0,
+                None,
+                None,
+                RowStop::Sheet,
+                Join::ConformalOnly,
+                &mut Change::default()
+            )
+            .is_err()
+        );
+        let mut g = f.clone();
+        let split = split_tet(
+            &mut g,
+            0,
+            None,
+            None,
+            RowStop::Sheet,
+            Join::Auto,
+            &mut Change::default(),
+        )
+        .unwrap();
+        assert_eq!(split.join, "non_conformal");
+        assert!(split.fallback.is_some());
+        assert_eq!(split.interfaces.len(), 1);
+        // cards C and E: the coarsest n0 from ceil(max(4, 5, 6) / 2) whose
+        // tet cells reach a scaled Jacobian of 0.4
+        assert_eq!(split.cells, 4);
+        assert_eq!(g.blocks.len(), 5);
+        assert_eq!(g.blocks[1].cells, [4, 5, 6], "the box stays as it was");
+        check(&g).unwrap();
+        let (grid, _) = crate::block::grid(&g, &crate::block::VolumeAlgorithm::Tfi).unwrap();
+        let (report, handoff, _) = crate::block::validate(&g, &grid).unwrap();
+        let joins = report["interfaces"].as_array().unwrap();
+        assert_eq!(joins.len(), 1);
+        let j = &joins[0];
+        assert_eq!(j["coarse_faces"].as_u64(), Some(4 * 5));
+        // snapping moves points by at most 2 % of a local edge, so a cell
+        // face's overlay pieces differ from it by about that much
+        assert!(j["max_area_error"].as_f64().unwrap() < 0.02, "{j}");
+        assert!(j["max_gap"].as_f64().unwrap() < 1e-12, "{j}");
+        let summary = handoff.summary();
+        assert_eq!(summary.inverted_faces, 0);
+        let hex_volume: f64 = grid.volumes().iter().sum();
+        let poly_volume: f64 = handoff.cell_volumes().iter().map(|x| x.0).sum();
+        assert!(
+            (poly_volume / hex_volume - 1.0).abs() < 1e-9,
+            "{poly_volume} {hex_volume}"
+        );
+        let poly = report["polyhedra"].as_u64().unwrap() as usize;
+        // the box's top layer and the tet cells on the triangle, at most
+        assert!(poly > 0 && poly <= 4 * 5 + 3 * 5 * 6 + 3 * 3 * 3, "{poly}");
+        assert!(
+            handoff
+                .patches
+                .iter()
+                .all(|p| !p.name.starts_with("interface"))
+        );
     }
 
     /// The new row runs on through a block that shares only an edge at P0
@@ -720,6 +1002,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 RowStop::Sheet,
+                Join::ConformalOnly,
                 &mut Change::default(),
             )
             .unwrap();
@@ -736,6 +1019,7 @@ pub(crate) mod tests {
             None,
             None,
             RowStop::TJunction,
+            Join::ConformalOnly,
             &mut Change::default(),
         )
         .unwrap();

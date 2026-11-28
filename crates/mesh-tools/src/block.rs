@@ -370,6 +370,8 @@ pub struct SplitTetInput {
     pub cells: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop: Option<mesh_engine::block_triangle::RowStop>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<mesh_engine::block_tet::Join>,
 }
 
 pub(crate) fn split_tet(input: Value, ctx: &Context) -> Run {
@@ -379,6 +381,7 @@ pub(crate) fn split_tet(input: Value, ctx: &Context) -> Run {
         corner: i.corner,
         cells: i.cells,
         stop: i.stop,
+        join: i.join,
     };
     edit(ctx, &i.topology, &i.output, e)
 }
