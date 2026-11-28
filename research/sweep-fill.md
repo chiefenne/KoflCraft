@@ -309,15 +309,31 @@ outer corner, measured from the cell centroid to the face centroid, are
 at 59.1° in both grids. The cell count doubles because the core grows
 from the walls at most 1.25 per cell in both directions.
 
-Square T (`ducts::tee`, three square stubs on a junction cube): the cut
-caps are now Delaunay and the scaffold builds. With two wall layers the T
-joins into one valid mesh (0 inverted faces, the cuts interior, at most
-45.4° at the cuts). With three to five layers the polyhedral mesher's
-layer front collides next to the cuts. The similarity slides a square
-rim sideways (by up to the layer height at the corners), while the wall
-vertex next to it only moves inward, so thin tetrahedra there turn over.
-The layers yield, and a cap quad folds. Decided next (card, 2026-11-28):
-fade the cap's sideways shift into the wall layers next to a non-round cap.
+Square T and fork (`ducts::tee`, `ducts::fork`: square stubs on a
+junction cube): the cut caps are now Delaunay and the scaffold builds.
+With two wall layers the T joined, with three to five the polyhedral
+mesher's layer front collided next to the cuts. The cap's similarity moves
+a rim vertex x by (c - x) / r per unit height. That is one along the wall
+normal, and for a rim that is not a circle about c also up to one along
+the wall (at a square's corners). The wall vertex next to the rim moved
+along the normal only, so the layer prisms between them sheared by that
+sideways shift over one wall edge. Thin scaffold tetrahedra there turned
+over, the layers yielded and a cap quad folded.
+
+**Fading the cap's shift into the walls** (maintainer's card,
+2026-11-28). Each wall vertex reached from the rim over wall edges within
+four layer stacks of the cap plane, on walls across the plane, now takes
+the tangential part of the similarity at its place. That part is scaled
+by a smoothstep from one at the plane to zero four stacks away. The part
+along the wall normals is taken out, so the layer heights do not change.
+For a round cap about its centre the tangential part is zero, so round
+pipes do not change.
+
+| Default 5 layers | Turned-over tetrahedra (round 0) | Result |
+|---|---|---|
+| T, no fade | 28 | layer front collision |
+| T, fade | 11, yielded in 4 rounds | valid, 80,389 cells, 41.4° at the cuts |
+| Fork, fade | 0 | valid, 106,713 cells |
 
 ## More than two openings behind the cuts
 
@@ -372,10 +388,11 @@ jitter of the inner nodes did not help. The H-grid (above) fixes the caps.
 
 ## Limits and next steps
 
-- Behind the cuts the join takes any number of openings. Square sections
-  join only with thin layer stacks (two layers on the T); thicker stacks
-  collide in the box's layer front next to the cuts, and the fork does not
-  join yet. Symmetry planes behind the cuts are refused.
+- Behind the cuts the join takes any number of openings, round or
+  square. A rectangle much longer than wide fails at the cut: the
+  mesher's single similarity per cap scales by the short side, so the
+  scaled core leaves the rim on the long one. Symmetry planes behind the
+  cuts are refused.
 - The acceptance runner reads the elbow and the joined Manifold back with
   FoehnCraft (#87). The Manifold is valid: 132,520 cells, at most 88.8° on
   FoehnCraft's non-orthogonality measure (the plain polyhedral Manifold:

@@ -138,41 +138,43 @@ fn h_grid_beats_the_o_grid() {
     assert!(dv(&h) < 1e-4, "{}", dv(&h));
 }
 
-/// Keep: the cut caps of a square duct are Delaunay, so the scaffold's
-/// boundary recovery ends and the square T joins (here with two wall
-/// layers). An H-grid cut slides its wall nodes along the sides to where
-/// the core's lines, scaled out by the polyhedral mesher's similarity,
-/// meet the wall; before, the scaled core leaned by up to the layer stack
-/// against the rim at the corners (48 edges per cap off Delaunay by up to
-/// 83°) and the recovery split without end. With five layers the box's own
-/// layer front still collides next to the cuts.
+/// Keep: the square T and the fork join to the box mesh at the default
+/// five wall layers. Two fixes behind it each fail here first. (1) An
+/// H-grid cut slides its wall nodes to where the core's lines, scaled out
+/// by the polyhedral mesher's similarity, meet the wall, so the cap is
+/// Delaunay; before, the scaled core leaned by up to the layer stack
+/// against the rim at the corners (48 edges per cap off by up to 83°) and
+/// the scaffold's boundary recovery split without end. (2) The wall layers
+/// next to a cap take the cap's sideways shift, fading out over four layer
+/// stacks; before, the rim of a square cap slid sideways while the wall
+/// next to it only moved inward, thin tetrahedra turned over, the layers
+/// yielded and a cap quad folded (a layer front collision with three to
+/// five layers; two layers passed only by luck, not on CI).
 #[test]
-fn square_tee_joins_with_thin_layers() {
-    let (stl, map) = ducts::files(&ducts::tee());
-    let map: Value = serde_json::from_str(&map).unwrap();
-    let opts = FillOptions {
-        layers: 2,
-        ..FillOptions::default()
-    };
-    let f = fill(&stl, &map, opts).unwrap();
-    let r = &f.report;
-    let rem = &r["remainder"];
-    assert!(rem.get("error").is_none(), "{rem}");
-    assert_eq!(rem["surface"]["caps"], 3, "{rem}");
-    let v = &r["validity"];
-    assert_eq!(v["inverted_faces"], 0, "{v}");
-    assert!(num(&v["max_relative_closure"]) < 1e-9, "{v}");
-    let names: Vec<&str> = v["patches"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|p| p["name"].as_str().unwrap())
-        .collect();
-    assert_eq!(names, ["walls", "inlet", "outlet"], "the cuts are interior");
-    assert!(
-        num(&v["non_orthogonality_by_faces"]["at_the_cuts"]["max_deg"]) < 50.0,
-        "{v}"
-    );
+fn square_tee_and_fork_join() {
+    for d in [ducts::tee(), ducts::fork()] {
+        let (stl, map) = ducts::files(&d);
+        let map: Value = serde_json::from_str(&map).unwrap();
+        let f = fill(&stl, &map, FillOptions::default()).unwrap();
+        let r = &f.report;
+        let rem = &r["remainder"];
+        assert!(rem.get("error").is_none(), "{rem}");
+        assert_eq!(rem["surface"]["caps"], 3, "{rem}");
+        let v = &r["validity"];
+        assert_eq!(v["inverted_faces"], 0, "{v}");
+        assert!(num(&v["max_relative_closure"]) < 1e-9, "{v}");
+        let names: Vec<&str> = v["patches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["walls", "inlet", "outlet"], "the cuts are interior");
+        assert!(
+            num(&v["non_orthogonality_by_faces"]["at_the_cuts"]["max_deg"]) < 50.0,
+            "{v}"
+        );
+    }
 }
 
 /// Keep: in the Manifold both pipes are swept from their port to a calm

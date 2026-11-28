@@ -139,6 +139,7 @@ pub(super) fn advance(
             &mut slip_rim,
         )?
     };
+    let mut frames: Vec<(Vec3, Vec3, f64, Vec<usize>)> = Vec::new();
     for (&id, edges) in rims {
         if edges.is_empty() || is_slip(id) {
             continue;
@@ -159,6 +160,7 @@ pub(super) fn advance(
             if radius <= tol || total >= radius {
                 return Err(format!("layer stack closes port {id}"));
             }
+            frames.push((center, normal, radius, ids.clone()));
             for &f in &cap {
                 let f = &surface.facets()[f];
                 if f.plane.normal().dot(normal) < 1.0 - PORT_NORMAL_SLACK {
@@ -177,6 +179,20 @@ pub(super) fn advance(
                     }
                 }
             }
+        }
+    }
+    if !steps.is_empty() {
+        fade_cap_shift(
+            surface,
+            patches,
+            &frames,
+            total,
+            &normals,
+            &port_vertex,
+            &mut direction,
+        );
+        for v in 0..original.len() {
+            direction[v] = direction[canon(v)];
         }
     }
     let mut inner: Vec<_> = (0..original.len()).collect();
@@ -312,6 +328,92 @@ pub(super) fn advance(
 
 /// One planar cap: its facets and its rim edges.
 type Cap = (Vec<usize>, Vec<Edge>);
+
+/// Distance from a cap plane, in layer stacks, over which the wall layers
+/// take the cap's sideways shift.
+const CAP_FADE: f64 = 4.0;
+
+/// The wall layers next to a cap take its sideways shift, fading out.
+/// The cap's similarity moves a rim vertex x by (c - x) / r per unit
+/// height (in the cap plane): along the wall's normal by one, and, where
+/// the rim is not a circle about c, also along the wall (up to one at a
+/// square's corners). A wall vertex next to the rim moves along the
+/// normal only, so the layer prisms between the rim and the next wall
+/// vertices shear by that sideways shift over one wall edge, and thin
+/// scaffold tetrahedra there turn over (the square cuts of a sweep fill).
+/// Each wall vertex reached from the rim over wall edges within
+/// `CAP_FADE` layer stacks of the plane, on walls across the plane, takes
+/// the tangential part of the similarity at its place, times a smoothstep
+/// from one at the plane to zero at that distance. The part along the wall
+/// normals is taken out, so the layer heights do not change.
+fn fade_cap_shift(
+    surface: &ClosedSurface,
+    patches: &[usize],
+    frames: &[(Vec3, Vec3, f64, Vec<usize>)],
+    total: f64,
+    normals: &[Vec<Vec3>],
+    port_vertex: &[bool],
+    direction: &mut [Vec3],
+) {
+    let points = surface.vertices();
+    let mut neighbours: Vec<Vec<usize>> = vec![Vec::new(); points.len()];
+    for (f, &patch) in surface.facets().iter().zip(patches) {
+        if !is_wall(patch) {
+            continue;
+        }
+        for (a, b) in edges(f.triangle.vertices) {
+            neighbours[a].push(b);
+            neighbours[b].push(a);
+        }
+    }
+    let reach = CAP_FADE * total;
+    let mut shift = vec![Vec3::ZERO; points.len()];
+    for (center, normal, radius, rim) in frames {
+        let (c, n, r) = (*center, *normal, *radius);
+        let mut seen: BTreeSet<usize> = rim.iter().copied().collect();
+        let mut stack: Vec<usize> = rim.clone();
+        while let Some(v) = stack.pop() {
+            for &w in &neighbours[v] {
+                if port_vertex[w] || !seen.insert(w) {
+                    continue;
+                }
+                let x = points[w];
+                let s = (c - x).dot(n);
+                if !(0.0..reach).contains(&s) {
+                    continue;
+                }
+                // walls across the plane only (not a wall the plane runs along)
+                let basis: Vec<Vec3> = normals[w].iter().map(|g| *g / g.length()).collect();
+                if basis.is_empty()
+                    || basis.len() >= 3
+                    || basis.iter().any(|g| g.dot(n).abs() > 0.3)
+                {
+                    continue;
+                }
+                let d = x - c;
+                let mut t = (n * d.dot(n) - d) / r;
+                // keep the motion along every wall normal (orthonormalised)
+                let mut axes: Vec<Vec3> = Vec::new();
+                for g in &basis {
+                    let a = axes.iter().fold(*g, |v, &e| v - e * v.dot(e));
+                    if a.length() > 1e-6 {
+                        axes.push(a / a.length());
+                    }
+                }
+                for e in &axes {
+                    t = t - *e * t.dot(*e);
+                }
+                let u = s / reach;
+                let weight = 1.0 - u * u * (3.0 - 2.0 * u);
+                shift[w] = shift[w] + t * weight;
+                stack.push(w);
+            }
+        }
+    }
+    for v in 0..points.len() {
+        direction[v] = direction[v] + shift[v];
+    }
+}
 
 /// The caps of the cap id `id`: each connected set of its facets (over
 /// shared edges) with the rim edges on it. A cap id usually holds one cap;

@@ -5,5 +5,7 @@
   non-orthogonality drops from 59.1° to 49.5° (at the mitre) and from 45°
   to 26.6° in the straight legs, and the smallest scaled Jacobian rises
   from 0.37 to 0.49, for about twice the cells. Round pipes keep the
-  O-grid. The cut caps of a square duct are now Delaunay, so the square T
-  joins to the box mesh with two wall layers.
+  O-grid. The cut caps of a square duct are now Delaunay, and the polyhedral
+  mesher's wall layers next to a cap take the cap's sideways shift, fading
+  out, so the square T and fork join to the box mesh at the default five
+  layers. Round ports and pipes do not change.
