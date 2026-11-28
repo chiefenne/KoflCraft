@@ -406,7 +406,8 @@ shells, one per header. Two changes:
 
 | Case | Result |
 |---|---|
-| Three tubes between two headers (`ducts::header_tubes`, square) | 3 tubes swept cut to cut, 2 shells joined, 0 inverted faces, the cuts interior |
+| Round pipe between two boxes (`ducts::box_pipe_box`) | the pipe swept cut to cut, 2 shells joined, 0 inverted faces, the cuts interior |
+| Three square tubes between two headers (`ducts::header_tubes`) | 3 tubes swept cut to cut, 2 shells joined on one machine; on the CI runner the layer front collides at a square cut corner (the square-corner gap below) |
 | Heat exchanger tube side (Gmsh fluid from the open STEP, 82,044 facets) | 7 tubes swept (679,936 hexahedra), 2 bonnets (691,642 polyhedra), 1,371,578 cells, 0 inverted faces, 50.1° at the cuts, 89.3° inside the bonnets, 230 s |
 | Five round tubes between two box headers (Gmsh) | the tubes are swept; the polyhedral layers fail at one vertex of a header ("no common inward wall direction") |
 
