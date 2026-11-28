@@ -41,7 +41,7 @@ airfoil. The earlier Manifold slideshow is on the
 
 ---
 
-> **Status: release 0.3.0 (tag `v0.3.0`).** Milestone M1
+> **Status: release 0.3.1 (tag `v0.3.1`).** Milestone M1
 > is done and verified: clipped Voronoi polyhedra in a box, validated,
 > exported to VTU, Gmsh, OpenFOAM and FoehnCraft, driven from a CLI and an
 > MCP server. Convex STL meshing with size control (M2), nonconvex ducts with
