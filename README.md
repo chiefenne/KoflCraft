@@ -40,13 +40,15 @@ airfoil. The earlier Manifold slideshow is on the
 
 ---
 
-> **Status: release 0.2.0 (tag `v0.2.0`).** Milestone M1
+> **Status: release 0.3.0 (tag `v0.3.0`).** Milestone M1
 > is done and verified: clipped Voronoi polyhedra in a box, validated,
 > exported to VTU, Gmsh, OpenFOAM and FoehnCraft, driven from a CLI and an
 > MCP server. Convex STL meshing with size control (M2), nonconvex ducts with
 > prism layers carried out to the ports (M3 to M5) and a block-structured
 > mesher (MB1) work as prototypes, each graded with its gaps on the
-> [status page](docs/status.md). Every example of the
+> [status page](docs/status.md). Block-dominant meshing has begun: swept
+> hexahedra in the pipes of an STL, joined node for node to polyhedra in the
+> box between them. Every example of the
 > [example gallery](docs/gallery.md) and the
 > [application gallery](docs/applications.md) carries the exact commands
 > that made it. What changed is in

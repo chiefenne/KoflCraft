@@ -23,6 +23,12 @@ on:
       tag:
         type: string
         required: true
+      # the commit to build when the tag does not exist yet (a draft
+      # release that is published later, release.yml publish_at)
+      ref:
+        type: string
+        required: false
+        default: ""
       upload:
         type: boolean
         default: true
@@ -78,7 +84,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.sha }}
+          ref: ${{ inputs.ref || inputs.tag || github.sha }}
       - name: Select stable Rust
         run: |
           rustup update stable && rustup default stable
@@ -112,7 +118,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.sha }}
+          ref: ${{ inputs.ref || inputs.tag || github.sha }}
           sparse-checkout: |
             README.md
             LICENSE
