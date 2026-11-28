@@ -84,7 +84,8 @@ velocity, the outlet pressure and the fluid left to fill in.
 tools could not do yet, and three more chats (a NACA 2412 C-grid for y+
 about 1, the Manifold with hexahedra in its pipes, the seven-tube furnace
 over the server's limits with the engineer's approval):
-[docs/chats.md](docs/chats.md).</sub>
+[docs/chats.md](docs/chats.md). Connect your own assistant:
+[below](#connect-an-ai-assistant-claude-chatgpt-others).</sub>
 
 ## What it is for
 
@@ -249,6 +250,129 @@ target/release/kofl check box.mesh.json
 target/release/kofl export box.mesh.json vtu box.vtu
 cargo m1 --require-gmsh
 ```
+
+## Connect an AI assistant (Claude, ChatGPT, others)
+
+The chat mode is an AI assistant on your own computer that starts
+KoflCraft's MCP server (`kofl mcp`) and calls its tools: the same tools as
+`kofl commands` ([docs/tools.md](docs/tools.md)), with JSON in and out and
+the evidence in every answer. Any assistant that can start a local MCP
+server (a "stdio" server) can do it; the server is the same for all of
+them. The recorded chats were made with Claude; the entries below start
+the same command and have not all been tested yet. ChatGPT and Claude in a
+web browser or on a phone cannot start a program on your computer, so
+they cannot connect.
+
+### 1. The program and a work folder
+
+`kofl` is one of the programs of [Install](#install): after a build from
+source it is `target/release/kofl` in the KoflCraft folder, from a release
+`kofl` (`kofl.exe`) in the unpacked folder. The assistant needs its full
+path. The server reads files only below its read roots and writes new
+files only below its write roots, and refuses to start without one of
+each. In a terminal **in the KoflCraft folder** (`$PWD` fills the path in
+for you):
+
+```sh
+cargo build --release --locked -p mesh-cli -p mesh-mcp
+KOFL="$PWD/target/release/kofl"              # or the path of the unpacked release
+mkdir -p ~/kofl-work                         # the folder the agent may read and write
+"$KOFL" mcp --read-root ~/kofl-work --write-root ~/kofl-work   # prints nothing and waits; Ctrl + C ends it
+```
+
+Relative paths in the assistant's calls start in the first write root.
+
+### 2. Register it with your assistant
+
+**Claude Code** (the `claude` command):
+
+```sh
+claude mcp add --scope user koflcraft -- "$KOFL" mcp --read-root ~/kofl-work --write-root ~/kofl-work
+claude mcp list                              # koflcraft: ... ✓ Connected
+```
+
+**Claude Desktop** (the Claude app on macOS or Windows): Settings ▸
+Developer ▸ **Edit Config** opens `claude_desktop_config.json`. Add the
+server with full paths (no `~`; `echo "$KOFL" ~/kofl-work` prints them),
+save and restart the app:
+
+```json
+{
+  "mcpServers": {
+    "koflcraft": {
+      "command": "/Users/me/KoflCraft/target/release/kofl",
+      "args": ["mcp", "--read-root", "/Users/me/kofl-work",
+                      "--write-root", "/Users/me/kofl-work"]
+    }
+  }
+}
+```
+
+On Windows the paths look like `"C:\\Users\\me\\KoflCraft\\target\\release\\kofl.exe"`.
+
+**ChatGPT** (OpenAI's Codex: the `codex` command, the ChatGPT desktop app
+and the Codex IDE extension share one list of servers):
+
+```sh
+codex mcp add koflcraft -- "$KOFL" mcp --read-root ~/kofl-work --write-root ~/kofl-work
+codex mcp list
+```
+
+or by hand in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.koflcraft]
+command = "/Users/me/KoflCraft/target/release/kofl"
+args = ["mcp", "--read-root", "/Users/me/kofl-work", "--write-root", "/Users/me/kofl-work"]
+```
+
+**Gemini CLI** (the `gemini` command):
+
+```sh
+gemini mcp add --scope user koflcraft "$KOFL" -- mcp --read-root ~/kofl-work --write-root ~/kofl-work
+gemini mcp list
+```
+
+**Other assistants** (Cursor, VS Code, LM Studio and others) take the same
+entry in their own MCP settings: the command is the full path of `kofl`,
+the arguments are `mcp --read-root DIR --write-root DIR` with full paths.
+Most use the `"mcpServers"` JSON of Claude Desktop above.
+
+Large builds ask first: a build over the server's limits (500,000 cells,
+1 GiB of output) asks you in the chat when the assistant supports MCP
+elicitation, and is refused (`TOOL009`) when it does not; `--policy FILE`
+raises the limits or allows such builds
+([Approvals](docs/m1-usage.md#approvals-ag-15)). `--journal FILE` records
+every call, so you can replay the chat with `kofl call journal.replay`.
+
+### 3. Things to ask
+
+Copy the Manifold fixture into the work folder:
+
+```sh
+cp test-fixtures/manifold/manifold.stl test-fixtures/manifold/patches.json ~/kofl-work/
+```
+
+and ask, for example:
+
+> *"I need a structured mesh around a NACA 2412 for a 2D run at Re = 3
+> million, chord 1 m, with y+ about 1 at the wall."*
+
+> *"Mesh the Manifold (manifold.stl, patches in patches.json) with
+> hexahedra wherever the pipes allow it and polyhedra in the rest, all in
+> one mesh for FoehnCraft."*
+
+The assistant picks the tools (block templates and the first-cell height
+for the airfoil; region proposals, the estimate and the sweep fill for
+the Manifold), checks the mesh and answers with the cell counts and the
+worst cells. Both chats are recorded, with every call and what came back,
+in [docs/chats.md](docs/chats.md#naca-yplus); the mesh opens in
+[MurmelCraft](https://github.com/chiefenne/MurmelCraft).
+
+If the assistant does not list the tools: the path is wrong or the program
+is not built (`ls "$KOFL"` must show the file), a root does not exist, or
+the app was not restarted after the change. Without `--scope user`,
+Claude Code adds the server for the current folder only.
 
 ## Documentation
 
