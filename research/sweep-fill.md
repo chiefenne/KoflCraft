@@ -482,8 +482,8 @@ refused, so its region goes behind the cuts.
 
 ## Square to round transition
 
-Date: 2026-11-28. Recommended on a card to the maintainer: one sweep, its
-ring corners carried through. Before, a sweep needed the same section type
+Date: 2026-11-28. Decided by the maintainer on a card: one sweep, its ring
+corners carried through. Before, a sweep needed the same section type
 throughout, so a duct changing from a square to a round section (one
 sweep region of the proposal) was refused at the first smooth station and
 left to the polyhedral mesher.
