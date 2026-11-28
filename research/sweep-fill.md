@@ -474,7 +474,7 @@ this machine and asserts only that it meshes.
 
 On the CI runner the same chamber first failed before the layers: a
 swept cell of volume 0. Locally the region in front of the plate is
-listed as "the calm cuts leave nothing to sweep"; on the runner its cuts
+listed as "the calm cuts leave nothing to sweep"; on the runner its cuts most likely
 landed a hair apart and gave a sweep of slivers. A sweep with a cut is
 now refused when its centreline is shorter than half an axial cell, and
 any sweep whose cells fold (smallest scaled Jacobian not above 0) is
