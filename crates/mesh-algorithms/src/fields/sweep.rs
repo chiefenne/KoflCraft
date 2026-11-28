@@ -17,12 +17,14 @@
 //!
 //! 1. Each station is the closed loop where the level set meets the wall
 //!    (marching triangles on the scaffold wall), projected onto the STL.
-//! 2. The section is the O-grid of the pipe template ("butterfly"): an
-//!    H-core and four ring blocks. In a section with four sharp corners (a
-//!    rectangular duct) the ring corners sit on them; in a smooth section
-//!    they sit at 45° + 90° m of a rotation-minimising frame (double
-//!    reflection, Wang, Jüttler, Zheng & Liu 2008, *Computation of rotation
-//!    minimizing frames*, ACM TOG 27(1)) carried along the stations.
+//! 2. A smooth section is the O-grid of the pipe template ("butterfly"):
+//!    an H-core and four ring blocks, the ring corners at 45° + 90° m of a
+//!    rotation-minimising frame (double reflection, Wang, Jüttler, Zheng &
+//!    Liu 2008, *Computation of rotation minimizing frames*, ACM TOG 27(1))
+//!    carried along the stations. A section with four sharp corners (a
+//!    rectangular duct) is an H-grid ([`HCore`]): the ring holds the wall
+//!    layers, its corners on the section's corners, and the core is a
+//!    tensor grid clustered to all four walls.
 //! 3. The first rows of the ring are offsets of the wall at the layer
 //!    heights (first height, growth), the rest grows to the core.
 //! 4. Interior nodes are moved along the station normal onto the station's
@@ -75,6 +77,12 @@ pub struct SweepOptions {
     /// from the leg's section to the mitre plane (the classical structured
     /// mitre), in place of the level sets that fan around the inner corner.
     pub mitre_blend: bool,
+    /// Mesh a section with four sharp corners (a rectangular duct) as an
+    /// H-grid: the wall layers, then a tensor core whose lines run straight
+    /// from the walls, clustered to all four walls. Off, it gets the O-grid
+    /// of a round section, whose columns fan towards a smaller core and
+    /// meet the corners at 45°.
+    pub h_grid: bool,
 }
 
 impl Default for SweepOptions {
@@ -90,6 +98,7 @@ impl Default for SweepOptions {
             calm_flatness: 0.001,
             calm_tilt_deg: 0.5,
             mitre_blend: true,
+            h_grid: true,
         }
     }
 }
@@ -164,6 +173,8 @@ pub struct SweepMesh {
     pub section: [usize; 3],
     /// Layer heights from the wall (first is 0).
     pub layer_heights: Vec<f64>,
+    /// The section is an H-grid (a rectangular duct, see [`HCore`]).
+    pub h_grid: bool,
     pub min_scaled_jacobian: f64,
     pub volume: f64,
     /// Volume of the region's tetrahedra between the two end levels.
@@ -457,6 +468,42 @@ fn growth_of(first: f64, length: f64, n: usize) -> f64 {
     (pos[2] - pos[1]) / (pos[1] - pos[0])
 }
 
+/// The H-grid of a rectangular section: the ring holds the wall layers and
+/// one row more (its top at `top` from the wall), and the core is a tensor
+/// grid whose first cell at its boundary is `first` (the next step of the
+/// layers' growth). Each side's wall nodes sit at the corner, then at
+/// `top + q` with q the core's geometric law, so every core line runs
+/// straight from a wall node.
+#[derive(Clone, Copy, Debug)]
+struct HCore {
+    top: f64,
+    first: f64,
+}
+
+impl HCore {
+    /// Wall node positions along a side of length `len` with `n` cells
+    /// (even): the corner, then clustered to both ends.
+    fn side(&self, len: f64, n: usize) -> Result<Vec<f64>, String> {
+        let m = n / 2;
+        let rest = 0.5 * len - self.top;
+        if rest.is_nan() || rest <= self.first {
+            return Err(
+                "the wall layers fill a side of the rectangular section; use fewer or thinner layers"
+                    .into(),
+            );
+        }
+        let q = geometric(self.first, rest, m);
+        let mut p = vec![0.0; n + 1];
+        for i in 1..=m {
+            p[i] = self.top + q[i];
+        }
+        for i in 0..m {
+            p[n - i] = len - p[i];
+        }
+        Ok(p)
+    }
+}
+
 /// The section nodes of one station (see [`section_nodes`] for the order).
 struct SectionGrid {
     nodes: Vec<Vec3>,
@@ -679,6 +726,7 @@ fn section_nodes(
     sharp: bool,
     layout: Layout,
     heights: &[f64],
+    hcore: Option<HCore>,
     opts: &SweepOptions,
 ) -> Result<SectionGrid, String> {
     let n = layout.n;
@@ -698,9 +746,12 @@ fn section_nodes(
         if b <= a {
             b += perimeter;
         }
+        let at = match hcore {
+            Some(h) => h.side(b - a, n)?,
+            None => (0..=n).map(|i| (b - a) * i as f64 / n as f64).collect(),
+        };
         for i in 0..n {
-            let t = a + (b - a) * i as f64 / n as f64;
-            wall.push(on_wall(stl, along(pts, &s, t), plane));
+            wall.push(on_wall(stl, along(pts, &s, a + at[i]), plane));
         }
     }
     let total = 4 * n;
@@ -732,15 +783,59 @@ fn section_nodes(
         .collect();
     let mut nodes = vec![Vec3::ZERO; layout.count()];
     let mut on_wall_flag = vec![false; layout.count()];
-    // core: bilinear in the core quadrilateral q0 q1 q2 q3
-    for a in 0..=n {
-        for b in 0..=n {
-            let (u, v) = (a as f64 / n as f64, b as f64 / n as f64);
-            let x = core_pts[0] * ((1.0 - u) * (1.0 - v))
-                + core_pts[1] * (u * (1.0 - v))
-                + core_pts[2] * (u * v)
-                + core_pts[3] * ((1.0 - u) * v);
-            nodes[layout.core(a, b)] = x;
+    if let Some(h) = hcore {
+        // H-grid: the core's boundary is the ring's top row, straight off
+        // the wall nodes; its inside by transfinite interpolation of the
+        // four sides (a tensor grid in a rectangle)
+        for m in 0..4 {
+            for i in 0..n {
+                nodes[layout.core_side(m, i)] = wall[m * n + i] + offset[m * n + i] * h.top;
+            }
+        }
+        let fractions = |line: &[Vec3]| -> Vec<f64> {
+            let mut f = vec![0.0; line.len()];
+            for k in 1..line.len() {
+                f[k] = f[k - 1] + (line[k] - line[k - 1]).length();
+            }
+            let total = f[line.len() - 1];
+            f.iter().map(|v| v / total).collect()
+        };
+        let side = |pick: &dyn Fn(usize) -> usize| -> Vec<Vec3> {
+            (0..=n).map(|k| nodes[pick(k)]).collect()
+        };
+        let bottom = side(&|a| layout.core(a, 0));
+        let top = side(&|a| layout.core(a, n));
+        let left = side(&|b| layout.core(0, b));
+        let right = side(&|b| layout.core(n, b));
+        let (fb, ft, fl, fr) = (
+            fractions(&bottom),
+            fractions(&top),
+            fractions(&left),
+            fractions(&right),
+        );
+        for a in 1..n {
+            for b in 1..n {
+                let u = 0.5 * (fb[a] + ft[a]);
+                let v = 0.5 * (fl[b] + fr[b]);
+                let x = left[b] * (1.0 - u) + right[b] * u + bottom[a] * (1.0 - v) + top[a] * v
+                    - (bottom[0] * ((1.0 - u) * (1.0 - v))
+                        + bottom[n] * (u * (1.0 - v))
+                        + top[n] * (u * v)
+                        + top[0] * ((1.0 - u) * v));
+                nodes[layout.core(a, b)] = x;
+            }
+        }
+    } else {
+        // core: bilinear in the core quadrilateral q0 q1 q2 q3
+        for a in 0..=n {
+            for b in 0..=n {
+                let (u, v) = (a as f64 / n as f64, b as f64 / n as f64);
+                let x = core_pts[0] * ((1.0 - u) * (1.0 - v))
+                    + core_pts[1] * (u * (1.0 - v))
+                    + core_pts[2] * (u * v)
+                    + core_pts[3] * ((1.0 - u) * v);
+                nodes[layout.core(a, b)] = x;
+            }
         }
     }
     let rows = layout.rows;
@@ -1244,12 +1339,51 @@ pub fn fill(
         }
     }
     // layer heights and rows
-    let n = opts.cells_around / 4;
     let mut heights = vec![0.0];
     for k in 0..opts.layers {
         heights.push(heights[k] + opts.first_height * opts.growth.powi(k as i32));
     }
+    let after_layers = if opts.layers == 0 {
+        opts.first_height
+    } else {
+        (heights[opts.layers] - heights[opts.layers - 1]) * opts.growth
+    };
+    let hcore = (sharp && opts.h_grid).then(|| HCore {
+        top: heights[opts.layers] + after_layers,
+        first: after_layers * opts.growth,
+    });
+    // H-grid: the fewest cells per half side (at least an eighth of
+    // cells_around) with a core growth of at most MAX_CORE_GROWTH on the
+    // longest side of any station
+    let n = match hcore {
+        Some(h) => {
+            let mut half: f64 = 0.0;
+            for (r, at) in rings.iter().zip(&corner_at) {
+                let perimeter = arc(r)[r.points.len()];
+                for m in 0..4 {
+                    let mut d = at[(m + 1) % 4] - at[m];
+                    if d <= 0.0 {
+                        d += perimeter;
+                    }
+                    half = half.max(0.5 * d);
+                }
+            }
+            let rest = half - h.top;
+            if rest.is_nan() || rest <= h.first {
+                return Err(
+                    "the wall layers fill the whole section; use fewer or thinner layers".into(),
+                );
+            }
+            let mut m = opts.cells_around.div_ceil(8).max(1);
+            while m < 200 && growth_of(h.first, rest, m) > MAX_CORE_GROWTH {
+                m += 1;
+            }
+            2 * m
+        }
+        None => opts.cells_around / 4,
+    };
     let rows = match opts.radial_cells {
+        _ if hcore.is_some() => opts.layers + 1,
         Some(r) => {
             if r <= opts.layers {
                 return Err("radial_cells must exceed layers".into());
@@ -1306,7 +1440,7 @@ pub fn fill(
     let grids = rings
         .iter()
         .enumerate()
-        .map(|(k, r)| section_nodes(r, stl, corner_at[k], sharp, layout, &heights, &opts))
+        .map(|(k, r)| section_nodes(r, stl, corner_at[k], sharp, layout, &heights, hcore, &opts))
         .collect::<Result<Vec<_>, _>>()?;
     let locator = Locator::new(&sub, mesh_h(&sub));
     let value = |x: Vec3| -> Option<f64> {
@@ -1410,8 +1544,9 @@ pub fn fill(
         missed_features,
         blended_stations,
         unblended_mitres,
-        section: [opts.cells_around, rows, n],
+        section: [4 * n, rows, n],
         layer_heights: heights,
+        h_grid: hcore.is_some(),
         min_scaled_jacobian: min_sj,
         volume,
         region_volume,
@@ -1645,28 +1780,111 @@ impl SweepMesh {
         let wall: Vec<usize> = (0..4)
             .flat_map(|m| (0..n).map(move |i| layout.ring(m, i, 0)))
             .collect();
-        let rim: Vec<Vec3> = wall.iter().map(|&v| self.points[base + v]).collect();
-        let center = rim.iter().fold(Vec3::ZERO, |s, &p| s + p) / rim.len() as f64;
-        let mut radius = f64::INFINITY;
-        for i in 0..rim.len() {
-            let (a, b) = (rim[i], rim[(i + 1) % rim.len()]);
-            let e = b - a;
-            radius = radius.min((center - a).cross(e).length() / e.length());
-        }
+        let measure = |rim: &[Vec3]| {
+            let center = rim.iter().fold(Vec3::ZERO, |s, &p| s + p) / rim.len() as f64;
+            let mut radius = f64::INFINITY;
+            for i in 0..rim.len() {
+                let (a, b) = (rim[i], rim[(i + 1) % rim.len()]);
+                let e = b - a;
+                radius = radius.min((center - a).cross(e).length() / e.length());
+            }
+            (center, radius)
+        };
         let stack = self.layer_heights[layers];
+        let original: Vec<Vec3> = wall.iter().map(|&v| self.points[base + v]).collect();
+        let mut rim = original.clone();
+        let (mut center, mut radius) = measure(&rim);
+        if self.h_grid {
+            // the wall nodes of an H-grid cut slide along their sides to
+            // where the core's lines, scaled out by the inverse similarity,
+            // meet the wall: the cap is then the tensor grid of the core
+            // (with the layer stack taken out) and its rim; with the wall
+            // nodes left where the sweep has them, the scaled core leans by
+            // up to the layer stack against the rim at the corners, the cap
+            // is far from Delaunay there and the scaffold's boundary
+            // recovery splits without end (the T). The mean of the rim moves
+            // with the nodes, so a few rounds settle it.
+            let core: Vec<Vec3> = (0..4)
+                .flat_map(|m| (0..n).map(move |i| (m, i)))
+                .map(|(m, i)| self.points[base + layout.ring(m, i, layers + 1)])
+                .collect();
+            for _ in 0..4 {
+                let shrink = 1.0 - stack / radius;
+                if !(shrink > 0.1 && radius.is_finite()) {
+                    break;
+                }
+                for m in 0..4 {
+                    let a = original[m * n];
+                    let b = original[((m + 1) % 4) * n];
+                    let side = (b - a).length();
+                    let dir = (b - a) / side;
+                    let mut last = 0.0;
+                    for i in 1..n {
+                        let e = center + (core[m * n + i] - center) / shrink;
+                        let t = (e - a).dot(dir);
+                        if !(t > last && t < side) {
+                            return Err(format!(
+                                "the cut's layer stack ({stack:.3e}) is too thick for its rectangular section (the cap's lines leave a side)"
+                            ));
+                        }
+                        last = t;
+                        rim[m * n + i] = a + dir * t;
+                    }
+                }
+                (center, radius) = measure(&rim);
+            }
+        }
         let shrink = 1.0 - stack / radius;
         if !(shrink > 0.1 && radius.is_finite()) {
             return Err(format!(
                 "the layer stack ({stack:.3e}) closes the cut (inner radius {radius:.3e})"
             ));
         }
-        // the layer rows of the cut: the mesher's layer nodes
+        // the wall and layer rows of the cut: the rim and the mesher's
+        // layer nodes; an H-grid's wall nodes moved along the sides, so the
+        // stations before the cut take a share of the shift that falls off
+        // linearly (the wall faces shear by at most 10°)
+        let mut shift: Vec<(usize, Vec3)> = Vec::new();
         for m in 0..4 {
             for i in 0..n {
-                let w = self.points[base + layout.ring(m, i, 0)];
+                let w = rim[m * n + i];
+                let mut set = |v: usize, x: Vec3, shift: &mut Vec<(usize, Vec3)>| {
+                    let d = x - self.points[base + v];
+                    if d.length() > 0.0 {
+                        shift.push((v, d));
+                    }
+                    self.points[base + v] = x;
+                };
+                set(layout.ring(m, i, 0), w, &mut shift);
                 for k in 1..=layers {
                     let t = 1.0 - self.layer_heights[k] / radius;
-                    self.points[base + layout.ring(m, i, k)] = center + (w - center) * t;
+                    set(layout.ring(m, i, k), center + (w - center) * t, &mut shift);
+                }
+            }
+        }
+        if self.h_grid && !shift.is_empty() {
+            let largest = rim
+                .iter()
+                .zip(&original)
+                .map(|(a, b)| (*a - *b).length())
+                .fold(0.0, f64::max);
+            let count = self.stations.len();
+            let at = |j: usize| if end == 0 { j } else { count - 1 - j };
+            let mut steps = 1;
+            while steps < count / 2
+                && largest
+                    > 10f64.to_radians().tan()
+                        * (self.stations[at(steps)].centroid - self.stations[station].centroid)
+                            .length()
+            {
+                steps += 1;
+            }
+            let per = layout.count();
+            for j in 1..steps {
+                let weight = 1.0 - j as f64 / steps as f64;
+                let b = at(j) * per;
+                for &(v, d) in &shift {
+                    self.points[b + v] = self.points[b + v] + d * weight;
                 }
             }
         }

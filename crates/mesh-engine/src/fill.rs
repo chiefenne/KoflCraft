@@ -53,6 +53,9 @@ pub struct FillOptions {
     /// Blended planar stations next to each mitre plane (default true);
     /// false keeps the level sets there (for the benchmark).
     pub mitre_blend: bool,
+    /// Rectangular sections as an H-grid (default true); false gives them
+    /// the O-grid of round sections (for the benchmark).
+    pub h_grid: bool,
 }
 
 impl Default for FillOptions {
@@ -71,6 +74,7 @@ impl Default for FillOptions {
             axial_size: None,
             join: true,
             mitre_blend: true,
+            h_grid: true,
         }
     }
 }
@@ -177,6 +181,7 @@ pub fn fill(stl: &[u8], map: &Value, opts: FillOptions) -> Result<Filled, Engine
                 core_fraction: opts.core_fraction,
                 axial_size: opts.axial_size,
                 mitre_blend: opts.mitre_blend,
+                h_grid: opts.h_grid,
                 ..SweepOptions::default()
             };
             match sweep::fill(&a.mesh, &a.p, &region, &a.adjacent, &stl_walls, s) {
@@ -314,7 +319,7 @@ pub fn fill(stl: &[u8], map: &Value, opts: FillOptions) -> Result<Filled, Engine
                 "rows": m.section[1],
                 "core_cells": m.section[2],
                 "corners": st[0].corners,
-                "kind": if st[0].corners == 4 { "rectangular: ring corners on the section corners" } else { "smooth: O-grid corners at 45° + 90° m of a rotation-minimising frame" },
+                "kind": if m.h_grid { "rectangular H-grid: the wall layers, then a tensor core clustered to all four walls" } else if st[0].corners == 4 { "rectangular O-grid: ring corners on the section corners" } else { "smooth: O-grid corners at 45° + 90° m of a rotation-minimising frame" },
             },
             "layer_heights": m.layer_heights,
             "ends": [cut(0, m.ends[0], m.calm_ends[0]), cut(st.len() - 1, m.ends[1], m.calm_ends[1])],

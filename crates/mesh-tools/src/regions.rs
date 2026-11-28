@@ -124,6 +124,7 @@ pub(crate) fn fill(input: Value, ctx: &Context) -> Run {
         axial_size: i.axial_size.or(d.axial_size),
         join: i.join.unwrap_or(d.join),
         mitre_blend: d.mitre_blend,
+        h_grid: d.h_grid,
     };
     let (dir, name) = ctx.target(&i.output)?;
     let mut report = fill::generate(&stl, &map, opts, &dir, &name)?;
