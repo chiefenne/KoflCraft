@@ -71,8 +71,13 @@ fn elbow_sweeps_through_the_mitre() {
     // the stations next to the mitre are blended planes on both sides
     assert!(num(&s["blended_stations"]) >= 4.0, "{s}");
     assert_eq!(s["unblended_mitre_sides"], 0, "{s}");
-    assert!(num(&v["max_non_orthogonality_deg"]) < 62.0, "{v}");
-    assert!(num(&v["min_scaled_jacobian"]) > 0.3, "{v}");
+    assert!(num(&v["max_non_orthogonality_deg"]) < 52.0, "{v}");
+    assert!(num(&v["min_scaled_jacobian"]) > 0.45, "{v}");
+    assert!(
+        s["section"]["kind"].as_str().unwrap().contains("H-grid"),
+        "{}",
+        s["section"]
+    );
     assert_eq!(mesh.summary().inverted_faces, 0);
     assert!(num(&r["shares"]["swept_cells"]) > 0.99, "{}", r["shares"]);
 }
@@ -108,6 +113,66 @@ fn mitre_blend_beats_the_level_sets() {
     // the blend keeps the volume (the stations stay on the walls)
     let dv = |r: &Value| num(&r["sweeps"][0]["relative_volume_difference"]).abs();
     assert!(dv(&blend) < 1e-4, "{}", dv(&blend));
+}
+
+/// Keep: the H-grid of a rectangular section (the wall layers, then a
+/// tensor core clustered to all four walls) beats its O-grid, whose columns
+/// fan towards a smaller core and meet the corners at 45°: on the elbow the
+/// worst non-orthogonality drops from 59.1° to 49.5° (now at the mitre;
+/// 26.6° in the straight legs, at the corner cells of the layers) and the
+/// smallest scaled Jacobian rises from 0.37 to 0.49. The elbow test above
+/// only bounds the H-grid.
+#[test]
+fn h_grid_beats_the_o_grid() {
+    let opts = |h_grid| FillOptions {
+        h_grid,
+        ..FillOptions::default()
+    };
+    let (h, _) = run_with("elbow", opts(true));
+    let (o, _) = run_with("elbow", opts(false));
+    let no = |r: &Value| num(&r["validity"]["max_non_orthogonality_deg"]);
+    let sj = |r: &Value| num(&r["validity"]["min_scaled_jacobian"]);
+    assert!(no(&h) + 5.0 < no(&o), "{} vs {}", no(&h), no(&o));
+    assert!(sj(&h) > sj(&o) + 0.05, "{} vs {}", sj(&h), sj(&o));
+    let dv = |r: &Value| num(&r["sweeps"][0]["relative_volume_difference"]).abs();
+    assert!(dv(&h) < 1e-4, "{}", dv(&h));
+}
+
+/// Keep: the cut caps of a square duct are Delaunay, so the scaffold's
+/// boundary recovery ends and the square T joins (here with two wall
+/// layers). An H-grid cut slides its wall nodes along the sides to where
+/// the core's lines, scaled out by the polyhedral mesher's similarity,
+/// meet the wall; before, the scaled core leaned by up to the layer stack
+/// against the rim at the corners (48 edges per cap off Delaunay by up to
+/// 83°) and the recovery split without end. With five layers the box's own
+/// layer front still collides next to the cuts.
+#[test]
+fn square_tee_joins_with_thin_layers() {
+    let (stl, map) = ducts::files(&ducts::tee());
+    let map: Value = serde_json::from_str(&map).unwrap();
+    let opts = FillOptions {
+        layers: 2,
+        ..FillOptions::default()
+    };
+    let f = fill(&stl, &map, opts).unwrap();
+    let r = &f.report;
+    let rem = &r["remainder"];
+    assert!(rem.get("error").is_none(), "{rem}");
+    assert_eq!(rem["surface"]["caps"], 3, "{rem}");
+    let v = &r["validity"];
+    assert_eq!(v["inverted_faces"], 0, "{v}");
+    assert!(num(&v["max_relative_closure"]) < 1e-9, "{v}");
+    let names: Vec<&str> = v["patches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["walls", "inlet", "outlet"], "the cuts are interior");
+    assert!(
+        num(&v["non_orthogonality_by_faces"]["at_the_cuts"]["max_deg"]) < 50.0,
+        "{v}"
+    );
 }
 
 /// Keep: in the Manifold both pipes are swept from their port to a calm

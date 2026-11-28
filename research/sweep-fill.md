@@ -253,6 +253,72 @@ mitre's tilt adds to it. Picture:
 `koflcraft-images/sweep/elbow-mitre-blend.png` (the floor wall, before and
 after; `render_floor.py` beside it).
 
+## H-grid for rectangular sections
+
+Decided by the maintainer on a card (2026-11-28): rectangular sections
+become a tensor grid clustered to all four walls; round sections keep the
+O-grid.
+
+### Method
+
+The section keeps its topology (a ring of four blocks around an n × n
+core), so the sweep, the join and the cut cap work unchanged:
+
+1. **Ring.** The ring holds only the wall layers and one row more. Its
+   columns leave the wall nodes along the wall normal (along the mitred
+   bisector at a corner, so the corner node sits at the layer height from
+   both walls).
+2. **Wall nodes.** Each side has the corner, then nodes at top + q, where
+   top is the ring's height and q is the core's geometric law. q starts with
+   the next step of the layers' growth and grows to the middle of the side,
+   at most 1.25 per cell. The law is mirrored, so opposite sides match. The
+   number of cells per side is the fewest that keeps that growth on the
+   longest side of any station (at least an eighth of `cells_around`).
+3. **Core.** The core's boundary is the ring's top row; inside, it is the
+   transfinite interpolation of its four sides. In a rectangle that is
+   exactly the tensor grid, so every core line runs straight from a wall
+   node to the opposite one.
+4. **Cut.** The polyhedral mesher shrinks a cap by a similarity about the
+   mean of its rim. Scaled out again, the straight core leans against
+   the rim by up to the layer stack at the corners. With the wall nodes
+   left in place, the cap was far from Delaunay there (48 edges per cap,
+   up to 83° over) and the boundary recovery never converged. At a cut of
+   an H-grid the wall nodes now slide along their sides to where the
+   scaled-out core lines meet the wall. The cap is then the tensor grid
+   and its rim, which is Delaunay. The layer rows follow the mesher's
+   layer nodes as before. The stations before the cut take a share of the
+   slide that falls off linearly, so the wall faces shear by at most 10°.
+
+### Results (elbow, defaults)
+
+| | O-grid | H-grid |
+|---|---|---|
+| Cells | 17,472 | 39,468 |
+| Cells around a section | 32 | 88 (22 per side) |
+| Max non-orthogonality, inner faces | 59.1° | 49.5° (at the mitre) |
+| Max in the straight legs | 45.0° | 26.6° |
+| Min scaled Jacobian | 0.37 | 0.49 |
+| Volume vs region | -0.002 % | -0.002 % |
+| FoehnCraft (with boundary faces) | 59.1° | 59.1°, valid, 0 negative volumes |
+
+The 26.6° in the straight legs (atan ½) sits only in the corner cells of
+the wall layers, where the layer rows of two walls meet on the diagonal.
+The other faces in the legs are at about 0° (384 of 22,924 faces over 5°).
+FoehnCraft's maximum is a boundary face: the wall cells at the mitre's
+outer corner, measured from the cell centroid to the face centroid, are
+at 59.1° in both grids. The cell count doubles because the core grows
+from the walls at most 1.25 per cell in both directions.
+
+Square T (`ducts::tee`, three square stubs on a junction cube): the cut
+caps are now Delaunay and the scaffold builds. With two wall layers the T
+joins into one valid mesh (0 inverted faces, the cuts interior, at most
+45.4° at the cuts). With three to five layers the polyhedral mesher's
+layer front collides next to the cuts. The similarity slides a square
+rim sideways (by up to the layer height at the corners), while the wall
+vertex next to it only moves inward, so thin tetrahedra there turn over.
+The layers yield, and a cap quad folds. Decided next (card, 2026-11-28):
+fade the cap's sideways shift into the wall layers next to a non-round cap.
+
 ## More than two openings behind the cuts
 
 The polyhedral mesher had one cap similarity per port patch id, and it had
@@ -298,28 +364,28 @@ cuts are the box and the junction, with three openings.
 | FoehnCraft read-back | valid, 0 negative volumes, volume equal to the boundary volume; at most 87.7° on its measure (the joined Manifold: 88.8°) |
 | Time | 27 s |
 
-Square sections (the T and the fork of `ducts.rs`) still fail: their cut
-caps are not Delaunay (about 110 edges per cap, up to 95° over, near the
-square's corners, where the O-grid's first rows sit off the rim points), so
-the scaffold's boundary recovery does not converge. A 2 % jitter of the
-inner nodes did not help. A section whose rows meet the walls square (the
-graded H-grid on the open card) or a 2D conforming refinement of the cap
-would fix it.
+Square sections (the T and the fork of `ducts.rs`) failed: their O-grid
+cut caps were not Delaunay (about 110 edges per cap, up to 95° over, near
+the square's corners, where the O-grid's first rows sit off the rim
+points), so the scaffold's boundary recovery did not converge. A 2 %
+jitter of the inner nodes did not help. The H-grid (above) fixes the caps.
 
 ## Limits and next steps
 
-- Behind the cuts the join takes any number of openings with round
-  sections; square sections fail (see above). Symmetry planes behind the
-  cuts are refused.
+- Behind the cuts the join takes any number of openings. Square sections
+  join only with thin layer stacks (two layers on the T); thicker stacks
+  collide in the box's layer front next to the cuts, and the fork does not
+  join yet. Symmetry planes behind the cuts are refused.
 - The acceptance runner reads the elbow and the joined Manifold back with
   FoehnCraft (#87). The Manifold is valid: 132,520 cells, at most 88.8° on
   FoehnCraft's non-orthogonality measure (the plain polyhedral Manifold:
   90.0°).
 - The polyhedral box keeps the mesher's own quality: 87.7° non-orthogonality
   inside the box, none at the cuts.
-- At a mitre the stations next to the mitre plane are blended planes (see
-  above); the square O-grid section keeps 45° at its diagonals in the
-  straight legs, which adds to the mitre's tilt (59° on the elbow).
+- At a mitre the stations next to the mitre plane are blended planes, and
+  a rectangular section is an H-grid (see above). The elbow's inner faces
+  reach 49.5° at the mitre; its wall cells at the outer corner reach 59.1°.
+  An H-grid has twice the cells of the O-grid.
 - Section rows of the ring blocks bow slightly inwards (each column is
   graded on its own); a 2D smoothing of the section is open.
 - A sweep needs one closed wall loop per level set and the same section
