@@ -101,7 +101,10 @@ pub enum Edit {
     /// get `cells` more cells (the mean of the block's counts when
     /// absent). A block on one of those triangles is split into three
     /// with it (a triangle split along its edge away from the tet), and
-    /// the new cells run on as a row, ended as `stop` says (BS-20).
+    /// the new cells run on as a row, ended as `stop` says (BS-20). Where
+    /// a neighbour cannot be split so, `join` `auto` (the default) leaves
+    /// the neighbours as they are and makes each shared face a
+    /// non-conformal interface (BS-16); `conformal_only` refuses instead.
     SplitTet {
         block: usize,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -110,6 +113,8 @@ pub enum Edit {
         cells: Option<usize>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stop: Option<crate::block_triangle::RowStop>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        join: Option<crate::block_tet::Join>,
     },
     /// Rename a patch and/or set its role.
     SetPatch {
@@ -138,6 +143,14 @@ pub struct Change {
     pub removed_patches: Vec<String>,
     /// Edges whose law or curve was fitted to the grid nodes (split).
     pub fitted_edges: Vec<[usize; 2]>,
+    /// Non-conformal interfaces the edit made (their coarse patches,
+    /// BS-16).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub interfaces: Vec<String>,
+    /// Why a conformal split was refused when the edit joined
+    /// non-conformally instead (`join` `auto`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
 }
 
 pub(crate) fn refused(message: impl std::fmt::Display) -> EngineError {
@@ -1059,6 +1072,7 @@ pub fn apply(file: &TopologyFile, edit: &Edit) -> Result<(TopologyFile, Change),
             corner,
             cells,
             stop,
+            join,
         } => {
             crate::block_tet::split_tet(
                 &mut out,
@@ -1066,6 +1080,7 @@ pub fn apply(file: &TopologyFile, edit: &Edit) -> Result<(TopologyFile, Change),
                 *corner,
                 *cells,
                 stop.unwrap_or_default(),
+                join.unwrap_or_default(),
                 &mut change,
             )?;
         }

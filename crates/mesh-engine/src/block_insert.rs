@@ -270,6 +270,7 @@ pub fn insert_prism_splits(
                     Some(t.corner),
                     None,
                     stop,
+                    crate::block_tet::Join::Auto,
                     &mut Change::default(),
                 )
                 .map_err(|e| e.message)
@@ -482,5 +483,24 @@ mod tests {
             "{:?}",
             i.skipped_tets
         );
+    }
+    /// Invariant (card A of step 3, automatic fallback): a tet whose
+    /// neighbour cannot take a prism column is still split by the trigger,
+    /// with a non-conformal interface, when the measured trial is better.
+    #[test]
+    fn the_3d_trigger_falls_back_to_a_non_conformal_tet_split() {
+        let f = crate::block_tet::tests::tet_on_box();
+        let o = InsertOptions {
+            max_added_share: 10.0,
+            ..Default::default()
+        };
+        let i = insert_prism_splits(&f, &o).unwrap();
+        assert_eq!(i.kept_tets.len(), 1, "{:?} {:?}", i.skipped_tets, i.skipped);
+        let k = &i.kept_tets[0];
+        assert_eq!(k.split.join, "non_conformal");
+        assert!(k.split.neighbours.is_empty());
+        assert_eq!(i.file.interfaces.len(), 1);
+        assert!(k.measured.touched_scaled_jacobian_after >= MIN_SCALED_JACOBIAN);
+        crate::block::check(&i.file).unwrap();
     }
 }

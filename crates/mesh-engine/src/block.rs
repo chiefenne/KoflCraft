@@ -187,8 +187,21 @@ pub struct TopologyFile {
     /// T-junctions (BS-21): block edges that pass through vertices.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub junctions: Vec<JunctionFile>,
+    /// Non-conformal interfaces (BS-16): pairs of patches on one block face
+    /// whose grids need not match; KoflCraft joins them into polyhedra.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interfaces: Vec<InterfaceFile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<Reference>,
+}
+
+/// A non-conformal interface in the file: `coarse` names the patch that is
+/// one whole block face, `fine` the patch of the faces on its other side.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct InterfaceFile {
+    pub coarse: String,
+    pub fine: String,
 }
 
 /// A T-junction in the file: the block edge `edge` passes through the
@@ -650,6 +663,7 @@ impl TopologyFile {
                     through: j.through.clone(),
                 })
                 .collect(),
+            interfaces: Vec::new(),
             reference,
         }
     }
@@ -933,14 +947,33 @@ pub fn generate(
     let mut bundle = dir
         .bundle(name)
         .map_err(|e| EngineError::new(ErrorCode::IoError, e))?;
-    bundle
-        .stream("volume.vtu", |w| mesh_io::block::write_volume(&grid, w))
-        .map_err(fail)?;
-    bundle
-        .stream("mesh.msh", |w| {
-            mesh_io::block::write_gmsh(&grid, &handoff.patches, mesh_io::GmshVersion::V4_1, w)
-        })
-        .map_err(fail)?;
+    if file.interfaces.is_empty() {
+        bundle
+            .stream("volume.vtu", |w| mesh_io::block::write_volume(&grid, w))
+            .map_err(fail)?;
+        bundle
+            .stream("mesh.msh", |w| {
+                mesh_io::block::write_gmsh(&grid, &handoff.patches, mesh_io::GmshVersion::V4_1, w)
+            })
+            .map_err(fail)?;
+    } else {
+        // non-conformal interfaces (BS-16): the joined polyhedral mesh
+        bundle
+            .stream("volume.vtu", |w| {
+                crate::handoff::HandoffFormat::Vtu.write(&handoff, &[], w)
+            })
+            .map_err(fail)?;
+        bundle
+            .stream("mesh.msh", |w| {
+                mesh_io::block_join::write_gmsh_joined(
+                    &grid,
+                    &handoff,
+                    mesh_io::GmshVersion::V4_1,
+                    w,
+                )
+            })
+            .map_err(fail)?;
+    }
     bundle
         .stream(crate::handoff::FOEHNCRAFT_VTU, |w| {
             crate::handoff::HandoffFormat::Vtu.write(
@@ -1071,9 +1104,13 @@ pub fn grid(
     Ok((grid, report))
 }
 
+/// The overlay snap at non-conformal interfaces, relative to the shortest
+/// edge at a point (card B of step 3, 2026-11-28).
+const INTERFACE_SNAP: f64 = 0.02;
+
 /// The checks of BS-13 and the report; the hand-off mesh is the conforming
 /// face-based mesh every writer of FoehnCraft files uses.
-fn validate(
+pub(crate) fn validate(
     file: &TopologyFile,
     grid: &BlockGrid,
 ) -> Result<(Value, mesh_io::handoff::HandoffMesh, Value), EngineError> {
@@ -1103,8 +1140,30 @@ fn validate(
             patch.role = role;
         }
     }
-    let handoff = mesh_io::block::handoff(grid, patches)
-        .map_err(|e| EngineError::new(ErrorCode::InvalidConnectivity, e))?;
+    let (handoff, joins) = if file.interfaces.is_empty() {
+        let h = mesh_io::block::handoff(grid, patches)
+            .map_err(|e| EngineError::new(ErrorCode::InvalidConnectivity, e))?;
+        (h, Vec::new())
+    } else {
+        let index = |name: &str| {
+            file.patches
+                .iter()
+                .position(|p| p.name == name)
+                .ok_or_else(|| validation(format!("an interface names the unknown patch {name}")))
+        };
+        let interfaces = file
+            .interfaces
+            .iter()
+            .map(|i| {
+                Ok(mesh_io::block_join::Interface {
+                    coarse: index(&i.coarse)?,
+                    fine: index(&i.fine)?,
+                })
+            })
+            .collect::<Result<Vec<_>, EngineError>>()?;
+        mesh_io::block_join::handoff_joined(grid, patches, &interfaces, INTERFACE_SNAP)
+            .map_err(|e| EngineError::new(ErrorCode::InvalidConnectivity, e))?
+    };
     let summary = handoff.summary();
     if summary.inverted_faces > 0 {
         return Err(validation(format!(
@@ -1159,6 +1218,8 @@ fn validate(
             "max_growth": e.max_growth,
         })).collect::<Vec<_>>(),
         "summary": summary,
+        "interfaces": joins,
+        "polyhedra": mesh_io::block_join::polyhedral_cells(&handoff).iter().filter(|&&p| p).count(),
         "checks": [
             "topology: indices, right-handed blocks, count chains, faces, patches",
             "every hexahedron corner Jacobian positive",

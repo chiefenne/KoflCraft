@@ -833,9 +833,10 @@ pub(crate) fn block_split_tet() -> Value {
     input(
         json!({"topology": path(), "output": path(), "block": index(),
                "corner": {"type": "integer", "minimum": 0, "description": "The tet's corner P0, where three of the block's faces are triangles with one flat corner each; the best one when absent"},
-               "cells": {"type": "integer", "minimum": 1, "description": "The new count n0, added to the three edges at `corner`; the mean of the block's counts when absent"},
-               "stop": {"type": "string", "enum": ["sheet", "t_junction"], "description": "Where the new row ends beyond the tet and its neighbour columns: `sheet` (default) cuts every block on its way to the boundary in two; `t_junction` keeps those blocks whole with a T-junction on their edges and fits the counts"}}),
-        &["corner", "cells", "stop"],
+               "cells": {"type": "integer", "minimum": 1, "description": "The new count n0, added to the three edges at `corner`; when absent the mean of the block's counts (conformal) or the coarsest from half its largest count up whose tet cells reach a scaled Jacobian of 0.4 (non-conformal)"},
+               "stop": {"type": "string", "enum": ["sheet", "t_junction"], "description": "Where the new row ends beyond the tet and its neighbour columns: `sheet` (default) cuts every block on its way to the boundary in two; `t_junction` keeps those blocks whole with a T-junction on their edges and fits the counts"},
+               "join": {"type": "string", "enum": ["auto", "conformal_only", "non_conformal"], "description": "How the tet meets the blocks on its triangles: `auto` (default) conformal where they can take a prism column, else a non-conformal interface joined into polyhedra; `conformal_only` refuses instead; `non_conformal` always leaves them as they are"}}),
+        &["corner", "cells", "stop", "join"],
     )
 }
 
