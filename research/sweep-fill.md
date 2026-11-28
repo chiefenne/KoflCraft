@@ -411,13 +411,21 @@ shells, one per header. Two changes:
    swept. The cuts are now searched only in the longest unbroken run of
    one-loop level sets (the one touching the port where the sweep ends at
    a port).
+4. **No folded strip triangle** (`remainder.rs`): on a coarse STL (21
+   facets round a tube, 32 rim nodes) a hole edge can run steeply along
+   the tube. The rim node nearest the hole's first node then lies behind
+   the line of the hole's last edge, and the zip's forced last triangle
+   faced the axis; the polyhedral layers found no inward direction at
+   that rim node. The zip never takes the triangle that faces the axis
+   when the other one does not, and when its forced last steps still fold
+   one, it starts again from the next hole node until no triangle folds.
 
 | Case | Result |
 |---|---|
 | Round pipe between two boxes (`ducts::box_pipe_box`) | the pipe swept cut to cut, 2 shells joined, 0 inverted faces, the cuts interior |
 | Three square tubes between two headers (`ducts::header_tubes`) | 3 tubes swept cut to cut, 2 shells joined on one machine; on the CI runner the layer front collides at a square cut corner (the square-corner gap below) |
 | Heat exchanger tube side (Gmsh fluid from the open STEP, 82,044 facets) | 7 tubes swept (679,936 hexahedra), 2 bonnets (691,642 polyhedra), 1,371,578 cells, 0 inverted faces, 50.1° at the cuts, 89.3° inside the bonnets, 230 s |
-| Five round tubes between two box headers (Gmsh) | the tubes are swept; the polyhedral layers fail at one vertex of a header ("no common inward wall direction") |
+| Five round tubes between two box headers (Gmsh, size 0.06 on tubes of radius 0.2) | 7 sweeps (5 tubes cut to cut, 2 pipes), 2 headers joined: 419,287 cells, 0 inverted faces, 50.3° at the cuts, 89.6° inside the headers (step 4 below; before: "no common inward wall direction" at a rim node) |
 
 A square tube flush with a header wall (the first `header_tubes` layout,
 its outer tubes flush with the header's end walls) collides in the
