@@ -74,7 +74,18 @@ pub fn remainder_surface(
         // facets across the plane, joined over the edges across it, are the
         // curves where the plane meets the STL; the band is the one closest
         // to the cut's centre (another duct may cross the plane further out)
-        let side = |v: usize| signed(c, n, points[v]) > 0.0;
+        // an STL node within a quarter of the rim spacing in front of the
+        // plane counts as the sweep's side: a ring of STL nodes on (or
+        // across, the cut being a level set) the plane would leave a hole
+        // that zigzags through it and a strip of needles to the rim, whose
+        // boundary recovery in the scaffold splits without end
+        let rim_spacing = (0..cap.rim)
+            .map(|k| (cap.points[k] - cap.points[(k + 1) % cap.rim]).length())
+            .sum::<f64>()
+            / cap.rim.max(1) as f64;
+        let slack = 0.25 * rim_spacing;
+        let ahead = |x: Vec3| signed(c, n, x) > -slack;
+        let side = |v: usize| ahead(points[v]);
         let crossing = |f: usize| {
             let t = triangles[f];
             let s0 = side(t[0]);
@@ -139,7 +150,7 @@ pub fn remainder_surface(
                 if let Some(g) = across(f, e)
                     && !band[g]
                     && !dropped[g]
-                    && triangles[g].iter().all(|&v| signed(c, n, points[v]) > 0.0)
+                    && triangles[g].iter().all(|&v| ahead(points[v]))
                 {
                     dropped[g] = true;
                     stack.push(g);
@@ -455,5 +466,43 @@ mod tests {
         assert!(closed(&s));
         assert!((volume(&s) - 60.0).abs() < 1e-12, "{}", volume(&s));
         assert_eq!(s.dropped, 10);
+    }
+
+    /// Keep: a ring of STL nodes just behind the cut plane (0.01 here, a
+    /// hundredth of the rim spacing) is taken with the sweep's side, so the
+    /// strip reaches back to the ring before it and has no needle. The
+    /// three-pipe box had its cut level set 0.003 across a ring of pipe
+    /// nodes: the hole zigzagged through that ring, the strip held 179°
+    /// triangles and the scaffold's boundary recovery split without end.
+    #[test]
+    fn a_ring_next_to_the_plane_goes_with_the_sweep() {
+        let square = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)];
+        let levels = [0.0, 4.99, 10.0];
+        let mut points: Vec<Vec3> = Vec::new();
+        for &z in &levels {
+            for &(x, y) in &square {
+                points.push(Vec3::new(x, y, z));
+            }
+        }
+        let mut triangles: Vec<[usize; 3]> = vec![[0, 2, 1], [0, 3, 2], [8, 9, 10], [8, 10, 11]];
+        for l in 0..2 {
+            for i in 0..4 {
+                let (a, b) = (4 * l + i, 4 * l + (i + 1) % 4);
+                triangles.push([a, b, b + 4]);
+                triangles.push([a, b + 4, a + 4]);
+            }
+        }
+        let s = remainder_surface(&points, &triangles, &[cap()]).unwrap();
+        assert!(closed(&s));
+        assert!((volume(&s) - 20.0).abs() < 1e-12, "{}", volume(&s));
+        for (t, src) in s.triangles.iter().zip(&s.source) {
+            if matches!(src, Source::Strip(_)) {
+                let low = t
+                    .iter()
+                    .map(|&v| s.points[v].z)
+                    .fold(f64::INFINITY, f64::min);
+                assert!(low < 1.0, "a strip triangle ends at z = {low}");
+            }
+        }
     }
 }

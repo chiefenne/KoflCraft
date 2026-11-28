@@ -1,6 +1,9 @@
 //! Sweep fill (`regions.fill`) on the elbow (a square duct with a mitre
-//! bend) and the Manifold (two round pipes on a box), alone and joined to
-//! the polyhedral mesh of the box.
+//! bend), the Manifold (two round pipes on a box) and a box with three round
+//! pipes, alone and joined to the polyhedral mesh of the box.
+
+#[path = "../../../test-fixtures/ducts.rs"]
+mod ducts;
 
 use mesh_core::geometry::Vec3;
 use mesh_engine::fill::{FillOptions, fill};
@@ -221,4 +224,44 @@ fn manifold_box_joins_the_pipes() {
     let dv = num(&v["total_volume"]) / num(&r["scaffold"]["stl_volume"]) - 1.0;
     assert!(dv.abs() < 5e-3, "volume off by {dv}");
     assert_eq!(mesh.summary().inverted_faces, 0);
+}
+
+/// Keep: behind the cuts of the three-pipe box the region has three
+/// openings, all cuts (every pipe is swept from its port). Two cuts share a
+/// cap id of the polyhedral mesher, which gives each connected cap its own
+/// similarity, and the join tells them apart by their planes; the mesh is
+/// one, closed and valid, with no cut left as a patch. Before, the fill
+/// refused past two openings; with one similarity per cap id the layer
+/// stack of the shared caps ran towards their mean centre; and the +x cut,
+/// a level set 0.003 across a ring of pipe nodes, gave a strip of needles
+/// that the scaffold's boundary recovery split without end. The Manifold
+/// test above has two openings.
+#[test]
+fn pipe_box_joins_three_openings() {
+    let (stl, map) = ducts::files(&ducts::pipe_box());
+    let map: Value = serde_json::from_str(&map).unwrap();
+    let f = fill(&stl, &map, FillOptions::default()).unwrap();
+    let r = &f.report;
+    assert_eq!(r["sweeps"].as_array().unwrap().len(), 3, "{}", r["sweeps"]);
+    assert_eq!(r["not_swept"], Value::Array(vec![]));
+    let rem = &r["remainder"];
+    assert!(rem.get("error").is_none(), "{rem}");
+    assert_eq!(rem["surface"]["caps"], 3, "{rem}");
+    assert!(num(&rem["max_weld_distance"]) < 1e-12, "{rem}");
+    assert!(num(&rem["max_relative_area_error"]) < 1e-9, "{rem}");
+    let v = &r["validity"];
+    assert_eq!(v["inverted_faces"], 0, "{v}");
+    assert!(num(&v["min_volume"]) > 0.0);
+    assert!(num(&v["max_relative_closure"]) < 1e-9, "{v}");
+    let names: Vec<&str> = v["patches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["walls", "inlet", "outlet"], "the cuts are interior");
+    let by = &v["non_orthogonality_by_faces"];
+    assert!(num(&by["at_the_cuts"]["max_deg"]) < 60.0, "{by}");
+    assert!(num(&r["shares"]["not_meshed"]) < 0.005, "{}", r["shares"]);
+    assert_eq!(f.mesh.expect("cells").summary().inverted_faces, 0);
 }

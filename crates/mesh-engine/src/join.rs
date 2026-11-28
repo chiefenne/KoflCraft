@@ -17,7 +17,8 @@ use mesh_io::handoff::CellFaces;
 
 /// One cut seen from the merged mesh.
 pub(crate) struct Cut {
-    /// The cap's patch id in the polyhedral mesh (1 or 2).
+    /// The cap's patch id in the polyhedral mesh (1 or 2; several cuts and
+    /// an STL port may share one).
     pub patch: usize,
     pub normal: Vec3,
     /// Merged ids of the nodes of the cut section.
@@ -142,9 +143,35 @@ pub(crate) fn join(
             grid.entry(quant(points[v])).or_default().push(v);
         }
     }
+    // the cut a boundary face of the polyhedral mesh lies on: a cap id may
+    // hold several cuts (and an STL port), so the face must lie in the
+    // cut's plane, and among coplanar cuts it belongs to the nearest
+    let centres: Vec<Vec3> = cuts
+        .iter()
+        .map(|c| {
+            c.nodes.iter().fold(Vec3::ZERO, |s, &v| s + points[v]) / c.nodes.len().max(1) as f64
+        })
+        .collect();
+    let plane_tol = 100.0 * tol;
+    let cut_of = |f: &mesh_algorithms::duct::BoundaryFace| -> Option<usize> {
+        let x = f.nodes.iter().fold(Vec3::ZERO, |s, &v| s + duct.points[v]) / f.nodes.len() as f64;
+        (0..cuts.len())
+            .filter(|&k| cuts[k].patch == f.patch)
+            .filter(|&k| {
+                f.nodes
+                    .iter()
+                    .all(|&v| (duct.points[v] - centres[k]).dot(cuts[k].normal).abs() <= plane_tol)
+            })
+            .min_by(|&a, &b| {
+                (x - centres[a])
+                    .length()
+                    .total_cmp(&(x - centres[b]).length())
+            })
+    };
+    let face_cut: Vec<Option<usize>> = duct.boundary.iter().map(cut_of).collect();
     let mut map: Vec<Option<usize>> = vec![None; duct.points.len()];
-    for f in &duct.boundary {
-        if !cuts.iter().any(|c| c.patch == f.patch) {
+    for (f, k) in duct.boundary.iter().zip(&face_cut) {
+        if k.is_none() {
             continue;
         }
         for &v in &f.nodes {
@@ -187,8 +214,8 @@ pub(crate) fn join(
     }
     // the cap faces, wound out of their polyhedral cell, by cut
     let mut pieces: Vec<Vec<Vec<usize>>> = vec![Vec::new(); cuts.len()];
-    for f in &duct.boundary {
-        let Some(k) = cuts.iter().position(|c| c.patch == f.patch) else {
+    for (f, &k) in duct.boundary.iter().zip(&face_cut) {
+        let Some(k) = k else {
             if let Some(p) = patch_of(f.patch) {
                 boundary.push((f.nodes.iter().map(|&v| ids[v]).collect(), p));
             }

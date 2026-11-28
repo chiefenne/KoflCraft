@@ -143,42 +143,38 @@ pub(super) fn advance(
         if edges.is_empty() || is_slip(id) {
             continue;
         }
-        let index = id - 1;
-        let ids = loop_vertices(edges)?;
-        let center = mean(original, &ids);
-        let mut caps = surface
-            .facets()
-            .iter()
-            .zip(patches)
-            .filter(|&(_, &p)| p == index + 1)
-            .map(|(f, _)| f);
-        let normal = caps.next().ok_or("missing port facets")?.plane.normal();
-        let mut radius = f64::INFINITY;
-        for &(a, b) in edges {
-            let u = original[a] - center;
-            let v = original[b] - center;
-            radius = radius.min(v.cross(u).dot(normal) / (v - u).length());
-        }
-        if radius <= tol || total >= radius {
-            return Err(format!("layer stack closes port {}", index + 1));
-        }
-        for (f, &patch) in surface.facets().iter().zip(patches) {
-            if patch != index + 1 {
-                continue;
+        // one similarity per cap: a cap id may hold several planar caps
+        // (the cuts of a sweep fill behind which the region has more than
+        // two openings), each its own connected set of facets and rim loop
+        for (cap, rim) in caps_of(surface, patches, id, edges)? {
+            let ids = loop_vertices(&rim)?;
+            let center = mean(original, &ids);
+            let normal = surface.facets()[cap[0]].plane.normal();
+            let mut radius = f64::INFINITY;
+            for &(a, b) in &rim {
+                let u = original[a] - center;
+                let v = original[b] - center;
+                radius = radius.min(v.cross(u).dot(normal) / (v - u).length());
             }
-            if f.plane.normal().dot(normal) < 1.0 - PORT_NORMAL_SLACK {
-                return Err("port patch must be planar and consistently oriented".into());
+            if radius <= tol || total >= radius {
+                return Err(format!("layer stack closes port {id}"));
             }
-            for &v in &f.triangle.vertices {
-                let r = original[v] - center;
-                if r.dot(normal).abs() > port_tol {
-                    return Err("off-plane port vertex".into());
+            for &f in &cap {
+                let f = &surface.facets()[f];
+                if f.plane.normal().dot(normal) < 1.0 - PORT_NORMAL_SLACK {
+                    return Err("port patch must be planar and consistently oriented".into());
                 }
-                // A single in-plane similarity preserves every original cap triangle.
-                direction[v] = (normal * r.dot(normal) - r) / radius;
-                port_vertex[v] = true;
-                if !on_wall[v] {
-                    points[v] = original[v] + direction[v] * total;
+                for &v in &f.triangle.vertices {
+                    let r = original[v] - center;
+                    if r.dot(normal).abs() > port_tol {
+                        return Err("off-plane port vertex".into());
+                    }
+                    // A single in-plane similarity preserves every original cap triangle.
+                    direction[v] = (normal * r.dot(normal) - r) / radius;
+                    port_vertex[v] = true;
+                    if !on_wall[v] {
+                        points[v] = original[v] + direction[v] * total;
+                    }
                 }
             }
         }
@@ -312,6 +308,69 @@ pub(super) fn advance(
         inner,
         scale,
     })
+}
+
+/// One planar cap: its facets and its rim edges.
+type Cap = (Vec<usize>, Vec<Edge>);
+
+/// The caps of the cap id `id`: each connected set of its facets (over
+/// shared edges) with the rim edges on it. A cap id usually holds one cap;
+/// the region behind the cuts of a sweep fill can hold several under one
+/// id. Two caps of one id that touch at a vertex are refused.
+fn caps_of(
+    surface: &ClosedSurface,
+    patches: &[usize],
+    id: usize,
+    rim: &[Edge],
+) -> Result<Vec<Cap>, String> {
+    let facets: Vec<usize> = (0..patches.len()).filter(|&f| patches[f] == id).collect();
+    if facets.is_empty() {
+        return Err("missing port facets".into());
+    }
+    let mut parent: Vec<usize> = (0..facets.len()).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    let mut by_edge = BTreeMap::<Edge, usize>::new();
+    for (k, &f) in facets.iter().enumerate() {
+        for (a, b) in edges(surface.facets()[f].triangle.vertices) {
+            let e = (a.min(b), a.max(b));
+            if let Some(&j) = by_edge.get(&e) {
+                let (ra, rb) = (root(&mut parent, k), root(&mut parent, j));
+                parent[ra] = rb;
+            } else {
+                by_edge.insert(e, k);
+            }
+        }
+    }
+    let mut group = BTreeMap::<usize, usize>::new();
+    let mut caps: Vec<Cap> = Vec::new();
+    let mut cap_of_vertex = BTreeMap::<usize, usize>::new();
+    for (k, &f) in facets.iter().enumerate() {
+        let r = root(&mut parent, k);
+        let next = caps.len();
+        let c = *group.entry(r).or_insert(next);
+        if c == next {
+            caps.push((Vec::new(), Vec::new()));
+        }
+        caps[c].0.push(f);
+        for &v in &surface.facets()[f].triangle.vertices {
+            if *cap_of_vertex.entry(v).or_insert(c) != c {
+                return Err(format!("two caps of patch {id} touch at a vertex"));
+            }
+        }
+    }
+    for &(a, b) in rim {
+        let c = *cap_of_vertex
+            .get(&a)
+            .ok_or("a port rim edge is not on a port facet")?;
+        caps[c].1.push((a, b));
+    }
+    Ok(caps)
 }
 
 /// The free edges of a zero-thickness shell (where its two sides meet back
