@@ -403,6 +403,14 @@ shells, one per header. Two changes:
    is split into its connected shells; each is meshed by the median dual
    with the caps it holds (its own cap ids and rim spacing) and joined in
    turn. The mesher takes one connected shell.
+3. **Cuts in one unbroken run** (`sweep.rs`): a tube's region reaches
+   into the boxes on both sides; far from the mouth the level sets there
+   are flat across the whole box and pass as calm. On the CI runner the
+   end cut of `box_pipe_box` landed on such a level across the far box,
+   with two-loop level sets between it and the pipe, and the pipe was not
+   swept. The cuts are now searched only in the longest unbroken run of
+   one-loop level sets (the one touching the port where the sweep ends at
+   a port).
 
 | Case | Result |
 |---|---|

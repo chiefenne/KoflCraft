@@ -993,9 +993,16 @@ pub fn fill(
     let probes: Vec<Option<Probe>> = samples.iter().map(|&l| probe(l)).collect();
     // the flow direction: from the first to the last valid probe centroid
     let valid: Vec<usize> = (0..SAMPLES).filter(|&j| probes[j].is_some()).collect();
-    let (Some(&first_ok), Some(&last_ok)) = (valid.first(), valid.last()) else {
+    if valid.is_empty() {
         return Err("no level set of the potential crosses the region in one closed loop".into());
-    };
+    }
+    // the cuts stay inside one unbroken run of one-loop level sets: a
+    // region can reach into a box on either side of its duct, where the
+    // level sets far from the mouth are flat again and would pass as calm
+    // cuts across the box with broken level sets between them
+    let ok: Vec<bool> = probes.iter().map(Option::is_some).collect();
+    let (first_ok, last_ok) =
+        duct_run(&ok, start_port, end_port).unwrap_or((valid[0], valid[valid.len() - 1]));
     // tilt of each probe: its normal against the centreline tangent
     let tilt: Vec<f64> = (0..SAMPLES)
         .map(|j| {
@@ -2199,9 +2206,49 @@ fn below(p: [Vec3; 4], f: [f64; 4], level: f64) -> f64 {
     }
 }
 
+/// The longest unbroken run `(first, last)` of `ok` samples; with a port
+/// at the start (end) the run must begin at the first (end at the last)
+/// sample. `None` when no run qualifies.
+fn duct_run(ok: &[bool], start_port: bool, end_port: bool) -> Option<(usize, usize)> {
+    let mut best: Option<(usize, usize)> = None;
+    let mut j = 0;
+    while j < ok.len() {
+        if !ok[j] {
+            j += 1;
+            continue;
+        }
+        let a = j;
+        while j + 1 < ok.len() && ok[j + 1] {
+            j += 1;
+        }
+        let fits = (!start_port || a == 0) && (!end_port || j + 1 == ok.len());
+        if fits && best.is_none_or(|(x, y)| j - a > y - x) {
+            best = Some((a, j));
+        }
+        j += 1;
+    }
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Keep: the cuts of a sweep stay in one unbroken run of one-loop
+    /// level sets. A pipe between two boxes once took a flat level set
+    /// across the far box as its calm end cut, with two-loop level sets
+    /// between it and the pipe, and was dropped (seen on one machine only).
+    #[test]
+    fn duct_run_skips_box_levels_beyond_a_break() {
+        let (t, f) = (true, false);
+        let ok = [t, t, f, t, t, t, t, f, t];
+        assert_eq!(duct_run(&ok, false, false), Some((3, 6)));
+        assert_eq!(duct_run(&ok, true, false), Some((0, 1)));
+        assert_eq!(duct_run(&ok, false, true), Some((8, 8)));
+        assert_eq!(duct_run(&ok, true, true), None);
+        assert_eq!(duct_run(&[t; 4], true, true), Some((0, 3)));
+        assert_eq!(duct_run(&[f; 3], false, false), None);
+    }
 
     fn unit_tet() -> [Vec3; 4] {
         [
