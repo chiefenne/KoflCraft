@@ -395,3 +395,92 @@ pub fn dip_tube() -> Duct {
     }
     revolved(&profile, 48)
 }
+
+/// A duct along the x axis lofted through sections: each station is an x
+/// and a closed (y, z) polygon, counter-clockwise, all with the same
+/// number of points; the cap at the first x is the inlet, the cap at the
+/// last the outlet (fans from the section's centre of points).
+pub fn lofted(stations: &[(f64, Vec<(f64, f64)>)]) -> Duct {
+    let sides = stations[0].1.len();
+    let mut d = Duct::default();
+    for (x, sec) in stations {
+        assert_eq!(sec.len(), sides, "every section has the same points");
+        for &(y, z) in sec {
+            d.vertices.push(Vec3::new(*x, y, z));
+        }
+    }
+    let at = |j: usize, i: usize| j * sides + i % sides;
+    for j in 0..stations.len() - 1 {
+        for i in 0..sides {
+            let (a, b, c, e) = (at(j, i), at(j, i + 1), at(j + 1, i + 1), at(j + 1, i));
+            d.triangles.extend([[a, b, c], [a, c, e]]);
+            d.roles.extend([0, 0]);
+        }
+    }
+    let last = stations.len() - 1;
+    for (j, role) in [(0, 1), (last, 2)] {
+        let (x, sec) = &stations[j];
+        let n = sec.len() as f64;
+        let (cy, cz) = sec
+            .iter()
+            .fold((0.0, 0.0), |(a, b), &(y, z)| (a + y / n, b + z / n));
+        let centre = d.vertices.len();
+        d.vertices.push(Vec3::new(*x, cy, cz));
+        for i in 0..sides {
+            let (a, b) = (at(j, i), at(j, i + 1));
+            d.triangles.push(if j == 0 {
+                [centre, b, a]
+            } else {
+                [centre, a, b]
+            });
+            d.roles.push(role);
+        }
+    }
+    d
+}
+
+/// The point at polar angle `theta` on a square of half side `a` whose
+/// corners are rounded with radius `rho` (0 a sharp square, `a` the
+/// inscribed circle).
+pub fn rounded_square(a: f64, rho: f64, theta: f64) -> (f64, f64) {
+    let (c, s) = (theta.cos(), theta.sin());
+    let (ca, sa) = (c.abs(), s.abs());
+    // flat side x = a (or y = a by symmetry)
+    let (big, small) = if ca >= sa { (ca, sa) } else { (sa, ca) };
+    let t_side = a / big;
+    let t = if t_side * small <= a - rho {
+        t_side
+    } else {
+        // the corner arc about (a - rho, a - rho)
+        let k = a - rho;
+        let b = k * (ca + sa);
+        b + (b * b - 2.0 * k * k + rho * rho).max(0.0).sqrt()
+    };
+    (t * c, t * s)
+}
+
+/// A square to round transition: a square duct of side 1 (x = 0..2), a
+/// transition (x = 2..4) whose corner radius grows smoothly (smoothstep)
+/// from 0 to 0.5, and a round pipe of diameter 1 (x = 4..6), the circle
+/// inscribed in the square. Points at 64 equal polar angles (the corners
+/// at 45° + 90° m are points); rings every 0.1, every 0.05 in the
+/// transition.
+pub fn square_to_round() -> Duct {
+    let a = 0.5;
+    let sides = 64;
+    let mut xs: Vec<f64> = (0..20).map(|j| j as f64 * 0.1).collect();
+    xs.extend((0..40).map(|j| 2.0 + j as f64 * 0.05));
+    xs.extend((0..=20).map(|j| 4.0 + j as f64 * 0.1));
+    let stations: Vec<(f64, Vec<(f64, f64)>)> = xs
+        .iter()
+        .map(|&x| {
+            let u = ((x - 2.0) / 2.0).clamp(0.0, 1.0);
+            let rho = a * u * u * (3.0 - 2.0 * u);
+            let sec = (0..sides)
+                .map(|i| rounded_square(a, rho, std::f64::consts::TAU * i as f64 / sides as f64))
+                .collect();
+            (x, sec)
+        })
+        .collect();
+    lofted(&stations)
+}

@@ -319,7 +319,8 @@ pub fn fill(stl: &[u8], map: &Value, opts: FillOptions) -> Result<Filled, Engine
                 "rows": m.section[1],
                 "core_cells": m.section[2],
                 "corners": st[0].corners,
-                "kind": if m.h_grid { "rectangular H-grid: the wall layers, then a tensor core clustered to all four walls" } else if st[0].corners == 4 { "rectangular O-grid: ring corners on the section corners" } else { "smooth: O-grid corners at 45° + 90° m of a rotation-minimising frame" },
+                "sharp_stations": st.iter().filter(|s| s.corners == 4).count(),
+                "kind": if m.h_grid { "rectangular H-grid: the wall layers, then a tensor core clustered to all four walls" } else if st.iter().any(|s| s.corners == 4) && st.iter().any(|s| s.corners == 0) { "transition O-grid: ring corners on the section corners where they are sharp, carried by a rotation-minimising frame where the section is smooth" } else if st[0].corners == 4 { "rectangular O-grid: ring corners on the section corners" } else { "smooth: O-grid corners at 45° + 90° m of a rotation-minimising frame" },
             },
             "layer_heights": m.layer_heights,
             "ends": [cut(0, m.ends[0], m.calm_ends[0]), cut(st.len() - 1, m.ends[1], m.calm_ends[1])],
@@ -528,7 +529,7 @@ pub fn fill(stl: &[u8], map: &Value, opts: FillOptions) -> Result<Filled, Engine
         "limitations": [
             if poly_volume > 0.0 { "the region behind the cuts is meshed as polyhedra (median dual with the sweeps' layer stack) and joined conformally at the cuts: the cut sections of the sweeps take the cap positions of the polyhedral mesh, each hex face at a cut is split into the polyhedral cap faces it holds" } else { "only the swept cells are meshed; the region behind the cuts is not (see remainder for why)" },
             "interior stations follow the potential's level sets at equal centreline spacing; at a mitre corner one station is the mitre plane and the others fan around the inner corner, so cells there are short at the inner wall and long at the outer wall (see max_non_orthogonality_deg)",
-            "a sweep needs one closed wall loop per level set and the same section type throughout (four sharp corners or none); other regions are listed under not_swept",
+            "a sweep needs one closed wall loop per level set, each with four sharp corners or none (a square to round transition is one O-grid, no H-grid); other regions are listed under not_swept",
         ],
         "seconds": {
             "scaffold": a.scaffold_seconds,
