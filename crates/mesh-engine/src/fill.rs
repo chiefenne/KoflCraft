@@ -444,7 +444,17 @@ pub fn fill(stl: &[u8], map: &Value, opts: FillOptions) -> Result<Filled, Engine
             })
             .collect();
         let h = HandoffMesh::from_cells(points, cells, vec!["fluid".into()], &boundary, patches)
-            .map_err(|e| EngineError::new(ErrorCode::InvalidConnectivity, e))?;
+            .map_err(|e| {
+                // name the cell ranges, so a bad cell can be traced to its sweep
+                let ranges: Vec<Value> = sweep_json
+                    .iter()
+                    .map(|s| json!({"region": s["region"], "first_cell": s["first_cell"], "cells": s["cells"], "stations": s["stations"], "ends": s["ends"]}))
+                    .collect();
+                EngineError::new(
+                    ErrorCode::InvalidConnectivity,
+                    format!("{e}; sweeps: {}; cells behind the cuts from {sweep_cells}", Value::Array(ranges)),
+                )
+            })?;
         let summary = h.summary();
         let no = non_orthogonality(&h, sweep_cells);
         let max_no = no.iter().map(|k| k.0).fold(0.0, f64::max);

@@ -1113,6 +1113,13 @@ pub fn fill(
     if !(axial > 0.0 && axial.is_finite()) {
         return Err("axial_size must be positive".into());
     }
+    // a cut closer than half a cell to the other end leaves a sliver of
+    // stations (cells of no volume) that no level set can mesh
+    if (!start_port || !end_port) && length < 0.5 * axial {
+        return Err(format!(
+            "the calm cuts leave {length:.3e} to sweep, less than half a cell ({axial:.3e})"
+        ));
+    }
     let cells_axial = ((length / axial).round() as usize).max(1);
     // station levels at equal centreline length
     let level_at = |t: f64| -> f64 {
@@ -1527,6 +1534,11 @@ pub fn fill(
         let ps = h.map(|v| points[v]);
         min_sj = min_sj.min(scaled_jacobian(ps));
         volume += hex_volume(ps);
+    }
+    if min_sj.is_nan() || min_sj <= 0.0 {
+        return Err(format!(
+            "swept cells fold or vanish (smallest scaled Jacobian {min_sj:.3})"
+        ));
     }
     // the region's volume between the end levels (tets split by level)
     let region_volume = slab_volume(&sub, &f, lo, hi);

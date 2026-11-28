@@ -472,6 +472,14 @@ not fold at all here, so the fold depends on the scaffold's exact
 tetrahedra at the corner; the test keeps the geometry that folds on
 this machine and asserts only that it meshes.
 
+On the CI runner the same chamber first failed before the layers: a
+swept cell of volume 0. Locally the region in front of the plate is
+listed as "the calm cuts leave nothing to sweep"; on the runner its cuts
+landed a hair apart and gave a sweep of slivers. A sweep with a cut is
+now refused when its centreline is shorter than half an axial cell, and
+any sweep whose cells fold (smallest scaled Jacobian not above 0) is
+refused, so its region goes behind the cuts.
+
 ## Limits and next steps
 
 - Behind the cuts the join takes any number of openings, round or
