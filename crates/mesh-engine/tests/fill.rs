@@ -197,7 +197,17 @@ fn pipe_between_two_boxes_joins_both() {
     let r = &f.report;
     let rem = &r["remainder"];
     assert!(rem.get("error").is_none(), "{rem}");
-    assert_eq!(rem["shells"], 2, "{rem}");
+    let kinds: Vec<&Value> = r["regions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| &g["kind"])
+        .collect();
+    assert_eq!(
+        rem["shells"], 2,
+        "{rem}\nnot swept: {}\nregions: {kinds:?}\nsweeps: {}",
+        r["not_swept"], r["sweeps"]
+    );
     let cut_to_cut = r["sweeps"]
         .as_array()
         .unwrap()
