@@ -121,3 +121,102 @@ pub fn files(d: &Duct) -> (Vec<u8>, String) {
     );
     (s.into_bytes(), map)
 }
+
+/// A plenum with three round pipes: the box [-1, 1]^3 with a pipe of
+/// radius 0.5 and length 4 on its -x face (inlet), its +x face and its +y
+/// face (one outlet patch with two caps). Each box edge has 16 segments;
+/// a face with a pipe is the ring between its square rim and the pipe's
+/// circle, both at the rim points' polar angles, so the pipes have 64
+/// sides. The region behind the three cuts of a sweep fill has three
+/// openings.
+pub fn pipe_box() -> Duct {
+    const M: usize = 16;
+    const R: f64 = 0.5;
+    const L: f64 = 4.0;
+    const K: usize = 40;
+    let mut d = Duct {
+        vertices: Vec::new(),
+        triangles: Vec::new(),
+        roles: Vec::new(),
+    };
+    let mut index: HashMap<[i64; 3], usize> = HashMap::new();
+    let mut vertex = |d: &mut Duct, p: Vec3| -> usize {
+        let key = [p.x, p.y, p.z].map(|c| (c * 1e9).round() as i64);
+        *index.entry(key).or_insert_with(|| {
+            d.vertices.push(p);
+            d.vertices.len() - 1
+        })
+    };
+    let x = Vec3::new(1.0, 0.0, 0.0);
+    let y = Vec3::new(0.0, 1.0, 0.0);
+    let z = Vec3::new(0.0, 0.0, 1.0);
+    // (outward normal, u, v with u x v = normal, pipe role)
+    let faces = [
+        (x, y, z, Some(2)),
+        (x * -1.0, z, y, Some(1)),
+        (y, z, x, Some(2)),
+        (y * -1.0, x, z, None),
+        (z, x, y, None),
+        (z * -1.0, y, x, None),
+    ];
+    for (n, u, v, pipe) in faces {
+        // the square rim, counter-clockwise about n from (-1, -1)
+        let mut rim: Vec<(f64, f64)> = Vec::new();
+        for side in 0..4 {
+            for k in 0..M {
+                let t = -1.0 + 2.0 * k as f64 / M as f64;
+                rim.push(match side {
+                    0 => (t, -1.0),
+                    1 => (1.0, t),
+                    2 => (-t, 1.0),
+                    _ => (-1.0, -t),
+                });
+            }
+        }
+        let at = |a: f64, b: f64| n + u * a + v * b;
+        let outer: Vec<usize> = rim.iter().map(|&(a, b)| vertex(&mut d, at(a, b))).collect();
+        let count = outer.len();
+        let Some(role) = pipe else {
+            let centre = vertex(&mut d, n);
+            for i in 0..count {
+                d.triangles.push([centre, outer[i], outer[(i + 1) % count]]);
+                d.roles.push(0);
+            }
+            continue;
+        };
+        // the pipe's rings at the rim points' polar angles, out along n
+        let ring = |d: &mut Duct,
+                    t: f64,
+                    vertex: &mut dyn FnMut(&mut Duct, Vec3) -> usize|
+         -> Vec<usize> {
+            rim.iter()
+                .map(|&(a, b)| {
+                    let s = R / (a * a + b * b).sqrt();
+                    vertex(d, n * (1.0 + t) + u * (a * s) + v * (b * s))
+                })
+                .collect()
+        };
+        let mut rings: Vec<Vec<usize>> = Vec::with_capacity(K + 1);
+        for j in 0..=K {
+            rings.push(ring(&mut d, L * j as f64 / K as f64, &mut vertex));
+        }
+        for i in 0..count {
+            let i1 = (i + 1) % count;
+            let inner = &rings[0];
+            d.triangles.push([outer[i], outer[i1], inner[i1]]);
+            d.triangles.push([outer[i], inner[i1], inner[i]]);
+            d.roles.extend([0, 0]);
+            for j in 0..K {
+                let (a, b) = (&rings[j], &rings[j + 1]);
+                d.triangles.push([a[i], a[i1], b[i1]]);
+                d.triangles.push([a[i], b[i1], b[i]]);
+                d.roles.extend([0, 0]);
+            }
+            let end = &rings[K];
+            let centre = vertex(&mut d, n * (1.0 + L));
+            d.triangles.push([centre, end[i], end[i1]]);
+            d.roles.push(role);
+        }
+    }
+    d
+}

@@ -542,13 +542,13 @@ fn remainder_mesh(a: &Analysis, caps: &[CutCap], steps: &[f64]) -> Result<Remain
             free.push(id);
         }
     }
-    if caps.len() > free.len() {
-        return Err(bad(format!(
-            "the region behind the cuts has {} openings; the polyhedral mesher takes two",
-            caps.len() + ports.len()
-        )));
-    }
-    let cap_ids: Vec<usize> = free[..caps.len()].to_vec();
+    // every cut cap takes a free cap id; past two openings the caps share
+    // one (the mesher gives each connected cap its own similarity, and the
+    // join tells caps of one id apart by their planes)
+    let shared = free.first().copied().unwrap_or(1);
+    let cap_ids: Vec<usize> = (0..caps.len())
+        .map(|k| free.get(k).copied().unwrap_or(shared))
+        .collect();
     let patches: Vec<usize> = rem
         .source
         .iter()

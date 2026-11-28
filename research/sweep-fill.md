@@ -253,19 +253,68 @@ mitre's tilt adds to it. Picture:
 `koflcraft-images/sweep/elbow-mitre-blend.png` (the floor wall, before and
 after; `render_floor.py` beside it).
 
+## More than two openings behind the cuts
+
+The polyhedral mesher had one cap similarity per port patch id, and it had
+two ids (inlet and outlet). With three or more openings the fill refused
+the join. Now:
+
+1. **One similarity per cap.** `front::advance` splits each cap id into
+   its connected caps (union-find over the shared edges of its facets) and
+   gives each cap its own centre, normal and in-plane similarity
+   (x -> c + (x - c)(1 - H/r)) with its own radius. Two caps of one id that
+   touch at a vertex are refused. One similarity for the whole id would
+   shrink every cap towards the mean centre of all of them.
+2. **Shared ids.** The cuts take the free ids first; past two openings the
+   rest share the first free id.
+3. **The join tells the cuts apart by their planes.** A boundary face of
+   the polyhedral mesh belongs to a cut when its id matches and every node
+   lies in the cut's plane (100 times the weld tolerance); among coplanar
+   cuts it goes to the nearest centre.
+4. **No ring of STL nodes next to the cut plane.** A cut is a level set,
+   so it can pass within a few thousandths of a ring of STL nodes, or cross
+   it when it is slightly tilted. The band of plane-crossing facets then
+   zigzags through that ring, and the strip to the rim holds needles (179°
+   on the three-pipe box). The scaffold's boundary recovery split those
+   without end and ran out of memory. Now STL nodes within a quarter of the
+   rim spacing in front of the plane count as the sweep's side, so the
+   strip reaches back to the ring before.
+
+### Results (three-pipe box, defaults)
+
+The fixture is `ducts::pipe_box`: the box [-1, 1]^3 with round pipes
+(radius 0.5, length 4, 64 sides) on its -x face (inlet), +x and +y faces
+(outlets). Every pipe is swept from its port to a calm cut; behind the
+cuts are the box and the junction, with three openings.
+
+| | Value |
+|---|---|
+| Cells | 105,638: 53,760 hexahedra (pipes), 51,878 polyhedra (box) |
+| Validity | 0 inverted faces, closure 6.8e-15, min scaled Jacobian of the hexahedra 0.71 |
+| At the cuts | 13,632 cap faces joined, weld 4.5e-16, area match 5.8e-14, non-orthogonality 47.3° (none over 70°) |
+| Hexahedra | non-orthogonality 23.7° |
+| Polyhedra | 87.8° (786 faces over 70°, the box mesh itself, as on the Manifold) |
+| Not meshed | 0.19 % (pipe faceting) |
+| FoehnCraft read-back | valid, 0 negative volumes, volume equal to the boundary volume; at most 87.7° on its measure (the joined Manifold: 88.8°) |
+| Time | 27 s |
+
+Square sections (the T and the fork of `ducts.rs`) still fail: their cut
+caps are not Delaunay (about 110 edges per cap, up to 95° over, near the
+square's corners, where the O-grid's first rows sit off the rim points), so
+the scaffold's boundary recovery does not converge. A 2 % jitter of the
+inner nodes did not help. A section whose rows meet the walls square (the
+graded H-grid on the open card) or a 2D conforming refinement of the cap
+would fix it.
+
 ## Limits and next steps
 
-- The join needs at most two openings in the region behind the cuts (the
-  polyhedral mesher's two port patch ids). STL ports behind the cuts take
-  them first, and symmetry planes behind the cuts are refused.
-- `regions.fill` is not in the acceptance runner yet, so CI does not read a
-  joined mesh back with FoehnCraft. By hand (`foehn mesh` on the Manifold
-  VTU, FoehnCraft main of 2026-11-27) it is valid: 132,520 cells (68,664
-  hexahedra, 63,856 polyhedra, among them the hexahedra with split cut
-  faces), 0 negative volumes, 0 inverted faces, closure 3.4e-16. On
-  FoehnCraft's non-orthogonality measure it is at most 88.8°, with 97,304
-  faces over 70°. The plain polyhedral Manifold of the acceptance run
-  measures 90.0° and 271,252 faces on the same measure.
+- Behind the cuts the join takes any number of openings with round
+  sections; square sections fail (see above). Symmetry planes behind the
+  cuts are refused.
+- The acceptance runner reads the elbow and the joined Manifold back with
+  FoehnCraft (#87). The Manifold is valid: 132,520 cells, at most 88.8° on
+  FoehnCraft's non-orthogonality measure (the plain polyhedral Manifold:
+  90.0°).
 - The polyhedral box keeps the mesher's own quality: 87.7° non-orthogonality
   inside the box, none at the cuts.
 - At a mitre the stations next to the mitre plane are blended planes (see
