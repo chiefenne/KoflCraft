@@ -8,7 +8,7 @@ Nothing yet.
 
 | Version | Milestone | Highlights |
 |---|---|---|
-| 0.3.0 (2026-11-28) | Block-dominant meshing, first steps | Region proposal (`regions.propose`: heat-method wall distance, flow potential, skeleton, regions) and sweep fill (`regions.fill`: swept O-grids of hexahedra joined conformally to polyhedra, MD-25), with the elbow and the joined Manifold read back by FoehnCraft in the acceptance run; block T-junctions with a count solve, triangle and tet splits in 3D and a measured 3D trigger; ready-to-run programs for macOS, Linux and Windows on each release; README hero pictures. |
+| 0.3.0 (2026-11-28) | Block-dominant meshing, first steps | Region proposal (`regions.propose`: heat-method wall distance, flow potential, skeleton, regions) and sweep fill (`regions.fill`: swept O-grids of hexahedra joined conformally to polyhedra, MD-25; H-grid for rectangular ducts; parallel tubes), with the elbow and the joined Manifold read back by FoehnCraft in the acceptance run; block T-junctions with a count solve, triangle and tet splits in 3D and a measured 3D trigger; ready-to-run programs for macOS, Linux and Windows on each release; README hero pictures. |
 | 0.2.0 (2026-11-27) | Galleries and install guide | Example gallery (eight block-mesher and eleven polyhedral entries), recipes and an application gallery (heat exchanger shell side, seven-tube furnace, three-element airfoil), every entry with its exact commands, checked numbers and a MurmelCraft picture; install guide for macOS, Linux and Windows. No change to the mesher, its file formats or its tools. |
 | 0.1.0 (2026-11-26) | M1 done, M2 to M5 and MB1 as prototypes | First release. Clipped Voronoi polyhedra in a box (M1, verified), convex STL meshing with size fields, geometry-derived sizes and boundary patch tools (M2), nonconvex ducts on a Rust scaffold with prism layers to the ports, named wall patches, flush openings, zero-thickness shells, polygon-prism layers and the solver rules of production codes (M3 to M5 prototypes), a block-structured mesher with templates (pipe, elbow, airfoil C-grid, multi-element airfoil), edit tools, elliptic smoothing and a layout optimiser (MB1), the blocked VTKHDF hand-off read by FoehnCraft and MurmelCraft, and one tool registry behind the CLI and the MCP server. **Every mesh checked before it is written; FoehnCraft reads every acceptance mesh back in CI; the seven-tube furnace (1.9 million cells) passes the solver rules.** |
 
@@ -25,7 +25,8 @@ the box, and FoehnCraft reads both back in the acceptance run. The block
 mesher gains T-junctions with an integer count solve, triangle and tet
 splits that work in 3D, and a 3D trigger that keeps a split only when the
 measured grid gets better. Rectangular ducts get an H-grid, so the
-square T and fork join too. Releases now carry ready-to-run programs for
+square T and fork join too. Parallel tubes and reducers are swept, so the
+heat exchanger's tube side joins its seven tubes to both bonnets. Releases now carry ready-to-run programs for
 macOS, Linux (glibc 2.28 or newer) and Windows, with a script for a shared
 install under `/opt`, and four recorded chats show an assistant meshing
 through `kofl mcp`.
@@ -56,7 +57,8 @@ through `kofl mcp`.
 - `regions.propose` only proposes; `regions.fill` meshes the sweep regions
   and the box behind them, while junction and obstacle regions are left to
   the polyhedral mesher.
-- The tube side and the solids of the heat exchanger still need the
+- The tube side of the heat exchanger joins its seven tubes to both
+  bonnets, but the solids and the fluid-solid coupling still need the
   multi-domain mesher (MD-06 to MD-18), and there is no STEP reader yet.
 - The Mac programs are signed ad hoc only, so macOS asks once before the
   first start.
@@ -137,6 +139,16 @@ through `kofl mcp`.
   mesher's wall layers next to a cap take the cap's sideways shift, fading
   out, so the square T and fork join to the box mesh at the default five
   layers. Round ports and pipes do not change.
+- **Parallel tubes and reducers are swept** (`regions.propose`,
+  `regions.fill`). A run whose level sets meet the wall in one closed loop
+  is a sweep, also between two headers; a second loop (a body inside, as
+  in the furnace) makes it an obstacle. Boxes are found by section area
+  instead of volume, so the wide pipe of a reducer is no longer a box. The
+  fill sweeps tubes cut at both ends and meshes every closed shell behind
+  the cuts on its own: the heat exchanger's tube side now joins its seven
+  tubes to both bonnets. A sweep's cuts stay
+  in one unbroken run of one-loop level sets, so a tube never ends in a
+  cut across a box.
 
 #### Block mesher
 
