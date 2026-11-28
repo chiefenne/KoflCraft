@@ -32,7 +32,10 @@
 //! collinear. With `snap > 0` a point merges with or joins a feature closer
 //! than `snap` times the shortest edge at the point, so two grid lines that
 //! nearly coincide give one line instead of a strip of sliver faces. The
-//! largest distance snapped over is reported.
+//! largest distance snapped over is reported. Two points on the region's
+//! border are judged by the border edges at them alone, because the border
+//! is shared with the faces around the region, whose own overlays must
+//! decide the same.
 //!
 //! The tilings need not be convex cells; they must cover the same region
 //! and each must be conforming (every interior edge shared by two cells
@@ -315,6 +318,15 @@ pub fn overlay(a: &Tiling, b: &Tiling, snap: f64) -> Result<Overlay, OverlayErro
         .sum::<f64>()
         / segs.len().max(1) as f64;
     let eps = |i: usize| snap * local[i];
+    // the shortest border edge at a border point
+    let along: Vec<f64> = (0..pts.len())
+        .map(|i| {
+            border[i]
+                .iter()
+                .map(|&j| dist(pts[i], pts[j]))
+                .fold(f64::INFINITY, f64::min)
+        })
+        .collect();
     let mut max_snap: f64 = 0.0;
 
     // (1) merge points of the two tilings
@@ -332,7 +344,17 @@ pub fn overlay(a: &Tiling, b: &Tiling, snap: f64) -> Result<Overlay, OverlayErro
             let best = cand
                 .iter()
                 .map(|&j| (j, dist(pts[i], pts[j])))
-                .filter(|&(j, d)| d <= eps(i).min(eps(j)))
+                // two border points are judged by the border edges alone:
+                // a border is shared with other faces, whose overlays must
+                // decide alike
+                .filter(|&(j, d)| {
+                    let tol = if level[i] > 0 && level[j] > 0 {
+                        snap * along[i].min(along[j])
+                    } else {
+                        eps(i).min(eps(j))
+                    };
+                    d <= tol
+                })
                 .min_by(|x, y| x.1.total_cmp(&y.1));
             if let Some((j, _)) = best {
                 let (ri, rj) = (merge.find(i), merge.find(j));
