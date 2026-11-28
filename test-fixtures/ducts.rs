@@ -364,3 +364,34 @@ pub fn reducer() -> Duct {
         .collect();
     revolved(&profile, 48)
 }
+
+/// A round chamber with a dip tube: an inlet pipe (radius 0.5, x = -2..0)
+/// into a chamber (radius 2, x = 0..3) whose end plate at x = 3 the outlet
+/// tube (outer radius 0.6, inner 0.4) passes through, reaching back to
+/// x = 1 inside the chamber and out to x = 5. The tube's outer wall meets
+/// the plate in a concave 90° corner all round, as where the tubes of a
+/// heat exchanger pass through a tube plate; rings about every 0.2,
+/// 48 sides.
+pub fn dip_tube() -> Duct {
+    let step = 0.2;
+    let corners: [(f64, f64); 8] = [
+        (-2.0, 0.5),
+        (0.0, 0.5),
+        (0.0, 2.0),
+        (3.0, 2.0),
+        (3.0, 0.6),
+        (1.0, 0.6),
+        (1.0, 0.4),
+        (5.0, 0.4),
+    ];
+    let mut profile = vec![corners[0]];
+    for w in corners.windows(2) {
+        let ((x0, r0), (x1, r1)) = (w[0], w[1]);
+        let n = (((x1 - x0).hypot(r1 - r0)) / step).ceil().max(1.0) as usize;
+        for k in 1..=n {
+            let t = k as f64 / n as f64;
+            profile.push((x0 + t * (x1 - x0), r0 + t * (r1 - r0)));
+        }
+    }
+    revolved(&profile, 48)
+}

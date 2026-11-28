@@ -7,6 +7,9 @@ pub(super) struct Front {
     pub inner: Vec<usize>,
     /// The share of the layer height at each surface vertex (see `squeeze`).
     pub scale: Vec<f64>,
+    /// The surface vertex each of the points above grows from (itself for
+    /// a surface vertex).
+    pub wall_of: Vec<usize>,
 }
 
 /// Largest distance of a port vertex from the port plane, relative to the
@@ -72,6 +75,7 @@ pub(super) fn advance(
     });
     let limit = start.as_deref();
     let mut points = original.to_vec();
+    let mut wall_of: Vec<usize> = (0..original.len()).collect();
     let total: f64 = steps.iter().sum();
     if !total.is_finite() || steps.iter().any(|&s| !s.is_finite() || s <= 0.0) {
         return Err("layer thicknesses must be finite and positive".into());
@@ -285,6 +289,7 @@ pub(super) fn advance(
             if wall {
                 next[i] = points.len();
                 points.push(displaced[i]);
+                wall_of.push(i);
             }
         }
         for (i, f) in surface.facets().iter().enumerate() {
@@ -323,6 +328,7 @@ pub(super) fn advance(
         boundary,
         inner,
         scale,
+        wall_of,
     })
 }
 
