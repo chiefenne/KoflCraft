@@ -47,10 +47,22 @@ rows eliminated (`fields::sparse`).
    with nothing above or below; branch points: pieces with two or more above
    or below; loops: the cycle rank of the graph (bridges by Tarjan 1974).
 5. **Regions**: neighbouring pieces of one category form a region.
-   Junction (a branch piece); box (a piece at least 4 times the median piece
-   volume: a chamber where the potential is almost flat); sweep (clash on
-   less than 30 % of the piece) or obstacle passage (a sweep on a loop of the
-   graph); remainder (a clashing run). A connected cluster of clashing
+   Junction (a branch piece); box (a piece with at least 4 times the median
+   piece's section area: a chamber where the potential is almost flat);
+   sweep (clash on less than 30 % of the piece); remainder (a clashing run).
+   The section area of a piece is A = sum V |grad p| / dp over its slab
+   step dp, exact for any section, because |grad p| integrates to dp along
+   every streamline. (Up to 2026-11-28 the test compared piece volumes; a
+   slab of a wide duct is also shorter along the flow, by 1/|grad p|, so
+   its volume grows with A squared and the wide pipe of a reducer with an
+   area ratio of 2.8 read as a box at 7.7 times the volume.) A run of box
+   pieces at least four equivalent diameters long is a wide duct, its own
+   sweep region. A clean run is a sweep when its level sets, one per slab,
+   meet the wall in one closed loop, and an obstacle when a second closed
+   loop shows a body inside (the furnace's tube row); a run on a loop of
+   the graph with one loop per level set is a parallel passage, a sweep
+   (up to 2026-11-28 every run on a graph loop was an obstacle, so the
+   tubes between two headers were never swept). A connected cluster of clashing
    tetrahedra inside a sweep, larger than 0.5 % of the volume, becomes a
    remainder of its own (clash zone): a slab would average a local clash
    away.
@@ -88,16 +100,29 @@ Reeb graph of the potential instead of thinning the ridge voxels, so its
 end and branch counts are those of the flow topology (1 to 3 ends here)
 and the ridge only places the nodes.
 
+### Parallel tubes, reducers, the furnace chamber (2026-11-28)
+
+| Case | Before | After |
+|---|---|---|
+| Heat exchanger tube side (7 tubes, two bonnets) | obstacle 25 %, sweep 0 % | 7 sweeps (25 %), 2 bonnets box, 2 junctions |
+| Five tubes between two headers (Gmsh) | obstacle 25 %, sweep 15 % | sweep 40 % (tubes and both pipes) |
+| Three tubes between headers (`ducts::header_tubes`) | 3 obstacles | 3 sweeps |
+| Round reducer r 0.5 to 0.3 (`ducts::reducer`) | sweep 31 %, box 69 % | sweep 100 % |
+| Square reducer 1 to 0.6 (Gmsh) | sweep 31 %, box 69 % | sweep 100 % |
+| Furnace, 1 and 7 tubes | sweep 89 % and 86 % | obstacle 89 % and 86 % |
+| Manifold | box 72 %, second pass 42 % of the domain | box 66 %, second pass 36 % |
+| Elbow, T, fork | unchanged | unchanged |
+
 ## Limits and next steps
 
 - Nothing is meshed. The next step is the cut: sweep regions bounded by
   potential level sets outside the wall layers, the templates of BS-03, and
   the remainder through the polyhedral mesher with imprint (MD-25).
-- A slab thicker than a small body does not split around it: the furnace
-  tubes show as clash zones, not as obstacle loops. Thinner slabs near
-  bodies (from the distance field) would show the loops.
-- "Box" means a piece much larger than the median piece; when the chamber
-  is the whole domain (the furnace) it is a sweep.
+- "Box" means a piece much wider than the median piece; when the chamber
+  is the whole domain (the furnace) it is an obstacle (its level sets have
+  the tubes inside), not a box.
+- A reducer with an area ratio of 4 or more reads as a box unless its wide
+  run is four diameters long.
 - Second-pass labels on small clash zones are noisy (few tetrahedra per
   slab).
 - No cross-section shape is chosen yet (O-grid for a round section, H for a

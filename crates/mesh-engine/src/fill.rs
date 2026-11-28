@@ -348,14 +348,24 @@ pub fn fill(stl: &[u8], map: &Value, opts: FillOptions) -> Result<Filled, Engine
             .map(|w| w[1] - w[0])
             .collect();
         let cap_list: Vec<CutCap> = caps.iter().map(|(_, c)| c.clone()).collect();
-        match remainder_mesh(&a, &cap_list, &steps) {
-            Ok((duct_mesh, cap_ids, ports, surface_json)) => {
-                let cuts: Vec<join::Cut> = cuts
-                    .into_iter()
-                    .zip(&cap_ids)
-                    .filter_map(|(c, &id)| c.map(|c| join::Cut { patch: id, ..c }))
+        let joined_all = remainder_mesh(&a, &cap_list, &steps).and_then(|shells| {
+            let mut parts = Vec::with_capacity(shells.len());
+            for (duct_mesh, cap_ids, in_shell, ports, surface_json) in shells {
+                let shell_cuts: Vec<join::Cut> = (0..cuts.len())
+                    .filter(|&k| in_shell[k])
+                    .filter_map(|k| {
+                        cuts[k].clone().map(|c| join::Cut {
+                            patch: cap_ids[k],
+                            ..c
+                        })
+                    })
                     .collect();
-                let diameter = cap_list.iter().map(|c| 2.0 * c.radius).fold(0.0, f64::max);
+                let diameter = cap_list
+                    .iter()
+                    .zip(&in_shell)
+                    .filter(|(_, i)| **i)
+                    .map(|(c, _)| 2.0 * c.radius)
+                    .fold(0.0, f64::max);
                 let patch_of = |id: usize| -> Option<usize> {
                     if duct::is_wall(id) {
                         Some(0)
@@ -368,21 +378,33 @@ pub fn fill(stl: &[u8], map: &Value, opts: FillOptions) -> Result<Filled, Engine
                     &mut cells,
                     &mut boundary,
                     sweep_cells,
-                    &cuts,
+                    &shell_cuts,
                     &duct_mesh,
                     &patch_of,
                     1e-8 * diameter,
                 )
                 .map_err(|e| EngineError::new(ErrorCode::InvalidConnectivity, e))?;
-                poly_volume = duct_mesh.measurements.volume;
+                parts.push((duct_mesh.measurements.volume, joined, surface_json));
+            }
+            Ok(parts)
+        });
+        match joined_all {
+            Ok(parts) => {
+                poly_volume = parts.iter().map(|p| p.0).sum();
+                let sum =
+                    |f: &dyn Fn(&join::Joined) -> f64| parts.iter().map(|p| f(&p.1)).sum::<f64>();
+                let max = |f: &dyn Fn(&join::Joined) -> f64| {
+                    parts.iter().map(|p| f(&p.1)).fold(0.0, f64::max)
+                };
                 remainder_json = json!({
-                    "surface": surface_json,
-                    "cells": joined.cells,
-                    "cap_faces_joined": joined.pieces,
-                    "edge_points_inserted": joined.edge_points,
-                    "welded_points": joined.welded,
-                    "max_weld_distance": joined.max_weld,
-                    "max_relative_area_error": joined.area_error,
+                    "shells": parts.len(),
+                    "surface": if parts.len() == 1 { parts[0].2.clone() } else { Value::Array(parts.iter().map(|p| p.2.clone()).collect()) },
+                    "cells": sum(&|j| j.cells as f64) as usize,
+                    "cap_faces_joined": sum(&|j| j.pieces as f64) as usize,
+                    "edge_points_inserted": sum(&|j| j.edge_points as f64) as usize,
+                    "welded_points": sum(&|j| j.welded as f64) as usize,
+                    "max_weld_distance": max(&|j| j.max_weld),
+                    "max_relative_area_error": max(&|j| j.area_error),
                     "volume": poly_volume,
                     "seconds": t3.elapsed().as_secs_f64(),
                 });
@@ -509,16 +531,20 @@ pub fn fill(stl: &[u8], map: &Value, opts: FillOptions) -> Result<Filled, Engine
     Ok(Filled { report, mesh })
 }
 
-/// The polyhedral mesh behind the cuts, the patch id of every cap, the STL
-/// ports inside the region as (patch id, merged patch) and a report.
-type Remainder = (DuctMesh, Vec<usize>, Vec<(usize, usize)>, Value);
+/// The polyhedral mesh of one closed shell behind the cuts, the patch id
+/// of every cap (meaningful for the caps in `in_shell`), the caps it holds,
+/// the STL ports inside it as (patch id, merged patch) and a report.
+type Remainder = (DuctMesh, Vec<usize>, Vec<bool>, Vec<(usize, usize)>, Value);
 
 /// The polyhedral mesh of the region behind the cuts (MD-25): the STL
 /// without the swept ducts, closed by the caps, meshed by the median dual
-/// with the sweeps' layer stack. Returns the mesh, the patch id of every
-/// cap, the STL ports inside the region as (patch id, merged patch) and a
-/// report.
-fn remainder_mesh(a: &Analysis, caps: &[CutCap], steps: &[f64]) -> Result<Remainder, EngineError> {
+/// with the sweeps' layer stack, one mesh per closed shell (two headers
+/// joined by swept tubes are two shells).
+fn remainder_mesh(
+    a: &Analysis,
+    caps: &[CutCap],
+    steps: &[f64],
+) -> Result<Vec<Remainder>, EngineError> {
     let bad = |m: String| EngineError::new(ErrorCode::InvalidDomain, m);
     let triangles: Vec<[usize; 3]> = a
         .surface
@@ -527,8 +553,89 @@ fn remainder_mesh(a: &Analysis, caps: &[CutCap], steps: &[f64]) -> Result<Remain
         .map(|f| f.triangle.vertices)
         .collect();
     let rem = remainder::remainder_surface(a.surface.vertices(), &triangles, caps).map_err(bad)?;
+    // the closed shells: triangles joined over shared edges
+    let mut parent: Vec<usize> = (0..rem.triangles.len()).collect();
+    fn root(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    let mut edge_owner: std::collections::HashMap<(usize, usize), usize> =
+        std::collections::HashMap::new();
+    for (f, t) in rem.triangles.iter().enumerate() {
+        for e in 0..3 {
+            let (u, v) = (t[e], t[(e + 1) % 3]);
+            if let Some(&g) = edge_owner.get(&(u.min(v), u.max(v))) {
+                let (rf, rg) = (root(&mut parent, f), root(&mut parent, g));
+                parent[rf] = rg;
+            } else {
+                edge_owner.insert((u.min(v), u.max(v)), f);
+            }
+        }
+    }
+    let mut shells: Vec<Vec<usize>> = Vec::new();
+    let mut shell_of: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    for f in 0..rem.triangles.len() {
+        let r = root(&mut parent, f);
+        let k = *shell_of.entry(r).or_insert_with(|| {
+            shells.push(Vec::new());
+            shells.len() - 1
+        });
+        shells[k].push(f);
+    }
+    let mut out = Vec::with_capacity(shells.len());
+    for shell in &shells {
+        let mut new_id = vec![usize::MAX; rem.points.len()];
+        let mut shell_points = Vec::new();
+        let shell_triangles: Vec<[usize; 3]> = shell
+            .iter()
+            .map(|&f| {
+                rem.triangles[f].map(|v| {
+                    if new_id[v] == usize::MAX {
+                        new_id[v] = shell_points.len();
+                        shell_points.push(rem.points[v]);
+                    }
+                    new_id[v]
+                })
+            })
+            .collect();
+        let shell_source: Vec<Source> = shell.iter().map(|&f| rem.source[f]).collect();
+        out.push(shell_mesh(
+            a,
+            caps,
+            steps,
+            shell_points,
+            shell_triangles,
+            shell_source,
+            rem.dropped,
+        )?);
+    }
+    Ok(out)
+}
+
+/// The polyhedral mesh of one closed shell behind the cuts.
+#[allow(clippy::too_many_arguments)]
+fn shell_mesh(
+    a: &Analysis,
+    caps: &[CutCap],
+    steps: &[f64],
+    points: Vec<Vec3>,
+    triangles: Vec<[usize; 3]>,
+    source: Vec<Source>,
+    dropped: usize,
+) -> Result<Remainder, EngineError> {
+    let bad = |m: String| EngineError::new(ErrorCode::InvalidDomain, m);
+    let in_shell: Vec<bool> = (0..caps.len())
+        .map(|k| {
+            source
+                .iter()
+                .any(|s| matches!(*s, Source::Cap(c) if c == k))
+        })
+        .collect();
     let has = |role: Role| {
-        rem.source
+        source
             .iter()
             .any(|s| matches!(*s, Source::Facet(f) if a.roles[f] == role))
     };
@@ -551,11 +658,11 @@ fn remainder_mesh(a: &Analysis, caps: &[CutCap], steps: &[f64]) -> Result<Remain
     // one (the mesher gives each connected cap its own similarity, and the
     // join tells caps of one id apart by their planes)
     let shared = free.first().copied().unwrap_or(1);
-    let cap_ids: Vec<usize> = (0..caps.len())
-        .map(|k| free.get(k).copied().unwrap_or(shared))
-        .collect();
-    let patches: Vec<usize> = rem
-        .source
+    let mut cap_ids = vec![shared; caps.len()];
+    for (j, k) in (0..caps.len()).filter(|&k| in_shell[k]).enumerate() {
+        cap_ids[k] = free.get(j).copied().unwrap_or(shared);
+    }
+    let patches: Vec<usize> = source
         .iter()
         .map(|s| match *s {
             Source::Facet(f) => match a.roles[f] {
@@ -567,8 +674,7 @@ fn remainder_mesh(a: &Analysis, caps: &[CutCap], steps: &[f64]) -> Result<Remain
             Source::Cap(k) => cap_ids[k],
         })
         .collect();
-    let faces: Vec<SurfaceTriangle> = rem
-        .triangles
+    let faces: Vec<SurfaceTriangle> = triangles
         .iter()
         .zip(&patches)
         .map(|(t, &p)| SurfaceTriangle {
@@ -576,20 +682,18 @@ fn remainder_mesh(a: &Analysis, caps: &[CutCap], steps: &[f64]) -> Result<Remain
             patch: PatchId(p - 1),
         })
         .collect();
-    let surface = ClosedSurface::new(
-        rem.points.clone(),
-        faces,
-        vec!["1".into(), "2".into(), "3".into()],
-    )
-    .map_err(|e| {
-        bad(format!(
-            "the region behind the cuts is not a closed surface: {e}"
-        ))
-    })?;
+    let surface = ClosedSurface::new(points, faces, vec!["1".into(), "2".into(), "3".into()])
+        .map_err(|e| {
+            bad(format!(
+                "the region behind the cuts is not a closed surface: {e}"
+            ))
+        })?;
     // sizes: the cuts' wall spacing at the caps, the analysis spacing inside
     let spacing = caps
         .iter()
-        .map(|c| {
+        .zip(&in_shell)
+        .filter(|(_, i)| **i)
+        .map(|(c, _)| {
             let rim = &c.points[..c.rim];
             (0..rim.len())
                 .map(|i| (rim[(i + 1) % rim.len()] - rim[i]).length())
@@ -614,13 +718,13 @@ fn remainder_mesh(a: &Analysis, caps: &[CutCap], steps: &[f64]) -> Result<Remain
     });
     let (mesh, _shell, built) = mesh_surface(&surface, &patches, build, steps, 0.002)?;
     let report = json!({
-        "stl_facets_dropped": rem.dropped,
-        "triangles": rem.triangles.len(),
-        "caps": caps.len(),
+        "stl_facets_dropped": dropped,
+        "triangles": triangles.len(),
+        "caps": in_shell.iter().filter(|&&i| i).count(),
         "build": report_build,
         "scaffold": built,
     });
-    Ok((mesh, cap_ids, ports, report))
+    Ok((mesh, cap_ids, in_shell, ports, report))
 }
 
 /// Fill and write the bundle: `foehncraft.vtu` (the swept cells, walls,

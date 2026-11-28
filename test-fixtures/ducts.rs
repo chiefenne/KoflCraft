@@ -220,3 +220,83 @@ pub fn pipe_box() -> Duct {
     }
     d
 }
+
+/// Two headers joined by three parallel tubes, from unit cubes: an inlet
+/// duct (x = 0) into a header column (x = 1, y = -3..3), tubes at y = -2,
+/// 0 and 2 (x = 2..6), a second header (x = 7) and an outlet duct
+/// (x = 8). The tubes lie on loops of the slab graph but each is one duct.
+/// No tube wall is flush with a header wall (a flush square branch is a
+/// known gap of the join).
+pub fn header_tubes() -> Duct {
+    let mut c: Vec<[i32; 3]> = vec![[0, 0, 0], [8, 0, 0]];
+    for y in -3..=3 {
+        c.extend([[1, y, 0], [7, y, 0]]);
+    }
+    for x in 2..7 {
+        c.extend([[x, -2, 0], [x, 0, 0], [x, 2, 0]]);
+    }
+    cells(&c, |cell, axis, side| match (cell, axis, side) {
+        ([0, 0, 0], 0, -1) => 1,
+        ([8, 0, 0], 0, 1) => 2,
+        _ => 0,
+    })
+}
+
+/// A body of revolution about the x axis: `profile` lists (x, r) with x
+/// increasing, `sides` the segments around; the cap at the first x is the
+/// inlet, the cap at the last the outlet.
+pub fn revolved(profile: &[(f64, f64)], sides: usize) -> Duct {
+    let mut d = Duct {
+        vertices: Vec::new(),
+        triangles: Vec::new(),
+        roles: Vec::new(),
+    };
+    for &(x, r) in profile {
+        for i in 0..sides {
+            let a = std::f64::consts::TAU * i as f64 / sides as f64;
+            d.vertices.push(Vec3::new(x, r * a.cos(), r * a.sin()));
+        }
+    }
+    let at = |j: usize, i: usize| j * sides + i % sides;
+    for j in 0..profile.len() - 1 {
+        for i in 0..sides {
+            let (a, b, c, e) = (at(j, i), at(j, i + 1), at(j + 1, i + 1), at(j + 1, i));
+            d.triangles.extend([[a, b, c], [a, c, e]]);
+            d.roles.extend([0, 0]);
+        }
+    }
+    let last = profile.len() - 1;
+    for (j, role, x) in [(0, 1, profile[0].0), (last, 2, profile[last].0)] {
+        let centre = d.vertices.len();
+        d.vertices.push(Vec3::new(x, 0.0, 0.0));
+        for i in 0..sides {
+            let (a, b) = (at(j, i), at(j, i + 1));
+            d.triangles.push(if j == 0 {
+                [centre, b, a]
+            } else {
+                [centre, a, b]
+            });
+            d.roles.push(role);
+        }
+    }
+    d
+}
+
+/// A round concentric reducer: radius 0.5 over x = 0..3, a cone to radius
+/// 0.3 over x = 3..4, radius 0.3 over x = 4..7; rings every 0.1, 48 sides.
+pub fn reducer() -> Duct {
+    let profile: Vec<(f64, f64)> = (0..=70)
+        .map(|j| {
+            let x = j as f64 / 10.0;
+            let r = if x <= 3.0 {
+                0.5
+            } else if x >= 4.0 {
+                0.3
+            } else {
+                0.5 - 0.2 * (x - 3.0)
+            };
+            (x, r)
+        })
+        .collect();
+    revolved(&profile, 48)
+}

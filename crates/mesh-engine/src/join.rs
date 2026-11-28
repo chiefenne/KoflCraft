@@ -16,6 +16,7 @@ use mesh_core::geometry::Vec3;
 use mesh_io::handoff::CellFaces;
 
 /// One cut seen from the merged mesh.
+#[derive(Clone)]
 pub(crate) struct Cut {
     /// The cap's patch id in the polyhedral mesh (1 or 2; several cuts and
     /// an STL port may share one).

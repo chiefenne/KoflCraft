@@ -18,15 +18,19 @@
 //!    sides), i.e. the medial ridge of the heat distance; a piece without
 //!    a ridge face is placed at its centroid.
 //! 4. Regions: junction pieces next to each other form a junction; each
-//!    piece much larger than the median piece (a chamber, where the
-//!    potential is almost flat) is part of a box; the other pieces of a
-//!    chain form runs of clean and clashing pieces. A clean run is a sweep,
-//!    or an obstacle passage when it lies on a cycle; a clashing run is a
-//!    remainder for the polyhedral mesher.
+//!    piece with a section much larger than the median piece's (a chamber,
+//!    where the potential is almost flat) is part of a box, unless its run
+//!    is long against its width (the wide end of a reducer); the other
+//!    pieces of a chain form runs of clean and clashing pieces. A clean run
+//!    is a sweep when its level sets meet the wall in one closed loop (also
+//!    on a cycle of the graph: parallel tubes), an obstacle when a second
+//!    loop shows a body inside it; a clashing run is a remainder for the
+//!    polyhedral mesher. The section area of a piece is its flux
+//!    sum V |grad p| over the potential step of its slab.
 
 #![allow(clippy::needless_range_loop)] // parallel per-tet and per-piece arrays
 
-use super::{Fem, TetMesh, submesh};
+use super::{Fem, Role, TetMesh, submesh};
 use mesh_core::geometry::Vec3;
 use std::collections::HashMap;
 
@@ -44,9 +48,12 @@ pub struct ClassifyOptions {
     /// A cluster of clashing tetrahedra in a sweep at or above this share
     /// of the volume is a remainder of its own (clash zone).
     pub clash_zone: f64,
-    /// A piece this many times larger than the median piece is part of a
-    /// box (a chamber much wider than its ducts).
+    /// A piece whose section area is this many times the median piece's
+    /// is part of a box (a chamber much wider than its ducts).
     pub box_growth: f64,
+    /// A run of such pieces at least this many equivalent diameters long
+    /// is a wide duct (the wide end of a reducer), not a box.
+    pub box_length: f64,
 }
 
 impl Default for ClassifyOptions {
@@ -57,6 +64,7 @@ impl Default for ClassifyOptions {
             slabs: None,
             min_piece: 0.05,
             box_growth: 4.0,
+            box_length: 4.0,
             clash_zone: 0.005,
         }
     }
@@ -103,6 +111,10 @@ pub struct Piece {
     pub slab: usize,
     pub volume: f64,
     pub clash_volume: f64,
+    /// Sum of V |grad p| over the piece: its mean section area times the
+    /// potential step of its slab (exact for any section shape, since
+    /// |grad p| integrates to the step along each streamline).
+    pub flux: f64,
     pub centroid: Vec3,
     /// Centroid of the ridge faces in the piece.
     pub ridge: Option<Vec3>,
@@ -281,7 +293,8 @@ pub fn classify(
     let nt = mesh.tets.len();
     let gd = fem.gradient(mesh, d);
     let gp = fem.gradient(mesh, p);
-    let mut gp_len: Vec<f64> = gp.iter().map(|g| g.length()).collect();
+    let gp_abs: Vec<f64> = gp.iter().map(|g| g.length()).collect();
+    let mut gp_len = gp_abs.clone();
     let (mut s1, mut s2) = (0.0, 0.0);
     for k in 0..nt {
         s1 += fem.volume[k] * gp_len[k];
@@ -428,6 +441,7 @@ pub fn classify(
         let c = t.iter().fold(Vec3::ZERO, |s, &v| s + mesh.points[v]) / 4.0;
         let piece = &mut pieces[label[k]];
         piece.volume += fem.volume[k];
+        piece.flux += fem.volume[k] * gp_abs[k];
         piece.centroid = piece.centroid + c * fem.volume[k];
         if clash[k] >= opts.clash {
             piece.clash_volume += fem.volume[k];
@@ -497,18 +511,21 @@ pub fn classify(
         .iter()
         .map(|p| p.volume > 0.0 && p.clash_volume / p.volume < opts.clash_share)
         .collect();
-    let mut volumes: Vec<f64> = (0..count)
-        .filter(|&a| !junction[a])
-        .map(|a| pieces[a].volume)
-        .collect();
-    volumes.sort_unstable_by(f64::total_cmp);
-    let reference = volumes.get(volumes.len() / 2).copied().unwrap_or(f64::MAX);
-    // 0 junction, 1 box (much larger than the median piece), 2 clean, 3 clash
-    let category: Vec<u8> = (0..count)
+    // a box is a chamber much wider than its ducts: compare the pieces'
+    // section areas (flux / step), not their volumes (a slab of a wide duct
+    // is also shorter, so its volume grows with the area squared)
+    let step = span / slabs as f64;
+    let area = |a: usize| pieces[a].flux / step;
+    let mut areas: Vec<f64> = (0..count).filter(|&a| !junction[a]).map(area).collect();
+    areas.sort_unstable_by(f64::total_cmp);
+    let reference = areas.get(areas.len() / 2).copied().unwrap_or(f64::MAX);
+    // 0 junction, 1 box (much wider than the median piece), 2 clean, 3 clash,
+    // 4 wide duct (set below)
+    let mut category: Vec<u8> = (0..count)
         .map(|a| {
             if junction[a] {
                 0
-            } else if pieces[a].volume >= opts.box_growth * reference {
+            } else if area(a) >= opts.box_growth * reference {
                 1
             } else if clean[a] {
                 2
@@ -517,6 +534,29 @@ pub fn classify(
             }
         })
         .collect();
+    // a run of wide pieces that is long against its width is a wide duct
+    let mut wide = Union::new(count);
+    for &(a, b) in &edges {
+        if category[a] == 1 && category[b] == 1 {
+            wide.join(a, b);
+        }
+    }
+    let mut runs: HashMap<usize, (f64, f64)> = HashMap::new();
+    for a in (0..count).filter(|&a| category[a] == 1) {
+        let r = runs.entry(wide.find(a)).or_default();
+        r.0 += pieces[a].volume;
+        r.1 += pieces[a].volume / area(a).max(f64::MIN_POSITIVE);
+    }
+    for a in 0..count {
+        if category[a] != 1 {
+            continue;
+        }
+        let (volume, length) = runs[&wide.find(a)];
+        let diameter = 2.0 * (volume / length.max(f64::MIN_POSITIVE) / std::f64::consts::PI).sqrt();
+        if length >= opts.box_length * diameter {
+            category[a] = 4; // its own run: the section jumps at both ends
+        }
+    }
     let mut groups = Union::new(count);
     for &(a, b) in &edges {
         if category[a] == category[b] {
@@ -544,7 +584,7 @@ pub fn classify(
             0 => Kind::Junction,
             1 => Kind::Box,
             2 if members.iter().any(|&a| on_loop[a]) => Kind::Obstacle,
-            2 => Kind::Sweep,
+            2 | 4 => Kind::Sweep,
             _ => Kind::Remainder,
         };
         for &a in &members {
@@ -563,6 +603,54 @@ pub fn classify(
         });
     }
     let mut tet_region: Vec<usize> = label.iter().map(|&l| piece_region[l]).collect();
+    // sections: a clean run whose level sets meet the wall in one closed
+    // loop is one duct (a sweep), also when it lies on a loop of the piece
+    // graph (parallel tubes between two headers); one with a second
+    // closed loop has a body inside it (an obstacle: a tube row in a
+    // chamber). Runs with neither keep the graph's answer.
+    let roles: HashMap<[usize; 3], Role> = mesh
+        .faces
+        .iter()
+        .map(|(f, r)| {
+            let mut k = *f;
+            k.sort_unstable();
+            (k, *r)
+        })
+        .collect();
+    let mut walls: Vec<Vec<[usize; 3]>> = vec![Vec::new(); regions.len()];
+    for (k, t) in mesh.tets.iter().enumerate() {
+        for a in 0..4 {
+            if adjacent[k][a].is_none() {
+                let f = super::face_key(t, a);
+                if roles.get(&f).copied().unwrap_or(Role::Wall) == Role::Wall {
+                    walls[tet_region[k]].push(f);
+                }
+            }
+        }
+    }
+    for (r, region) in regions.iter_mut().enumerate() {
+        if !matches!(region.kind, Kind::Sweep | Kind::Obstacle) {
+            continue;
+        }
+        let mut levels: Vec<usize> = region.pieces.iter().map(|&a| pieces[a].slab).collect();
+        levels.sort_unstable();
+        levels.dedup();
+        let (mut one, mut more) = (false, false);
+        for s in levels {
+            let level = lo + (s as f64 + 0.5) * step;
+            let closed = super::sweep::level_loops(&mesh.points, &walls[r], p, level)
+                .iter()
+                .filter(|l| l.closed && l.points.len() >= 3)
+                .count();
+            one |= closed == 1;
+            more |= closed >= 2;
+        }
+        if more {
+            region.kind = Kind::Obstacle;
+        } else if one {
+            region.kind = Kind::Sweep;
+        }
+    }
     // clash zones: a connected cluster of clashing tetrahedra inside a
     // sweep or obstacle region, larger than the bound, is a remainder of
     // its own (a slab averages a local clash away, e.g. a tube row)

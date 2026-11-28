@@ -188,14 +188,19 @@ pub struct SweepMesh {
 type Probe = (Vec<Vec3>, Vec3, Vec3, f64, f64);
 
 /// A level-set loop on the wall.
-struct Loop {
-    points: Vec<Vec3>,
-    closed: bool,
+pub(super) struct Loop {
+    pub(super) points: Vec<Vec3>,
+    pub(super) closed: bool,
 }
 
 /// The loops where the level set `level` of `f` crosses the triangles.
 /// A node exactly at the level counts as above it.
-fn level_loops(points: &[Vec3], tris: &[[usize; 3]], f: &[f64], level: f64) -> Vec<Loop> {
+pub(super) fn level_loops(
+    points: &[Vec3],
+    tris: &[[usize; 3]],
+    f: &[f64],
+    level: f64,
+) -> Vec<Loop> {
     // segment: two crossed edges (sorted node pairs) and the triangle
     let mut segs: Vec<([[usize; 2]; 2], usize)> = Vec::new();
     for (t, tri) in tris.iter().enumerate() {

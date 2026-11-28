@@ -386,6 +386,37 @@ the square's corners, where the O-grid's first rows sit off the rim
 points), so the scaffold's boundary recovery did not converge. A 2 %
 jitter of the inner nodes did not help. The H-grid (above) fixes the caps.
 
+## Tubes cut at both ends, several shells behind the cuts
+
+Once the proposal labels parallel tubes as sweeps (research
+`field-region-proposal.md`, 2026-11-28), a tube between two headers is
+swept from cut to cut, and the region behind the cuts is two closed
+shells, one per header. Two changes:
+
+1. **Bands first** (`remainder.rs`): the ring of plane-crossing facets of
+   every cut is marked before any sweep side is flooded. Before, the band
+   of each cut was found and flooded in turn: the flood from a tube's
+   first cut ran through the tube, past its other cut (not marked yet) and
+   on through the whole STL, which left 0 holes ("the cuts leave 0 holes
+   in the STL, expected 14").
+2. **One mesh per shell** (`fill.rs`): the closed surface behind the cuts
+   is split into its connected shells; each is meshed by the median dual
+   with the caps it holds (its own cap ids and rim spacing) and joined in
+   turn. The mesher takes one connected shell.
+
+| Case | Result |
+|---|---|
+| Three tubes between two headers (`ducts::header_tubes`, square) | 3 tubes swept cut to cut, 2 shells joined, 0 inverted faces, the cuts interior |
+| Heat exchanger tube side (Gmsh fluid from the open STEP, 82,044 facets) | 7 tubes swept (679,936 hexahedra), 2 bonnets (691,642 polyhedra), 1,371,578 cells, 0 inverted faces, 50.1° at the cuts, 89.3° inside the bonnets, 230 s |
+| Five round tubes between two box headers (Gmsh) | the tubes are swept; the polyhedral layers fail at one vertex of a header ("no common inward wall direction") |
+
+A square tube flush with a header wall (the first `header_tubes` layout,
+its outer tubes flush with the header's end walls) collides in the
+polyhedral layer front at the cut corner on the flush side; the square
+offset tee with its branch flush with the floor does not finish its
+polyhedral build. Both are open (the same gap as the square tee with a
+round branch).
+
 ## Limits and next steps
 
 - Behind the cuts the join takes any number of openings, round or
@@ -394,7 +425,8 @@ jitter of the inner nodes did not help. The H-grid (above) fixes the caps.
   scaled core leaves the rim on the long one. Symmetry planes behind the
   cuts are refused.
 - The acceptance runner reads the elbow and the joined Manifold back with
-  FoehnCraft (#87). The Manifold is valid: 132,520 cells, at most 88.8° on
+  FoehnCraft (#87). The Manifold is valid: 132,520 cells (133,056 since
+  the proposal's box test by section area), at most 88.8° on
   FoehnCraft's non-orthogonality measure (the plain polyhedral Manifold:
   90.0°).
 - The polyhedral box keeps the mesher's own quality: 87.7° non-orthogonality

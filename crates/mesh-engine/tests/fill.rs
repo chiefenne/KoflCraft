@@ -177,6 +177,43 @@ fn square_tee_and_fork_join() {
     }
 }
 
+/// Keep: three parallel tubes between two headers are swept from cut to
+/// cut and the two headers behind the cuts are meshed as two shells and
+/// joined. Two fixes each fail here first: (1) every cut's band is marked
+/// before the sweep side is flooded, else the flood from one end of a
+/// tube runs through it past its other cut and drops the whole STL (0
+/// holes left); (2) each closed shell behind the cuts gets its own
+/// polyhedral mesh (the mesher takes one connected shell). The other
+/// joined fixtures have one shell and sweeps with one cut each.
+#[test]
+fn header_tubes_join_both_headers() {
+    let d = ducts::header_tubes();
+    let (stl, map) = ducts::files(&d);
+    let map: Value = serde_json::from_str(&map).unwrap();
+    let f = fill(&stl, &map, FillOptions::default()).unwrap();
+    let r = &f.report;
+    let rem = &r["remainder"];
+    assert!(rem.get("error").is_none(), "{rem}");
+    assert_eq!(rem["shells"], 2, "{rem}");
+    let cut_to_cut = r["sweeps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["ends"][0]["kind"] == "cut" && s["ends"][1]["kind"] == "cut")
+        .count();
+    assert_eq!(cut_to_cut, 3, "{}", r["sweeps"]);
+    let v = &r["validity"];
+    assert_eq!(v["inverted_faces"], 0, "{v}");
+    assert!(num(&v["max_relative_closure"]) < 1e-9, "{v}");
+    let names: Vec<&str> = v["patches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["walls", "inlet", "outlet"], "the cuts are interior");
+}
+
 /// Keep: in the Manifold both pipes are swept from their port to a calm
 /// cut in front of the box: the cut is planar (every node in its plane, a
 /// flat level set) and square to the pipe; without the join the box is
